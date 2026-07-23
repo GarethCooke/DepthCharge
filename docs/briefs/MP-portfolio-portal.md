@@ -26,9 +26,10 @@ an architecture link — plus two small drive-by fixes noticed along the way.
    > custom carrier PCB and printed enclosure.
 2. **`/projects/depthcharge` page** using the **hardware** project layout (MorayGlow is
    the exemplar), not the software layout (Anvil is that exemplar).
-3. **Placeholder visual:** commit `depthcharge_concept.svg` (in the DepthCharge Claude
-   Project files / provided by owner) to the site's assets as the hero/gallery item,
-   captioned as concept art.
+3. **Placeholder visual:** source `depthcharge_concept.svg` from the DepthCharge repo at
+   `docs/media/depthcharge_concept.svg` (local checkout: `~/repos/DepthCharge`, or per
+   its README); commit it to the site's assets as the hero/gallery item, captioned as
+   concept art.
 4. **Links:** GitHub repo (if/when the owner makes it public — confirm before linking)
    and a "Design & architecture →" target. Options: render `ARCHITECTURE.md` as a site
    page (matches Anvil's pattern) or link the repo file. Session proposes, owner decides;
