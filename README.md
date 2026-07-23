@@ -5,6 +5,8 @@ smoked acrylic, rendering live market depth — bids stacking green, asks red, t
 flashing white at the touch, and an honest grey "stale" state whenever the data can't be
 trusted.
 
+![DepthCharge concept sketch](docs/media/depthcharge_concept.svg)
+
 It consumes three venues in ascending order of wire difficulty: **Anvil**
 ([anvil.garethcooke.com](https://anvil.garethcooke.com) — my own C++20 matching engine;
 DepthCharge is the second independent client of its versioned wire contract), then
