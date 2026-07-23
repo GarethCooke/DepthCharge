@@ -1,0 +1,5 @@
+# Full local captures are kept untracked; only the sliced committed traces
+# (anvil_*_baseline.ndjson / anvil_*_reconnect.ndjson) live in git. See
+# tools/slice_trace.py and harness/replay/NOTES.md.
+_local/
+*.full.ndjson
