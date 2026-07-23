@@ -1,0 +1,20 @@
+# Build output (CMake presets write to build/<preset>; reviewers may use build/review*)
+/build/
+build/
+
+# CMake user-local
+CMakeUserPresets.json
+compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Full local captures are kept untracked; only sliced traces are committed.
+# (harness/replay/.gitignore also covers _local/ and *.full.ndjson explicitly.)

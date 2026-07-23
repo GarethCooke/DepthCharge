@@ -1,0 +1,64 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "host",
+      "displayName": "Host (GCC >=13, Ubuntu / Windows MinGW-w64)",
+      "description": "Portable host build of engine/ + harness/. On Windows MinGW-w64 use the host-mingw preset instead.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/host",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "host-mingw",
+      "displayName": "Host (Windows MinGW-w64 GCC >=13)",
+      "description": "Same build on Windows with the MinGW-w64 GCC toolchain (no MSVC).",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/host",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "host", "configurePreset": "host" },
+    { "name": "host-mingw", "configurePreset": "host-mingw" }
+  ],
+  "testPresets": [
+    {
+      "name": "host",
+      "configurePreset": "host",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "host-mingw",
+      "configurePreset": "host-mingw",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "host",
+      "description": "Configure + build + test in one command: cmake --workflow --preset host",
+      "steps": [
+        { "type": "configure", "name": "host" },
+        { "type": "build", "name": "host" },
+        { "type": "test", "name": "host" }
+      ]
+    },
+    {
+      "name": "host-mingw",
+      "description": "Configure + build + test on Windows MinGW-w64.",
+      "steps": [
+        { "type": "configure", "name": "host-mingw" },
+        { "type": "build", "name": "host-mingw" },
+        { "type": "test", "name": "host-mingw" }
+      ]
+    }
+  ]
+}
