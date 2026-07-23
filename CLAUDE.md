@@ -19,8 +19,10 @@ engine, host-first development, replay files as ground truth.
 - Integer ticks everywhere; floating point never touches book data.
 - New behaviour ships with replay coverage: a trace (captured or synthesised) plus a
   golden expectation. No green, no merge.
-- Build/test loop: `cmake --preset host && ctest --preset host` (established in M0; if
-  presets don't exist yet, M0 is your milestone).
+- Build/test loop: `cmake --workflow --preset host` (configure+build+test in one; needs
+  CMake ≥3.25). Established in M0 — the plain `cmake --preset host && ctest --preset host`
+  from the original note skips the build step, so use the workflow preset (or run
+  configure/build/test presets individually while iterating).
 - Toolchain: C++20, GCC ≥13 (Windows MinGW-w64 or Ubuntu), warnings-as-errors, doctest.
 - Python lives in `tools/` only.
 

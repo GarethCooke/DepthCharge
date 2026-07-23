@@ -13,7 +13,8 @@ DepthCharge is the second independent client of its versioned wire contract), th
 **Kraken** (checksummed L2 deltas), then **Binance** (buffered diffs bracketed against
 REST snapshots). Same book engine, one `FeedEvent` vocabulary, three adapters.
 
-**Status:** pre-M0 — documents and framework only. See `ROADMAP.md`.
+**Status:** M0 complete — host harness + captured live-Anvil replay traces, `ctest`
+green. Next: M1 (console ladder off replay). See `ROADMAP.md`.
 
 ## Layout
 
@@ -31,11 +32,25 @@ and status), `CLAUDE.md` (session guide).
 
 ## Build (host)
 
-Established in milestone M0:
+Established in milestone M0 (C++20, GCC ≥13, warnings-as-errors, doctest). One
+command configures, builds, and tests from a clean clone:
 
 ```bash
-cmake --preset host
-ctest --preset host
+cmake --workflow --preset host
+```
+
+Iterating? The individual presets also work: `cmake --preset host` (configure),
+`cmake --build --preset host` (build), `ctest --preset host` (test). On Windows
+with the MinGW-w64 toolchain, use the `host-mingw` presets instead (the default
+Windows generator would pick MSVC): `cmake --workflow --preset host-mingw`.
+Verified on Ubuntu GCC 13.3; needs CMake ≥ 3.25.
+
+Capturing fresh traces (optional; needs network to the live Anvil server) uses the
+stdlib-only tools in `tools/` — no `pip` dependencies:
+
+```bash
+python3 tools/capture_anvil.py --ticker 101 --duration 300 --out cap.full.ndjson
+python3 tools/slice_trace.py cap.full.ndjson harness/replay/anvil_101_baseline.ndjson --mode baseline --window 90
 ```
 
 ## Development model

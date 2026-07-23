@@ -63,11 +63,12 @@ deterministically, and a green `ctest` target. After M0, every session's review 
 
 ## Definition of done
 
-☐ Two traces committed, including the reconnect trace.
-☐ `docs/vendor/anvil-protocol.md` pinned with version + date.
-☐ `NOTES.md` answers both known unknowns.
-☐ `ctest` green from a clean clone on one owner box, two commands max.
-☐ Session log below filled in; ROADMAP M0 ticked.
+☑ Two traces committed, including the reconnect trace.
+☑ `docs/vendor/anvil-protocol.md` pinned with version + date.
+☑ `NOTES.md` answers both known unknowns.
+☑ `ctest` green from a clean clone (`cmake --workflow --preset host`) on Ubuntu
+  GCC 13.3 — 3 ctest / 8 doctest cases / 52 assertions.
+☑ Session log below filled in; ROADMAP M0 ticked.
 
 ## Out of scope
 
@@ -77,3 +78,83 @@ Book maintenance, adapter event emission, rendering of any kind, firmware, Krake
 
 <!-- Append one block per session: date · model · what was done · decisions made
      (with why) · what the next session should start with. -->
+
+### 2026-07-23 · Opus 4.8 (1M) · M0 implemented (green in-tree; hand-off commit pending)
+
+**Done.** All five deliverables built against the **live** Anvil server (it was up,
+feeder on, 12 tickers 101–112). Capture tool + slicer in `tools/`; two committed
+traces sliced from full local captures; vendored protocol; `NOTES.md`; CMake +
+`host` preset + `feed_event.hpp` + `dc_replay` + `dc_tests`. `cmake --preset host
+&& ctest --preset host` → 3 ctest / 8 doctest cases / 52 assertions, all green,
+warnings-as-errors clean (GCC 13.3).
+
+**Decisions (with why):**
+
+- **Capture tool is stdlib-only RFC 6455**, not the `websockets` package the brief
+  named. *Why:* this box has no `pip`/`ensurepip`, and a stdlib client is strictly
+  more portable ("no exotic dependencies") — and it let me capture real traces now.
+  It sends **no `Origin`** by default and auto-retries with `https://<host>` only if
+  rejected.
+- **Harness JSON parser = nlohmann/json 3.11.3** (vendored, `SYSTEM` include,
+  compiled in one TU `trace.cpp`). doctest 2.4.11 reused from the Anvil checkout.
+  *Why:* brief blesses nlohmann for the harness; single-header vendoring is
+  offline-reproducible; `SYSTEM` keeps `-Werror` off third-party. **Harness-only —
+  it must never touch `engine/` or the firmware hot path (invariant #7).** The
+  firmware parser is still undecided, as the brief requires.
+- **Committed-trace policy (deviates from brief's "≥5 min committed").** Book frames
+  are ~8 KB at ~12/s ≈ 100 KB/s, so a literal 5-min baseline is ~30 MB in git
+  forever. Per owner direction: run the full 5-min capture but keep it **local &
+  git-ignored** (`harness/replay/_local/`, `*.full.ndjson`); commit only a **90 s
+  slice** (`tools/slice_trace.py`). Committed sizes: baseline 1406 frames /
+  8.75 MiB raw / **182 KiB gzip**; reconnect 1288 frames / 8.00 MiB / **168 KiB
+  gzip**. gzip ≈ git-storage proxy → ~350 KiB total. **This sets the trace policy
+  for Kraken/Binance at M4.** `NOTES.md` observations are drawn from the full 5-min
+  window (and say so).
+- **Reconnect trace** = client-initiated reconnect with a **4 s simulated drop**
+  (`--reconnect-gap`), sliced to 30 s-before + gap + 60 s-after the resync. *Why:*
+  deterministic, records snapshot-on-reconnect + seq behaviour without killing the
+  host network; the gap is visible in `rx_ns` (4.47 s).
+- **Build loop is `cmake --workflow --preset host`** (one command; needs CMake ≥3.25).
+  *Why:* the brief's literal `cmake --preset host && ctest --preset host` **skips the
+  build** — from a clean clone the tests are "Not Run" (verified). A workflow preset
+  does configure→build→test in one command; individual configure/build/test presets
+  also exist. Updated README and CLAUDE.md's loop line to match.
+
+**Known-unknowns — resolved (see NOTES.md):** (1) WS upgrade **accepts no `Origin`
+header** → firmware won't need one (keep the nominated-`Origin` fallback ready).
+(2) `book` and `snapshot` are the **same shape** (full top-N replace); `summary`
+**carries a `seq`**.
+
+**⚠ ARCHITECTURE correction needed (flagged for owner — constitution NOT edited).**
+The headline M0 finding: Anvil's wire `seq` is a single **global** counter and is
+**non-monotonic** in one ticker's received stream (42 backward steps over 5 min:
+`summary→book`, `trade→book` from cross-ticker broadcast + book coalescing), and it
+**continues across reconnect** (no per-connection reset). This contradicts:
+- **§1** "Anvil … every frame carrying a monotonic `seq`" — inaccurate.
+- **§4** listing "Anvil's frame `seq`" as a usable native scheme to normalise.
+Suggested §4 edit: state that the Anvil adapter **synthesises its own monotonic
+`Seq`** (safe because `snapshot`/`book` are idempotent full replaces); the wire
+`seq` is unusable for gap detection; `Gap{Disconnect}` is synthesised transport-side
+(the server emits no `error`/gap frames). Vendored `docs/vendor/anvil-protocol.md`
+has a header note pointing at this.
+
+**Review.** Ran an adversarial multi-agent review (16 agents; 5 dimensions +
+per-finding verify). 9 confirmed / 2 refuted; **all 9 fixed**: SIGINT responsiveness
+in the capture recv loop; Origin-retry socket close; slicer non-dict-frame guard;
+**engine header now compiled under `-Werror` in `dc_tests`** so its `static_assert`
+guards actually run in ctest (previously dormant); `host-mingw` preset added;
+NOTES depth band corrected to ~84–126 levels/side.
+
+**Remaining to fully close M0:** the **hand-off commit** (awaiting owner go-ahead —
+"commit only when the user asks"). On commit, DoD boxes 1 & 4 (traces committed;
+clean-clone ctest) hold.
+
+**Next session — M1 (console ladder off replay).** `engine/`: implement the Anvil
+adapter (frame JSON → `FeedEvent`s) + phase-1 book (adopt latest `snapshot`/`book`,
+trade ring) + console ladder; goldens off the committed replays. Firm constraints
+from M0: **(a)** synthesise a monotonic `FeedEvent.Seq` locally — do **not** trust
+the wire seq; **(b)** parse Anvil's decimal-string prices (`"10.012"`) → integer
+ticks (pick/record a per-symbol `tick_size`; no float in book data); **(c)** ignore
+but tolerate `summary` frames; **(d)** synthesise `Gap{Disconnect}` from the
+transport, keyed off the mid-stream snapshot / socket close. Decide the firmware
+JSON parser separately (not nlohmann).
