@@ -13,8 +13,9 @@ DepthCharge is the second independent client of its versioned wire contract), th
 **Kraken** (checksummed L2 deltas), then **Binance** (buffered diffs bracketed against
 REST snapshots). Same book engine, one `FeedEvent` vocabulary, three adapters.
 
-**Status:** M0 complete — host harness + captured live-Anvil replay traces, `ctest`
-green. Next: M1 (console ladder off replay). See `ROADMAP.md`.
+**Status:** M1 complete — the Anvil adapter, the phase-1 book and a console ladder run
+off the captured traces under `ctest`, including the reconnect trace going visibly stale
+and recovering. Next: M2 (panel smoke test, at the bench). See `ROADMAP.md`.
 
 ## Layout
 
@@ -44,6 +45,21 @@ Iterating? The individual presets also work: `cmake --preset host` (configure),
 with the MinGW-w64 toolchain, use the `host-mingw` presets instead (the default
 Windows generator would pick MSVC): `cmake --workflow --preset host-mingw`.
 Verified on Ubuntu GCC 13.3; needs CMake ≥ 3.25.
+
+## Watching it run
+
+`dc_ladder` replays a captured trace through the real engine — adapter → book →
+`DisplaySnapshot` → console — and draws the ladder:
+
+```bash
+build/host/dc_ladder harness/replay/anvil_101_reconnect.ndjson          # report + ladders
+build/host/dc_ladder harness/replay/anvil_101_reconnect.ndjson --follow # paced by the capture clock
+```
+
+The reconnect trace is the one worth watching: 382 frames in, the feed goes quiet for
+4.5 s, the ladder greys with a `STALE — disconnect` banner, and the resync snapshot brings
+it back. `--speed 10` to hurry it, `--at N` to stop at a frame, `--no-color`/`--ascii` for
+a dumb terminal, `--levels 27` for the full panel budget.
 
 Capturing fresh traces (optional; needs network to the live Anvil server) uses the
 stdlib-only tools in `tools/` — no `pip` dependencies:
