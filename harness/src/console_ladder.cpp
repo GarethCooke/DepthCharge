@@ -82,8 +82,18 @@ std::string qty_text(Qty q) {
     return std::to_string(static_cast<long long>(q));
 }
 
+// Right-align within a fixed field.
 void put_right(Row& row, std::string_view s, std::size_t width) {
     for (std::size_t i = s.size(); i < width; ++i) { row.put(" "); }
+    row.put(s);
+}
+
+// Right-align so the text *ends* at `end_col`. Stated as an absolute column
+// rather than a computed field width: the width form would be
+// `end_col - row.width() - s.size()`, which underflows into a ~2^64 pad loop
+// the moment a caller's earlier columns grow past it.
+void put_right_at(Row& row, std::string_view s, std::size_t end_col) {
+    while (row.width() + s.size() < end_col) { row.put(" "); }
     row.put(s);
 }
 
@@ -218,7 +228,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
         draw_bar(r, snap.asks[i].qty, max_qty, bar_w, stale, g);
         // Quantities right-align against the frame, so the column reads as one
         // number no matter how wide the box is.
-        put_right(r, qty_text(snap.asks[i].qty), inner - 1 - r.width());
+        put_right_at(r, qty_text(snap.asks[i].qty), inner - 1);
         r.esc(ansi::kFrame, c);
         r.pad_to(inner);
         r.glyph(g.v);
@@ -265,7 +275,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
         put_right(r, format_px(snap.bids[i].px, dp), 10);
         r.put(" ");
         draw_bar(r, snap.bids[i].qty, max_qty, bar_w, stale, g);
-        put_right(r, qty_text(snap.bids[i].qty), inner - 1 - r.width());
+        put_right_at(r, qty_text(snap.bids[i].qty), inner - 1);
         r.esc(ansi::kFrame, c);
         r.pad_to(inner);
         r.glyph(g.v);
