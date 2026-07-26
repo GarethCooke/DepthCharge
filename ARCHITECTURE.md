@@ -16,8 +16,10 @@ bottom, and an honest grey "stale" state whenever the data cannot be trusted.
 It consumes three venues, in deliberate order of difficulty:
 
 1. **Anvil** (`anvil.garethcooke.com`) — the author's own C++20 matching engine. Full top-N
-   snapshots + per-fill trades, every frame carrying a monotonic `seq`. Easiest venue; also
-   the only one we control end-to-end, which makes it the test rig.
+   snapshots + per-fill trades; every frame carries a `seq`, but it is a single *global*
+   engine counter, so one socket's received subsequence is sparse **and non-monotonic**
+   (measured at M0) — the adapter synthesises its own `Seq` (§4). Easiest venue; also the
+   only one we control end-to-end, which makes it the test rig.
 2. **Kraken** — real L2 deltas, self-verifying via a CRC32 checksum over the top 10 levels.
 3. **Binance** — the graduation exercise: buffered diff stream bracketed against a REST
    snapshot, with sequence-gap recovery. (Its partial-depth streams are an Anvil-shaped
@@ -77,10 +79,17 @@ enum class GapReason : uint8_t { SeqGap, ChecksumFail, Disconnect, Overflow, Res
 
 struct BookLevel { PriceTicks px; Qty qty; };
 
+// Borrowed view of a Snapshot's levels; valid only for the duration of the sink
+// call that delivered the event. A consumer that defers copies (M1).
+struct LevelSpan { const BookLevel* data; uint32_t size; };
+
 struct FeedEvent {
     enum class Kind : uint8_t { Snapshot, Delta, Trade, Gap };
     Kind kind; Seq seq;
-    // Snapshot: full replacement of both sides to the venue's stated depth
+    PriceTicks px; Qty qty; Side side; GapReason reason;
+    LevelSpan bids, asks;   // Snapshot only
+    // Snapshot: full replacement of both sides to the venue's stated depth,
+    //           conveyed as the two spans (≤ kMaxSnapshotLevels each)
     // Delta:    one level, absolute quantity (qty == 0 ⇒ level removed)
     // Trade:    px, qty, aggressor side
     // Gap:      reason; book state must be treated as unknown until next Snapshot
@@ -92,15 +101,30 @@ Contract semantics:
 - **Scaling.** Prices and quantities are integers scaled by per-symbol `tick_size` /
   `qty_step` supplied in venue symbol metadata. `int64_t` because crypto tick sizes and
   price ranges vary wildly across symbols and venues; exact integer equality is the point.
+  Where a venue publishes no such metadata (Anvil does not), DepthCharge declares it in a
+  `SymbolSpec` and the adapter **verifies** every wire price is exactly representable at
+  that scale — a mismatch is a reported error, never a silent rounding.
 - **Snapshot replaces; Delta amends.** A `Snapshot` discards all prior levels for the
   symbol. Depth beyond the venue's stated N is *unknown*, not zero.
-- **Seq is the adapter's problem.** Each adapter normalises its venue's native scheme
-  (Anvil's frame `seq`; Binance `U`/`u` bracketing; Kraken has no seq — its adapter
-  synthesises one and converts a CRC failure into `Gap{ChecksumFail}`) into a single
-  monotonic `Seq`. The engine's only rule: a discontinuity it is told about via `Gap`
-  makes the book stale until the next `Snapshot`.
+- **Snapshot levels are borrowed, not owned.** `FeedEvent` stays a flat, trivially
+  copyable value (invariant #7); a `Snapshot` points at an adapter-owned staging buffer
+  that is valid only during the sink call. This is what keeps the boundary allocation-free
+  with a single boundary type (invariant #2).
+- **Seq is the adapter's problem.** Each adapter normalises its venue's native scheme into
+  a single monotonic `Seq`. Anvil's wire `seq` is a *global* counter shared by all tickers
+  and frame types, so a single socket's subsequence is non-monotonic (M0 measured 42
+  backward steps in 5 minutes) and unusable for ordering: its adapter **synthesises** `Seq`
+  from receive order and never raises `Gap{SeqGap}` — safe because Anvil's `snapshot`/`book`
+  frames are idempotent full replaces. Binance uses `U`/`u` bracketing; Kraken has no seq —
+  its adapter synthesises one and converts a CRC failure into `Gap{ChecksumFail}`. The
+  engine's only rule: a discontinuity it is told about via `Gap` makes the book stale until
+  the next `Snapshot`.
 - **Gap is data, not an error.** Disconnects, ring overflow, checksum failures, and seq
-  gaps all arrive as `Gap` events and drive the rendered stale state.
+  gaps all arrive as `Gap` events and drive the rendered stale state. No venue is required
+  to *send* one: Anvil emits no gap/error frame at all, so `Gap{Disconnect}` is synthesised
+  **transport-side** — socket close, or an RX watchdog whose timeout exceeds the venue's
+  worst healthy inter-frame gap by a clear margin (host replay reads the same rule off
+  `rx_ns`; see the M1 brief).
 
 ## 5. Book engine
 
@@ -183,3 +207,7 @@ venues, any web UI (Anvil already has one), battery power.
 | Date       | Change                    | Why |
 | ---------- | ------------------------- | --- |
 | 2026-07-23 | Initial constitution.     | —   |
+| 2026-07-26 | **§1/§4 seq correction.** Anvil's wire `seq` is a global, per-socket non-monotonic counter; its adapter synthesises `Seq` from receive order and never raises `Gap{SeqGap}`. | M0 measured it on the live server (42 backward steps / 5 min, no reset across reconnect). The old text described a guarantee the venue does not provide; an adapter written to it would have gapped ~9 times a minute on healthy data. Safe because Anvil's book frames are idempotent full replaces. |
+| 2026-07-26 | **§4 gains `LevelSpan`;** a `Snapshot` conveys its levels as two borrowed spans into adapter-owned storage, capped at `kMaxSnapshotLevels` (256/side). | §4 left "how the level list is conveyed" open until the phase-1 book (M1). Spans keep `FeedEvent` the *only* boundary type (inv. #2) while staying flat, trivially copyable and allocation-free (inv. #7). Cost: the lifetime rule — defer means copy. |
+| 2026-07-26 | **§4 scaling made explicit for venues without tick metadata.** DepthCharge declares `SymbolSpec{price_decimals, qty_step}`; the adapter verifies exact representability. | Anvil's protocol carries no tick size or qty step (M1 known unknown). The choice is either declare-and-verify or silently round — and rounding book prices would break inv. #3 invisibly. |
+| 2026-07-26 | **§4: `Gap{Disconnect}` is synthesised transport-side**, via socket close or an RX watchdog. | Anvil never sends a gap frame, so absence of data is the only signal. Pinning the rule in the constitution makes the M1 host replay and the M3 firmware transport provably the same contract. |
