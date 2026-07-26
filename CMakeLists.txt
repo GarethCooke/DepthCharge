@@ -1,9 +1,9 @@
-# DepthCharge — host build (M0 skeleton).
+# DepthCharge — host build.
 #
-# Builds the portable engine (header-only for now) and the host harness
-# (replay reader + goldens). Firmware is a separate PlatformIO project under
-# firmware/ and is not built here. See ARCHITECTURE.md; the loop is
-#   cmake --preset host && ctest --preset host
+# Builds the portable engine and the host harness (replay reader, adapter,
+# phase-1 book, console ladder, goldens). Firmware is a separate PlatformIO
+# project under firmware/ and is not built here. See ARCHITECTURE.md; the loop is
+#   cmake --workflow --preset host
 cmake_minimum_required(VERSION 3.20)
 project(DepthCharge LANGUAGES CXX)
 
@@ -23,35 +23,84 @@ target_compile_options(dc_warnings INTERFACE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>
   $<$<CXX_COMPILER_ID:MSVC>:/W4;/WX>)
 
-# --- engine: portable, header-only for now -----------------------------------
+# --- engine: portable, header-only ------------------------------------------
 # INTERFACE library => no MCU headers can leak in, and it is exercised entirely
-# by the host harness (invariant #1).
+# by the host harness (invariant #1). Contract types, decimal conversion, the
+# phase-1 book, the Anvil adapter logic and the publish seam all live here.
 add_library(dc_engine INTERFACE)
 target_include_directories(dc_engine INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/engine/include)
 target_compile_features(dc_engine INTERFACE cxx_std_20)
 
-# --- vendored third-party (harness only) -------------------------------------
+# --- invariant #1, enforced rather than asserted ------------------------------
+# One generated TU per engine header, each including only that header. It fails
+# the build if a header stops being self-contained, and — because the host has no
+# ESP-IDF/FreeRTOS/Arduino headers to find — it fails the build the moment one
+# leaks into engine/. "engine/ builds on the host" stops being a claim a session
+# has to remember to check.
+file(GLOB_RECURSE DC_ENGINE_HEADERS CONFIGURE_DEPENDS
+  RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/engine/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/engine/include/*.hpp)
+set(DC_HEADER_CHECK_TUS "")
+foreach(hdr ${DC_ENGINE_HEADERS})
+  string(REGEX REPLACE "[/.]" "_" tu_name "${hdr}")
+  set(tu "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${tu_name}.cpp")
+  file(WRITE "${tu}" "#include <${hdr}>\n")
+  list(APPEND DC_HEADER_CHECK_TUS "${tu}")
+endforeach()
+add_library(dc_engine_header_check OBJECT ${DC_HEADER_CHECK_TUS})
+target_link_libraries(dc_engine_header_check PRIVATE dc_engine dc_warnings)
+
+# --- vendored third-party (harness + host adapter parser) --------------------
 # nlohmann/json + doctest, included as SYSTEM so -Werror does not police them.
 add_library(dc_vendor INTERFACE)
 target_include_directories(dc_vendor SYSTEM INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/harness/third_party)
 
-# --- harness support library: replay-trace reader ----------------------------
-# nlohmann/json is heavyweight; compile it in this one TU and link it into both
-# executables.
-add_library(dc_harness STATIC harness/src/trace.cpp)
+# --- Anvil frame parser: the HOST implementation of the adapter's parse seam --
+# depthcharge::anvil::parse_anvil_frame is declared in engine/include and
+# implemented twice: here with nlohmann/json (desk-side, allocates, exhaustively
+# correct), and — from M3 — in firmware/ with a streaming allocation-free parser
+# (invariant #7). Everything else in the adapter is shared header code, so the
+# swap is exactly this one target. Keeping it a separate library is what makes
+# that claim checkable: nothing else in the build may link dc_vendor and land on
+# the target.
+add_library(dc_engine_anvil STATIC engine/src/anvil/anvil_frame_nlohmann.cpp)
+target_link_libraries(dc_engine_anvil
+  PUBLIC dc_engine
+  PRIVATE dc_vendor dc_warnings)
+
+# --- harness support library --------------------------------------------------
+# Trace reader, replay driver (trace -> adapter -> book -> DisplaySnapshot) and
+# the console ladder. nlohmann is heavyweight; it is compiled in trace.cpp and
+# the Anvil parser TU only.
+add_library(dc_harness STATIC
+  harness/src/trace.cpp
+  harness/src/replay_driver.cpp
+  harness/src/console_ladder.cpp)
 target_include_directories(dc_harness PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/harness/include)
 target_link_libraries(dc_harness
-  PUBLIC dc_engine
+  PUBLIC dc_engine dc_engine_anvil
   PRIVATE dc_vendor dc_warnings)
 
 # --- executables -------------------------------------------------------------
 add_executable(dc_replay harness/src/dc_replay_main.cpp)
 target_link_libraries(dc_replay PRIVATE dc_harness dc_warnings)
 
-add_executable(dc_tests harness/tests/dc_tests.cpp)
+add_executable(dc_ladder harness/src/dc_ladder_main.cpp)
+target_link_libraries(dc_ladder PRIVATE dc_harness dc_warnings)
+find_package(Threads REQUIRED)
+target_link_libraries(dc_ladder PRIVATE Threads::Threads)
+
+add_executable(dc_tests
+  harness/tests/dc_tests.cpp
+  harness/tests/alloc_probe.cpp
+  harness/tests/test_decimal.cpp
+  harness/tests/test_anvil_adapter.cpp
+  harness/tests/test_book.cpp
+  harness/tests/test_console_ladder.cpp
+  harness/tests/test_replay_goldens.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
 target_link_libraries(dc_tests PRIVATE dc_harness dc_vendor dc_warnings)
@@ -63,3 +112,11 @@ add_test(NAME dc_replay_baseline
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
 add_test(NAME dc_replay_reconnect
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
+# The ladder runs end-to-end on both traces: a clean exit means the whole chain
+# (parse -> adapt -> adopt -> publish -> draw) survived every committed frame.
+add_test(NAME dc_ladder_baseline
+  COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson
+          --no-color)
+add_test(NAME dc_ladder_reconnect
+  COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson
+          --no-color)

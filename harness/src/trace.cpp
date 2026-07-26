@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <fstream>
+#include <memory>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -177,6 +179,165 @@ TraceStats read_trace(const std::string& path) {
 TraceStats read_trace_text(std::string_view text, const std::string&) {
     std::istringstream in{std::string(text)};
     return parse_lines(in);
+}
+
+// --- streaming reader --------------------------------------------------------
+
+namespace {
+
+// [start, end) of the JSON object beginning at `start`, or npos if unbalanced.
+std::size_t object_end(std::string_view s, std::size_t start) noexcept {
+    std::size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t i = start; i < s.size(); ++i) {
+        const char c = s[i];
+        if (in_string) {
+            if (escaped) { escaped = false; }
+            else if (c == '\\') { escaped = true; }
+            else if (c == '"') { in_string = false; }
+            continue;
+        }
+        if (c == '"') { in_string = true; }
+        else if (c == '{') { ++depth; }
+        else if (c == '}' && --depth == 0) { return i + 1; }
+    }
+    return std::string_view::npos;
+}
+
+std::size_t skip_ws(std::string_view s, std::size_t i) noexcept {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) { ++i; }
+    return i;
+}
+
+}  // namespace
+
+std::string_view slice_frame_json(std::string_view line) noexcept {
+    // Walk the line once, tracking string state so that braces and the literal
+    // text "frame" inside a JSON string (an order id, a URL) cannot be mistaken
+    // for structure. Only depth-1 keys — a string immediately followed by ':' —
+    // are candidates.
+    std::size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    std::size_t str_start = std::string_view::npos;
+
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+                const bool is_frame_key =
+                    depth == 1 && line.substr(str_start, i - str_start) == "frame";
+                if (is_frame_key) {
+                    std::size_t j = skip_ws(line, i + 1);
+                    if (j < line.size() && line[j] == ':') {  // a key, not a value
+                        j = skip_ws(line, j + 1);
+                        if (j < line.size() && line[j] == '{') {
+                            const std::size_t end = object_end(line, j);
+                            if (end != std::string_view::npos) {
+                                return line.substr(j, end - j);
+                            }
+                        }
+                        return {};  // "frame" is present but not a JSON object
+                    }
+                }
+                str_start = std::string_view::npos;
+            }
+            continue;
+        }
+        switch (c) {
+            case '"':
+                in_string = true;
+                str_start = i + 1;
+                break;
+            case '{':
+            case '[':
+                ++depth;
+                break;
+            case '}':
+            case ']':
+                if (depth > 0) { --depth; }
+                break;
+            default:
+                break;
+        }
+    }
+    return {};
+}
+
+TraceReader::TraceReader(const std::string& path) {
+    auto file = std::make_unique<std::ifstream>(path, std::ios::binary);
+    if (!*file) {
+        throw std::runtime_error("cannot open trace: " + path);
+    }
+    owned_ = std::move(file);
+    in_ = owned_.get();
+    read_meta();
+}
+
+TraceReader::TraceReader(std::string_view text, InMemoryTag) {
+    owned_ = std::make_unique<std::istringstream>(std::string(text));
+    in_ = owned_.get();
+    read_meta();
+}
+
+void TraceReader::read_meta() {
+    while (std::getline(*in_, line_)) {
+        ++line_no_;
+        if (line_.find_first_not_of(" \t\r\n") == std::string::npos) { continue; }
+        json j;
+        try {
+            j = json::parse(line_);
+        } catch (const json::parse_error& e) {
+            throw TraceError(line_no_, std::string("invalid JSON: ") + e.what());
+        }
+        parse_meta(j, line_no_, meta_);
+        return;
+    }
+    throw TraceError(0, "empty trace (no metadata line)");
+}
+
+bool TraceReader::next(TraceFrame& out) {
+    while (std::getline(*in_, line_)) {
+        ++line_no_;
+        if (line_.find_first_not_of(" \t\r\n") == std::string::npos) { continue; }
+
+        json j;
+        try {
+            j = json::parse(line_);
+        } catch (const json::parse_error& e) {
+            throw TraceError(line_no_, std::string("invalid JSON: ") + e.what());
+        }
+        if (!j.is_object()) {
+            throw TraceError(line_no_, "frame line is not a JSON object");
+        }
+        const auto rx_it = j.find("rx_ns");
+        if (rx_it == j.end() || !rx_it->is_number_integer()) {
+            throw TraceError(line_no_, "frame line missing integer rx_ns");
+        }
+        const auto fr_it = j.find("frame");
+        if (fr_it == j.end() || !fr_it->is_object()) {
+            throw TraceError(line_no_, "frame line missing object 'frame'");
+        }
+
+        const std::string_view verbatim = slice_frame_json(line_);
+        if (verbatim.empty()) {
+            throw TraceError(line_no_, "could not slice verbatim 'frame' text");
+        }
+
+        ++frame_index_;
+        out.index = frame_index_;
+        out.line_no = line_no_;
+        out.rx_ns = rx_it->get<std::int64_t>();
+        out.frame_json = verbatim;
+        return true;
+    }
+    return false;
 }
 
 }  // namespace dc::harness

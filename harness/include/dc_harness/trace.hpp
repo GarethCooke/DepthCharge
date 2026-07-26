@@ -14,12 +14,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <istream>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
 namespace dc::harness {
+
+// Disambiguates TraceReader's "path" and "trace text" constructors, both of
+// which take a string.
+struct InMemoryTag {};
+inline constexpr InMemoryTag in_memory{};
 
 // Metadata parsed from line 1. The four *_present flags track the M0-required
 // fields; `complete()` is the golden the tests assert.
@@ -98,5 +105,51 @@ TraceStats read_trace(const std::string& path);
 // Same, over in-memory text (for tests that exercise malformed inputs without
 // fixture files). `name` is only used in error context.
 TraceStats read_trace_text(std::string_view text, const std::string& name = "<text>");
+
+// ---------------------------------------------------------------------------
+// Streaming reader (M1): hands frames to the adapter one at a time.
+//
+// read_trace() above answers "what is in this file"; this answers "replay it".
+// The distinction that matters is `frame_json`: it is the VERBATIM wire text,
+// sliced out of the capture line, never re-serialised. The adapter under test
+// must see exactly the bytes the server sent — key order, spacing and all —
+// or the harness would be validating a parser against its own output.
+// ---------------------------------------------------------------------------
+
+struct TraceFrame {
+    std::size_t index = 0;      // 1-based frame ordinal (metadata line excluded)
+    std::size_t line_no = 0;    // 1-based line in the file
+    std::int64_t rx_ns = 0;     // capture-tool monotonic clock
+    std::string_view frame_json;  // borrowed; valid until the next next() call
+};
+
+class TraceReader {
+public:
+    explicit TraceReader(const std::string& path);            // from disk
+    TraceReader(std::string_view text, InMemoryTag);          // from memory
+
+    const TraceMeta& meta() const noexcept { return meta_; }
+    std::size_t frames_read() const noexcept { return frame_index_; }
+
+    // Advance to the next frame. Returns false at end of trace. Throws
+    // TraceError with the line number on a malformed line.
+    bool next(TraceFrame& out);
+
+private:
+    void read_meta();
+
+    std::unique_ptr<std::istream> owned_;
+    std::istream* in_ = nullptr;
+    std::string line_;
+    TraceMeta meta_;
+    std::size_t line_no_ = 0;
+    std::size_t frame_index_ = 0;
+};
+
+// Slice the verbatim value of the top-level "frame" key out of a capture line.
+// Returns an empty view if the key is absent or the value is not a JSON object.
+// String-aware (a brace inside "makerId" cannot fool it), which is why this is
+// a scanner and not a find('{').
+std::string_view slice_frame_json(std::string_view line) noexcept;
 
 }  // namespace dc::harness

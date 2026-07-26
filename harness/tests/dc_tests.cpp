@@ -1,6 +1,15 @@
-// dc_tests — DepthCharge M0 golden tests (doctest, wired to ctest).
+// dc_tests — doctest entry point + the M0 trace-structure goldens.
 //
-// First goldens for the project: the committed replay traces parse, their
+// The rest of the suite lives beside this file, one TU per concern:
+//   test_decimal.cpp         exact decimal <-> integer ticks (invariant #3)
+//   test_anvil_adapter.cpp   wire frames -> FeedEvents (invariant #2)
+//   test_book.cpp            phase-1 book, stale state machine, publish seam
+//   test_console_ladder.cpp  stale cannot look live (invariant #5)
+//   test_replay_goldens.cpp  both traces end to end — M1's definition of done
+// This TU keeps DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; the others just include the
+// header.
+//
+// M0 goldens, below: the committed replay traces parse, their
 // per-kind frame counts match pinned expectations, the metadata line is present
 // and complete, and the two headline empirical findings from the M0 capture are
 // locked in as executable assertions:

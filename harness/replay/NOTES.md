@@ -167,3 +167,69 @@ Captured with a client-initiated reconnect and a **4 s simulated drop**
   query param appeared not to cap the deployed response. DepthCharge does not use
   the REST book (it subscribes to the WS stream), so this is noted only for
   completeness.
+
+---
+
+## M1 addendum — what the adapter needed and the wire did not carry
+
+Added while building the Anvil adapter (M1, 2026-07-26). Measurements are over
+both committed slices *and* both full 5-minute local captures.
+
+### There is no tick size or qty step anywhere in the protocol
+
+Searched the vendored protocol and every captured frame: no `tickSize`,
+`qtyStep`, `increment` or equivalent, on any frame kind or REST endpoint. Prices
+are decimal strings and quantities are whole numbers, and that is all a client is
+told. **This is a genuine gap in the venue metadata, not an oversight in the
+capture** — flagged rather than guessed, as the M1 brief required.
+
+What was measured instead, as the basis for a *declared* scale:
+
+| Fractional digits in a price string | baseline (full) | reconnect (full) |
+| ---: | ---: | ---: |
+| 0 (`"10"`) | 414 | 366 |
+| 2 | 6,542 | 3,727 |
+| 3 | 70,266 | 30,060 |
+| 4 | 662,465 | 260,630 |
+| **5 or more** | **0** | **0** |
+
+So `price_decimals = 4` (tick 0.0001) represents every price Anvil has ever put
+on this wire exactly, and quantities are integers (`qty_step = 1`; largest level
+qty seen 512, `MAX_QTY` is 10⁹ per protocol §1). DepthCharge declares that in
+`SymbolSpec` and the adapter **verifies** it per price: a 5-decimal price yields
+`ParseStatus::BadPrice` and is counted, never rounded. If Anvil ever quotes finer,
+the first such frame is loudly dropped instead of silently corrupting the ladder.
+
+*Backlog item for Anvil (not a v1 blocker):* publish tick size / qty step in
+`GET /api/health` or a symbols endpoint, so a client can configure itself rather
+than being told out of band.
+
+### Inter-frame silence is the only disconnect signal — 1000 ms is the line
+
+The reconnect capture has no marker: just a hole. Measured across **6,494 frames**
+of capture:
+
+| | median gap | max healthy gap | the drop |
+| --- | ---: | ---: | ---: |
+| baseline (4,658 frames, 5 min) | 68.6 ms | **640 ms** | — |
+| reconnect (1,836 frames) | 68.7 ms | 542 ms | **4,468 ms** |
+
+The worst healthy silence is 640 ms; nothing else in either capture exceeds
+1 s. A **1000 ms RX watchdog** therefore sits 1.6× above the loudest healthy
+quiet and 4.5× below the observed drop — a decisive separation, not a tuned
+threshold. `ReplayOptions::disconnect_gap_ms` carries it host-side; the M3
+firmware net task implements the same number as an RX watchdog beside the real
+socket-close callback.
+
+### Two behaviours that look like bugs and are not
+
+- **A `book` frame may carry pre-trade state.** `trade` frames stream
+  individually while `book` frames are coalesced on the ~12 Hz tick, so a book
+  published just after a print can still show the filled level. The ladder can
+  therefore lag a trade it has already flashed, by up to one refresh (~80 ms).
+  The streams are independent and phase-1 adopts the latest of each; **no later
+  session should try to reconcile them.**
+- **`summary` frames arrive on a single-ticker socket.** They are cross-ticker
+  and broadcast to everyone (protocol §3.5). The M1 adapter parses, counts and
+  **ignores** them (`summary_ignored` in the replay report: 181 baseline, 172
+  reconnect). They are the input to the M7 board mode, not the ladder.
