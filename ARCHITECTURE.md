@@ -181,8 +181,9 @@ Contract semantics:
 - **Anvil stays untouched in v1.** Known non-blockers live on Anvil's own backlog: chaos
   flag (deliberate frame drop/delay for deterministic gap testing), L2 incremental feed
   (DepthCharge becomes its test client when built), feeder realism. The WS `Origin`
-  allowlist question is handled firmware-side first (send a nominated `Origin` header);
-  it becomes an Anvil config change only if that proves insufficient.
+  allowlist question is closed: M0 confirmed the deployed upgrade accepts a client sending
+  no `Origin` header, so neither the capture tool nor the firmware needs one and no Anvil
+  config change is required.
 - **Crypto venues for the real-data leg.** 24/7 markets suit a permanent desk object;
   free unauthenticated L2 depth; Anvil's synthetic flow is irrelevant to DepthCharge's
   correctness because the panel consumes wire semantics, not market truth.
