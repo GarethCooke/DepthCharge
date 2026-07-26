@@ -190,9 +190,14 @@ TEST_CASE("malformed input is counted and dropped, never turned into a Gap") {
                      sink);                                  // bogus aggressor
     adapter.on_frame(R"({"type":"book","ticker":101,"bids":[{"price":1.0,"qty":1}],)"
                      R"("asks":[]})", sink);                 // price as a number
+    adapter.on_frame(R"({"type":"book","ticker":101,)"
+                     R"("bids":[{"price":"1.0","qty":-5}],"asks":[]})",
+                     sink);                                  // negative resting size
+    adapter.on_frame(R"({"type":"trade","ticker":101,"price":"1.0","qty":-1,"aggr":"B"})",
+                     sink);                                  // negative fill size
 
     CHECK(sink.events.empty());
-    CHECK(adapter.stats().parse_errors == 7);
+    CHECK(adapter.stats().parse_errors == 9);
     CHECK(adapter.stats().events_out == 0);
     // A dropped frame is not a stale panel: Anvil republishes the whole book
     // every ~80 ms, so the next frame heals it.

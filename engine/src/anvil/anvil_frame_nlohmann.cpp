@@ -72,6 +72,13 @@ bool qty_to_steps(const json& node, const SymbolSpec& spec, Qty& out,
         return false;
     }
     const std::int64_t raw = node.get<std::int64_t>();
+    // A negative resting size or fill size is not a quantity, and the adapter is
+    // the quarantine boundary (invariant #2): reject it here rather than let a
+    // nonsense level reach the book and get drawn.
+    if (raw < 0) {
+        status = ParseStatus::BadShape;
+        return false;
+    }
     if (raw % spec.qty_step != 0) {
         status = ParseStatus::BadShape;
         return false;
