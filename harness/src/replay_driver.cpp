@@ -1,6 +1,8 @@
 // dc_harness/replay_driver.cpp — see replay_driver.hpp for the design notes.
 #include "dc_harness/replay_driver.hpp"
 
+#include <algorithm>
+
 #include <depthcharge/feed_event.hpp>
 
 namespace dc::harness {
@@ -74,12 +76,24 @@ private:
         const std::int64_t watchdog_ns =
             prev_rx_ns_ + static_cast<std::int64_t>(opts_.disconnect_gap_ms * 1e6);
 
-        StaleEpisode ep;
-        ep.reason = GapReason::Disconnect;
-        ep.frame_before = frames_;
-        ep.watchdog_rx_ns = watchdog_ns;
-        ep.observed_gap_ms = gap_ms;
-        episodes_.push_back(ep);
+        // Only a Snapshot clears stale, and frames that emit no event (summary)
+        // or no re-baseline (trade) cannot. So a hole arriving while the panel
+        // is already grey continues the same outage: fold it in rather than
+        // opening a second window that would report the first as never cleared
+        // and time the grey period from the wrong start.
+        if (!episodes_.empty() && !episodes_.back().cleared) {
+            StaleEpisode& open = episodes_.back();
+            ++open.gap_events;
+            open.observed_gap_ms = std::max(open.observed_gap_ms, gap_ms);
+        } else {
+            StaleEpisode ep;
+            ep.reason = GapReason::Disconnect;
+            ep.frame_before = frames_;
+            ep.watchdog_rx_ns = watchdog_ns;
+            ep.observed_gap_ms = gap_ms;
+            ep.gap_events = 1;
+            episodes_.push_back(ep);
+        }
 
         current_frame_ = 0;  // no frame arrived; this event is the transport's
         current_rx_ns_ = watchdog_ns;

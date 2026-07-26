@@ -65,14 +65,21 @@ struct ReplayOptions {
 
 // One stale window, opened by a Gap and closed by the Snapshot that re-baselined
 // the book. This is the invariant-5 evidence the M1 goldens assert on.
+//
+// An episode spans the whole grey period, not one watchdog firing. A second hole
+// while the panel is already grey is the same outage continuing — the book has
+// not been re-baselined in between — so it folds into the open episode and bumps
+// `gap_events`. Opening a second episode instead would leave the first one
+// permanently "uncleared" and measure `stale_ms` from the wrong start.
 struct StaleEpisode {
-    depthcharge::Seq gap_seq = 0;         // synthesised seq of the Gap event
+    depthcharge::Seq gap_seq = 0;         // synthesised seq of the first Gap event
     depthcharge::GapReason reason{};
     std::size_t frame_before = 0;         // last frame received before the hole
     std::size_t cleared_frame = 0;        // frame whose Snapshot cleared it (0 = never)
+    std::size_t gap_events = 0;           // watchdog firings folded into this window
     std::int64_t watchdog_rx_ns = 0;      // when the gap was raised (virtual time)
     std::int64_t cleared_rx_ns = 0;
-    double observed_gap_ms = 0.0;         // the whole hole in the capture
+    double observed_gap_ms = 0.0;         // the largest hole in the capture
     double stale_ms = 0.0;                // how long the panel would have been grey
     bool cleared = false;
 };

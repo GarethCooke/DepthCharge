@@ -137,8 +137,12 @@ void print_report(const Args& args, const ReplayResult& r) {
     std::printf("watchdog  : %.0f ms  ->  %zu stale episode(s)\n",
                 args.replay.disconnect_gap_ms, r.episodes.size());
     for (const StaleEpisode& ep : r.episodes) {
-        std::printf("            after frame %zu: %.0f ms silence; grey for %.0f ms; ",
-                    ep.frame_before, ep.observed_gap_ms, ep.stale_ms);
+        std::printf("            after frame %zu: %.0f ms silence", ep.frame_before,
+                    ep.observed_gap_ms);
+        if (ep.gap_events > 1) {
+            std::printf(" (%zu watchdog firings, no resync between)", ep.gap_events);
+        }
+        std::printf("; grey for %.0f ms; ", ep.stale_ms);
         if (ep.cleared) {
             std::printf("cleared by the snapshot in frame %zu\n", ep.cleared_frame);
         } else {

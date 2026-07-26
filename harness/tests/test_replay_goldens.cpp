@@ -308,6 +308,40 @@ TEST_CASE("the watchdog threshold is what decides a disconnect, and it is tunabl
     }
 }
 
+TEST_CASE("consecutive outages with no resync between them are one grey window") {
+    // Frame 2 and 3 are `summary` frames: they emit no event, so they cannot
+    // clear stale — the panel is grey continuously from the first watchdog to
+    // the snapshot in frame 4, through two watchdog firings.
+    const std::string trace =
+        R"({"captured_at":"t","url":"u","ticker":101,"tool_version":"0.1.0"})"
+        "\n"
+        R"({"rx_ns":1000000000,"frame":{"type":"book","seq":1,"ticker":101,)"
+        R"("bids":[{"price":"10.0","qty":5,"orders":1}],"asks":[]}})"
+        "\n"
+        R"({"rx_ns":7000000000,"frame":{"type":"summary","seq":2,"tickers":[]}})"
+        "\n"
+        R"({"rx_ns":7500000000,"frame":{"type":"summary","seq":3,"tickers":[]}})"
+        "\n"
+        R"({"rx_ns":14000000000,"frame":{"type":"snapshot","seq":4,"ticker":101,)"
+        R"("bids":[{"price":"10.002","qty":7,"orders":1}],"asks":[]}})"
+        "\n";
+
+    const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions{});
+
+    REQUIRE(r.episodes.size() == 1);
+    const auto& ep = r.episodes.front();
+    CHECK(ep.gap_events == 2);            // two watchdog firings, one outage
+    CHECK(ep.frame_before == 1);          // the window starts at the first hole
+    CHECK(ep.cleared);
+    CHECK(ep.cleared_frame == 4);
+    CHECK(ep.observed_gap_ms == doctest::Approx(6500.0));  // the larger hole
+    // Grey from the first watchdog (t=2 s) to the resync (t=14 s) — measuring
+    // from the *second* watchdog would understate it by half.
+    CHECK(ep.stale_ms == doctest::Approx(12000.0));
+    CHECK(r.book.gaps == 2);              // the stats still count both firings
+    CHECK(r.final_snapshot.live());
+}
+
 TEST_CASE("an outage that never resyncs leaves the panel stale to the last frame") {
     const std::string trace =
         R"({"captured_at":"t","url":"u","ticker":101,"tool_version":"0.1.0"})"
