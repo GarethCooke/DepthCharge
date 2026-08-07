@@ -32,7 +32,6 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
-#include <vector>
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
 
