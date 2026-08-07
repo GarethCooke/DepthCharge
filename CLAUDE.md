@@ -11,6 +11,9 @@ engine, host-first development, replay files as ground truth.
 2. `ROADMAP.md` — find the milestone marked **Next**.
 3. That milestone's brief in `docs/briefs/` — your actual work order, including its
    session log (the previous session's hand-off).
+4. `docs/DESIGN.html` — how the code that exists today actually fits together: class and
+   sequence diagrams drawn from source, plus §08's list of where the design is under
+   strain. Orientation, not law — `ARCHITECTURE.md` still wins on any disagreement.
 
 ## Working rules
 
@@ -38,7 +41,10 @@ diff. Commit messages: imperative, scoped, e.g. `engine: add FeedEvent contract 
 2. If a Definition-of-done box is now true, tick it; if the milestone completed, tick it
    in `ROADMAP.md` and mark the next one **Next**.
 3. Any decision with architectural weight goes to `ARCHITECTURE.md` §9, not just the log.
-4. Leave the tree building and ctest green. A red tree must be the log's first line.
+4. Update `docs/DESIGN.html` if the change touched anything it draws: a class member, a
+   call order, a boundary, a strain point in §08, or the milestone status strip. A design
+   doc that drifts is worse than none, because it is believed. Its §09 lists the triggers.
+5. Leave the tree building and ctest green. A red tree must be the log's first line.
 
 ## Boundaries
 
