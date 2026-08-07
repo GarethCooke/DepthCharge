@@ -235,8 +235,11 @@ addition).
 
 ## Definition of done
 
-☐ **Stage A:** `SnapshotChannel` is a wait-free double buffer/seqlock; public API unchanged;
+☑ **Stage A:** `SnapshotChannel` is a wait-free double buffer/seqlock; public API unchanged;
   host concurrency test + a committed clean ThreadSanitizer report; goldens unchanged.
+  *(Done 2026-08-07. Built as a three-slot mailbox rather than two slots or a seqlock —
+  both of those are a data race on `DisplaySnapshot` and could not have produced a clean
+  report; measured and recorded in ARCHITECTURE §9 and the session log.)*
 ☐ **Stage B:** streaming allocation-free `parse_anvil_frame` links on host and passes
   `test_replay_goldens.cpp` **unchanged** on both traces; alloc probe shows zero heap in
   steady state.
@@ -329,3 +332,83 @@ while the answer is still known.
 **Exact next step.** Stage A — `SnapshotChannel` becomes the wait-free double buffer /
 seqlock, plus the host concurrency test and a committed clean TSan report. Nothing in this
 remediation touched `snapshot_channel.hpp`.
+
+### 2026-08-07 · Opus 5 · Stage A complete — the channel is a real cross-core mailbox
+
+**Done.** `SnapshotChannel`'s internals are now a wait-free SPSC mailbox; public API
+byte-identical. New `harness/tests/test_snapshot_channel.cpp` (6 test cases), a shared
+`channel_stress.hpp`, a standalone `tsan_workload.cpp`, `harness/tsan.sh`, and a committed
+clean report at `harness/tests/tsan_clean.txt`. ctest 5/5 → 6/6 green; doctest 63 → 70 cases,
+6,970 assertions. **All four committed-trace outputs are byte-identical** (`dc_ladder` and
+`dc_replay` × baseline and reconnect, SHA-256 before and after): the goldens did not move, so
+by this brief's own rule the change stayed in scope.
+
+**Three slots, not two — and this is the decision to argue with.** The brief offered "two
+slots + an atomic version, or a classic seqlock". Both were rejected in favour of three
+slots and one atomic word, with `publish`/`consume` each swapping their slot in with a single
+`exchange`. The reason is that both offered designs let the reader copy a slot the writer is
+writing and then *discard* the result — the tear happens; the version check only stops it
+being drawn. That was measured rather than asserted, because the distinction matters:
+
+- a seqlock of exactly that shape delivered **4.8 M frames with zero tears reaching the
+  consumer** (x86, GCC 10, `-O2`). It is not broken on today's compiler.
+- ThreadSanitizer flagged it on the **first frame** — `Read of size 8` in `consume` against
+  `previous write of size 8` in `publish`.
+
+So the objection is not "a seqlock misbehaves"; it is that the copy *is* a data race, stage
+A's DoD asks for a clean TSan report, and the only way to have both would be a suppression
+sitting on the single cross-core path — on a compiler generation (xtensa GCC 8.4) nobody here
+controls. Three slots make the writer's, reader's and ready slots always three distinct
+objects, so there is no race to suppress. Two slots cannot achieve that: the reader holds one,
+so a writer alternating across two must eventually land on the one being read. Recorded in
+ARCHITECTURE §9 — §2 and §5 still say "seqlock/double buffer", and they should be read as
+naming the contract, not the storage.
+
+**Measured cost, on the target toolchain (xtensa GCC 8.4, `-Os`).** `.data` 1,176 → 3,528 B
+(+2,352, 0.45% of the S3's 512 KB internal SRAM); `.text` `publish` 30 → 87 B, `consume`
+39 → 96 B (+114 total). The exchange lowers to an `S32C1I` CAS retry with `memw` fences —
+disassembled, not assumed — and to `xchg` on x86. `std::atomic<uint32_t>::is_always_lock_free`
+is `static_assert`ed, so `dc_engine_target_check` now proves the one platform fact the design
+rests on rather than the header claiming it.
+
+**Wait-freedom, stated honestly.** `publish` is a fixed-size copy plus one `exchange`: no
+loop, no lock, nothing the reader can hold. On the LX7 that exchange is a bounded CAS retry
+whose only contender is the single reader's own one-shot exchange — bounded, not formally
+wait-free, and the header says so in those words rather than claiming more.
+
+**No `Gap{Overflow}`, and why that is not a gap in the invariant.** Invariant #4 says overflow
+"reports it as `Gap{Overflow}`". A latest-value mailbox has no queue to overflow: a slow
+reader loses intermediate frames and is handed the newest, which is what a ladder wants, and
+`DisplaySnapshot`'s eight-deep trade ring carries the prints across the skip. `Gap{Overflow}`
+stays reserved for a bounded queue that actually drops, if one ever exists.
+
+**Mutation-verified, both directions.** Pinning every slot index to 0 (i.e. M1's single slot)
+fails the two-thread test at version 12 and the workload at version 46. Letting the writer
+rotate correctly while the reader never adopts the slot it was handed fails 3 of 3 test cases
+— including the *single-threaded* interleaving one, which is reproducible. A test that only
+compared versions would have passed both mutants, which is why `channel_stress.hpp` stamps
+every field of the 1,168-byte frame from its own version and names the field that tore.
+
+**Review found one real defect in my own test**, now fixed: the two-thread consumer only
+evaluated its 30 s deadline on the *empty-poll* branch, so a mutant that returned `true`
+forever with a frozen version would have hung ctest rather than failed it. The deadline is now
+sampled every 4,096 iterations regardless of outcome. `dc_tests` and `dc_channel_race` also
+gained an explicit 120 s ctest `TIMEOUT`: a blocked writer does not fail an assertion, it
+hangs, and the useful report is ctest saying so in a minute rather than in 25.
+
+**Two things the harness had to change.** `alloc_probe`'s counter is now
+`std::atomic<std::size_t>` — `std::thread` startup allocates, and a plain counter would have
+made every threaded test in the binary UB, which is exactly the defect the channel was rebuilt
+to avoid. And `harness/tsan.sh` compiles the workload TU **directly** rather than through
+CMake: TSan needs Linux, this desk is Windows/MinGW, and the Linux side (WSL) has no CMake.
+Ubuntu 20.04's gcc-9 is also unusable here (`libtsan_preinit.o` missing against libtsan0
+10.5.0); the run is on **WSL Debian, g++ 10.2.1**. The same TU builds without the sanitiser in
+the host build and runs as the `dc_channel_race` ctest, so it cannot rot between TSan runs.
+
+**Open for Stage C, unchanged and still worth pinning:** `hardware/BRINGUP.md` does not record
+which PlatformIO platform M2's first-light sketch used, though this brief says to reuse it.
+
+**Exact next step.** Stage B — the streaming allocation-free `parse_anvil_frame`, linked in
+place of `dc_engine_anvil`, passing `test_replay_goldens.cpp` unchanged on both traces, with
+the alloc probe extended over it. Stage A and Stage B are independent; nothing here touched
+the parser seam.

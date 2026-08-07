@@ -1,0 +1,17 @@
+# dc_tsan_workload — ThreadSanitizer run (DepthCharge M3 stage A)
+# subject:  depthcharge::SnapshotChannel — engine/include/depthcharge/snapshot_channel.hpp
+# workload: harness/tests/tsan_workload.cpp (one feed thread, one render thread)
+# toolchain: /usr/bin/g++ (g++ (Debian 10.2.1-6) 10.2.1 20210110)
+# TSAN_OPTIONS=halt_on_error=1 exitcode=66 second_deadlock_stack=1
+# ASLR: setarch -R
+# duration: 10s
+# 2026-08-07T20:26:45Z
+-----------------------------------------------------------------------
+dc_tsan_workload: DisplaySnapshot=1168 B  SnapshotChannel=3528 B  5000 ms/phase
+phase tight        published=1229235    delivered=734286    empty_polls=1384255
+                   versions delivered 95 .. 1229235
+phase slow-reader  published=1499315    delivered=17322     empty_polls=1
+                   versions delivered 74 .. 1499315
+dc_tsan_workload: OK
+-----------------------------------------------------------------------
+dc_tsan_workload exit = 0

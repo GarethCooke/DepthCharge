@@ -135,13 +135,16 @@ target_link_libraries(dc_harness
   PRIVATE dc_vendor dc_warnings)
 
 # --- executables -------------------------------------------------------------
+# Threads: the ladder's paced playback, and from M3 stage A the two-thread
+# SnapshotChannel tests. engine/ itself needs none — the channel is std::atomic
+# only (invariant #1), and it is the harness that supplies the second thread.
+find_package(Threads REQUIRED)
+
 add_executable(dc_replay harness/src/dc_replay_main.cpp)
 target_link_libraries(dc_replay PRIVATE dc_harness dc_warnings)
 
 add_executable(dc_ladder harness/src/dc_ladder_main.cpp)
-target_link_libraries(dc_ladder PRIVATE dc_harness dc_warnings)
-find_package(Threads REQUIRED)
-target_link_libraries(dc_ladder PRIVATE Threads::Threads)
+target_link_libraries(dc_ladder PRIVATE dc_harness dc_warnings Threads::Threads)
 
 add_executable(dc_tests
   harness/tests/dc_tests.cpp
@@ -150,10 +153,23 @@ add_executable(dc_tests
   harness/tests/test_anvil_adapter.cpp
   harness/tests/test_book.cpp
   harness/tests/test_console_ladder.cpp
-  harness/tests/test_replay_goldens.cpp)
+  harness/tests/test_replay_goldens.cpp
+  harness/tests/test_snapshot_channel.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
-target_link_libraries(dc_tests PRIVATE dc_harness dc_vendor dc_warnings)
+target_link_libraries(dc_tests PRIVATE dc_harness dc_vendor dc_warnings Threads::Threads)
+
+# --- the ThreadSanitizer workload, built here without the sanitiser -----------
+# harness/tsan.sh compiles this same TU with -fsanitize=thread on a Linux box and
+# commits the report. TSan needs Linux; this project's desk is Windows/MinGW, so
+# without a plain build of it here the workload would only ever be compiled by
+# the machine that is hardest to reach and would rot between M3 sessions. Run as
+# a ctest it is a second, differently-shaped concurrency check: doctest's suite
+# asserts, this one races for a second and reports.
+add_executable(dc_tsan_workload harness/tests/tsan_workload.cpp)
+target_include_directories(dc_tsan_workload PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/harness/tests)
+target_link_libraries(dc_tsan_workload PRIVATE dc_engine dc_warnings Threads::Threads)
 
 # --- tests -------------------------------------------------------------------
 enable_testing()
@@ -170,3 +186,13 @@ add_test(NAME dc_ladder_baseline
 add_test(NAME dc_ladder_reconnect
   COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson
           --no-color)
+# One second of the real two-thread race, uninstrumented. The TSan run in
+# harness/tsan.sh is the same binary with the sanitiser on; this keeps the
+# workload compiling and passing on every host build in between.
+add_test(NAME dc_channel_race COMMAND dc_tsan_workload 1)
+
+# Explicit timeouts on the two targets that now run threads. A hand-off bug that
+# blocks the writer does not fail an assertion — it hangs — so the useful report
+# is ctest saying "Timeout" in a minute rather than inheriting the 1500 s
+# default and looking like the machine died.
+set_tests_properties(dc_tests dc_channel_race PROPERTIES TIMEOUT 120)

@@ -6,11 +6,18 @@
 // engine feed path is over-aligned, so the measurement is unaffected.
 #include "alloc_probe.hpp"
 
+#include <atomic>
 #include <cstdlib>
 #include <new>
 
 namespace {
-std::size_t g_allocations = 0;
+// Atomic since M3 stage A: test_snapshot_channel.cpp runs worker threads, and
+// std::thread's own startup allocates. A plain counter would make every
+// threaded test in the binary undefined behaviour — the exact defect the
+// channel it is measuring was rebuilt to avoid. Relaxed is enough: the counter
+// is only ever read on the main thread with the workers joined, so it needs to
+// be exact, not ordered against anything.
+std::atomic<std::size_t> g_allocations{0};
 
 void* checked_malloc(std::size_t n) {
     // malloc(0) may legitimately return nullptr; ask for a byte so the returned
@@ -21,30 +28,36 @@ void* checked_malloc(std::size_t n) {
 }  // namespace
 
 namespace dc::testing {
-std::size_t allocation_count() noexcept { return g_allocations; }
+std::size_t allocation_count() noexcept {
+    return g_allocations.load(std::memory_order_relaxed);
+}
 }  // namespace dc::testing
 
+namespace {
+void count_one() noexcept { g_allocations.fetch_add(1, std::memory_order_relaxed); }
+}  // namespace
+
 void* operator new(std::size_t n) {
-    ++g_allocations;
+    count_one();
     void* p = checked_malloc(n);
     if (p == nullptr) { throw std::bad_alloc(); }
     return p;
 }
 
 void* operator new[](std::size_t n) {
-    ++g_allocations;
+    count_one();
     void* p = checked_malloc(n);
     if (p == nullptr) { throw std::bad_alloc(); }
     return p;
 }
 
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
-    ++g_allocations;
+    count_one();
     return checked_malloc(n);
 }
 
 void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
-    ++g_allocations;
+    count_one();
     return checked_malloc(n);
 }
 
