@@ -133,7 +133,7 @@ void draw_bar(Row& row, Qty qty, Qty max_qty, std::size_t width, bool stale, con
 }  // namespace
 
 std::string format_px(depthcharge::PriceTicks px, std::int32_t decimals) {
-    char buf[40] = {};
+    char buf[depthcharge::kMaxFormattedChars] = {};
     const std::size_t n = depthcharge::format_scaled(px, decimals, buf, sizeof buf);
     return std::string(buf, n);
 }

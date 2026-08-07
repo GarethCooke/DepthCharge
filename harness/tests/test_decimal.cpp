@@ -6,6 +6,8 @@
 // compile time.
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -37,11 +39,34 @@ static_assert(parse_scaled("10.01234", 4).error == DecimalError::TooManyDecimals
 static_assert(parse_scaled("10.00001", 4).error == DecimalError::TooManyDecimals);
 
 std::string fmt(std::int64_t v, int decimals) {
-    char buf[40] = {};
+    char buf[depthcharge::kMaxFormattedChars] = {};
     return std::string(buf, format_scaled(v, decimals, buf, sizeof buf));
 }
 
 }  // namespace
+
+TEST_CASE("kMaxFormattedChars is the real bound, not a guessed round number") {
+    // format_scaled writes into a buffer of exactly this size and returns 0 if
+    // the result will not fit, so an under-sized constant would not corrupt
+    // memory — it would silently render every price as an empty string. These
+    // are the three shapes that actually reach the bound.
+    const std::string widest_int = fmt(INT64_MIN, 0);
+    const std::string widest_mixed = fmt(INT64_MIN, 18);      // 19 digits + '.' + '-'
+    const std::string widest_fraction = fmt(-1, 18);          // "-0." + 18 digits
+
+    CHECK(widest_int == "-9223372036854775808");
+    CHECK(widest_mixed == "-9.223372036854775808");
+    CHECK(widest_fraction == "-0.000000000000000001");
+
+    for (const std::string& s : {widest_int, widest_mixed, widest_fraction}) {
+        CHECK(s.size() <= depthcharge::kMaxFormattedChars);
+        CHECK_FALSE(s.empty());   // 0-length means it did not fit
+    }
+    // ...and the constant is not wastefully large either: something must reach
+    // within a character of it, or the derivation has drifted.
+    CHECK(std::max({widest_int.size(), widest_mixed.size(), widest_fraction.size()}) + 1 >=
+          depthcharge::kMaxFormattedChars);
+}
 
 TEST_CASE("parse_scaled: the shapes Anvil emits") {
     CHECK(parse_scaled("9.9972", 4).value == 99972);

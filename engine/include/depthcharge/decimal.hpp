@@ -40,13 +40,14 @@ struct DecimalParse {
     constexpr explicit operator bool() const noexcept { return ok(); }
 };
 
-namespace detail {
+// Longest string format_scaled can produce: the 19 digits of INT64_MIN's
+// magnitude, the '.', the leading '0' that makes an all-fraction value read
+// "0.9999" rather than ".9999", and the sign. Callers size their buffers from
+// this rather than from a guessed round number; test_decimal.cpp pins the
+// derivation against the three inputs that actually reach it.
+inline constexpr std::size_t kMaxFormattedChars = 22;
 
-constexpr std::int64_t pow10_i64(int n) noexcept {
-    std::int64_t v = 1;
-    for (int i = 0; i < n; ++i) { v *= 10; }
-    return v;
-}
+namespace detail {
 
 // v = v*10 + digit, guarding the multiply and the add. Returns false on overflow.
 constexpr bool mul_add_checked(std::int64_t& v, int digit) noexcept {
@@ -123,7 +124,7 @@ constexpr std::size_t format_scaled(std::int64_t value, int decimals, char* out,
                                     std::size_t cap) noexcept {
     if (out == nullptr || decimals < 0 || decimals > kMaxDecimals) { return 0; }
 
-    char buf[32] = {};
+    char buf[kMaxFormattedChars] = {};
     std::size_t n = 0;
     const bool negative = value < 0;
 

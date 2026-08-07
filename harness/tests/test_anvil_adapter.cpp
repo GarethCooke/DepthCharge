@@ -348,7 +348,7 @@ TEST_CASE("a book deeper than the engine carries is truncated at the tail and fl
         // Descending prices: 10.0000, 9.9999, ... so the *best* levels are the
         // ones that must survive.
         frame += R"({"price":")";
-        char buf[32] = {};
+        char buf[depthcharge::kMaxFormattedChars] = {};
         const auto n = depthcharge::format_scaled(
             100000 - static_cast<std::int64_t>(i), 4, buf, sizeof buf);
         frame.append(buf, n);
