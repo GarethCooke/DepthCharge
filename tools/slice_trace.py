@@ -25,6 +25,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import NamedTuple
+
+
+class Frame(NamedTuple):
+    """One capture line: the verbatim text plus the two fields slicing reads."""
+
+    raw: str
+    rx_ns: int
+    type: str | None
 
 
 def load(path: str):
@@ -33,33 +42,42 @@ def load(path: str):
     if not raw:
         sys.exit(f"empty trace: {path}")
     meta_line = raw[0]
-    frames = []  # (raw_text, rx_ns, type)
-    for line in raw[1:]:
+    frames = []
+    for line_no, line in enumerate(raw[1:], start=2):
         if not line.strip():
             continue
-        obj = json.loads(line)
-        frame = obj["frame"]
-        # frames are copied verbatim; only read type when present as an object
-        # (capture_anvil.py preserves whatever the server sent), mirroring its
-        # own isinstance guard so a non-object frame does not crash slicing.
-        ftype = frame.get("type") if isinstance(frame, dict) else None
-        frames.append((line, obj["rx_ns"], ftype))
+        # Line numbers in errors, so a malformed capture says where — the C++
+        # reader on the other half of this pipeline has always done so, and a
+        # bare KeyError traceback naming only this script was the odd one out.
+        try:
+            obj = json.loads(line)
+            frame = obj["frame"]
+            # frames are copied verbatim; only read type when present as an
+            # object (capture_anvil.py preserves whatever the server sent),
+            # mirroring its own isinstance guard so a non-object frame does not
+            # crash slicing.
+            ftype = frame.get("type") if isinstance(frame, dict) else None
+            frames.append(Frame(line, obj["rx_ns"], ftype))
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+            sys.exit(f"{path}: line {line_no}: malformed capture line ({exc})")
     return meta_line, frames
 
 
+def _between(frames, lo: int, hi: int):
+    """Verbatim text of every frame whose rx_ns falls in [lo, hi]."""
+    return [f.raw for f in frames if lo <= f.rx_ns <= hi]
+
+
 def slice_baseline(frames, window_s: float):
-    t0 = frames[0][1]
-    limit = t0 + int(window_s * 1e9)
-    return [raw for (raw, rx, _t) in frames if rx <= limit]
+    t0 = frames[0].rx_ns
+    return _between(frames, t0, t0 + int(window_s * 1e9))
 
 
 def slice_reconnect(frames, before_s: float, after_s: float):
-    resync = next((rx for (_r, rx, t) in frames[1:] if t == "snapshot"), None)
+    resync = next((f.rx_ns for f in frames[1:] if f.type == "snapshot"), None)
     if resync is None:
         sys.exit("no mid-stream snapshot found — not a reconnect capture?")
-    lo = resync - int(before_s * 1e9)
-    hi = resync + int(after_s * 1e9)
-    return [raw for (raw, rx, _t) in frames if lo <= rx <= hi]
+    return _between(frames, resync - int(before_s * 1e9), resync + int(after_s * 1e9))
 
 
 def main(argv=None) -> int:
