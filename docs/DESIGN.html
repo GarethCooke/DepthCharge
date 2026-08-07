@@ -360,9 +360,9 @@
   <div class="statusbar">
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
-    <span class="status amber">next <b>M3 — live Anvil on the panel</b></span>
-    <span class="status">first-party C++ <b>~4,250 lines</b></span>
-    <span class="status">drawn from source at <b>94c8df7</b></span>
+    <span class="status amber">in progress <b>M3 — live Anvil on the panel · stage A done</b></span>
+    <span class="status">first-party C++ <b>~5,000 lines</b></span>
+    <span class="status">drawn from source at <b>a56ccd6</b></span>
   </div>
 </header>
 
@@ -490,6 +490,7 @@
         <tr><td><code>dc_vendor</code></td><td>INTERFACE</td><td>nlohmann, doctest (SYSTEM)</td><td>no</td></tr>
         <tr><td><code>dc_harness</code></td><td>STATIC</td><td>trace, replay driver, ladder</td><td>no</td></tr>
         <tr><td><code>dc_replay</code> · <code>dc_ladder</code> · <code>dc_tests</code></td><td>EXE</td><td>host tooling and goldens</td><td>no</td></tr>
+        <tr><td><code>dc_tsan_workload</code></td><td>EXE</td><td>the two-thread channel race; <code>harness/tsan.sh</code> rebuilds this TU with <code>-fsanitize=thread</code></td><td>no</td></tr>
       </tbody>
     </table>
   </div>
@@ -1005,9 +1006,13 @@ classDiagram
     }
 
     class SnapshotChannel {
-        -slot_ : DisplaySnapshot
-        -published_ : uint32
-        -consumed_ : uint32
+        &lt;&lt;3-slot SPSC mailbox - 3528 B&gt;&gt;
+        -slots_ : DisplaySnapshot x3
+        -ready_ : atomic uint32
+        -write_ : uint32
+        -read_ : uint32
+        -published_ : atomic uint32
+        -consumed_ : atomic uint32
         +publish(DisplaySnapshot) void
         +consume(DisplaySnapshot) bool
         +published_version() uint32
@@ -1019,7 +1024,7 @@ classDiagram
     Book ..> DisplaySnapshot : publish fills caller storage
     DisplaySnapshot *-- TradePrint
     DisplaySnapshot *-- FeedStatus
-    SnapshotChannel *-- DisplaySnapshot : one slot today, two at M3
+    SnapshotChannel *-- DisplaySnapshot : three slots, always a permutation
 </pre>
     </div>
     <figcaption>
@@ -1027,6 +1032,9 @@ classDiagram
       <code>display_snapshot.hpp</code>, <code>snapshot_channel.hpp</code>.
       <code>publish()</code> is non-const because the version stamp is producer state;
       <code>Book</code> retains 256 levels per side but publishes 27.
+      <code>SnapshotChannel</code>'s three indices — <code>write_</code>, <code>read_</code>
+      and the one inside <code>ready_</code> — are always a permutation of {0,1,2}, which is
+      the whole safety argument: the two threads are never inside the same slot.
     </figcaption>
   </figure>
 
@@ -1320,7 +1328,7 @@ classDiagram
     <code>cmake --workflow --preset host</code> configures, builds and tests in one step
     (<code>host-mingw</code> is the Windows MinGW-w64 equivalent; the two presets share a
     binary directory, so switching between them needs <code>build/host</code> cleared).
-    Five ctest entries run; the doctest binary carries 55 cases across six files.
+    Six ctest entries run; the doctest binary carries 70 cases across seven files.
   </p>
 
   <div class="tablewrap">
@@ -1329,11 +1337,12 @@ classDiagram
         <tr><th>ctest entry</th><th>What a failure would mean</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>dc_tests</code></td><td>55 doctest cases: decimal exactness, adapter behaviour, book semantics, ladder legibility, replay goldens, allocation probe</td></tr>
+        <tr><td><code>dc_tests</code></td><td>70 doctest cases: decimal exactness, adapter behaviour, book semantics, ladder legibility, replay goldens, allocation probe, and the two-thread channel hand-off</td></tr>
         <tr><td><code>dc_replay_baseline</code></td><td>the committed 1,406-frame baseline trace (89.9 s, 15.6 frames/s) stopped being structurally valid</td></tr>
         <tr><td><code>dc_replay_reconnect</code></td><td>ditto for the 1,288-frame reconnect trace, whose 4,468 ms hole is the outage</td></tr>
         <tr><td><code>dc_ladder_baseline</code></td><td>parse → adapt → adopt → publish → draw broke on some frame of a real capture</td></tr>
         <tr><td><code>dc_ladder_reconnect</code></td><td>ditto, including across the outage</td></tr>
+        <tr><td><code>dc_channel_race</code></td><td>one second of a real two-thread race over <code>SnapshotChannel</code>, uninstrumented — a torn frame or a delivered version going backwards. The same TU is what <code>harness/tsan.sh</code> rebuilds with <code>-fsanitize=thread</code>, so this entry keeps the ThreadSanitizer workload compiling and passing between the hand-run Linux captures</td></tr>
       </tbody>
     </table>
   </div>
@@ -1372,7 +1381,7 @@ classDiagram
         <tr><td><code>TradePrint</code></td><td class="num">32</td><td>ring, snapshot</td><td>7 bytes of tail padding</td></tr>
         <tr><td><code>FeedEvent</code></td><td class="num">72</td><td>stack only</td><td>the boundary type — never stored</td></tr>
         <tr><td><code>DisplaySnapshot</code></td><td class="num">1,168</td><td>copied per publish</td><td>864 B of it is the two 27-level ladders</td></tr>
-        <tr><td><code>SnapshotChannel</code></td><td class="num">1,176</td><td>one per pipeline</td><td>one slot today; ~2,344 as a double buffer</td></tr>
+        <tr><td><code>SnapshotChannel</code></td><td class="num">3,528</td><td>one per pipeline</td><td>three slots + 20 B of bookkeeping (M3 stage A; was 1,176)</td></tr>
         <tr><td><code>AnvilFrame</code></td><td class="num">8,256</td><td>inside the adapter</td><td>2 × 256 × 16 B staging</td></tr>
         <tr><td><code>AnvilAdapter</code></td><td class="num">8,400</td><td>feed task</td><td>the frame plus 13 counters</td></tr>
         <tr><td><code>Book</code></td><td class="num">8,552</td><td>feed task</td><td>2 × 256 levels + ring + status</td></tr>
@@ -1381,9 +1390,11 @@ classDiagram
   </div>
 
   <p>
-    The whole engine as instantiated for one symbol is <strong>18,128 bytes</strong> —
+    The whole engine as instantiated for one symbol is <strong>20,480 bytes</strong> —
     adapter, book and channel together — against 512 KB of internal SRAM on the S3, before
-    the HUB75 framebuffer takes its share. Publishing costs one 1,168-byte copy per event at
+    the HUB75 framebuffer takes its share. M3 stage A moved that figure by 2,352 bytes when
+    the channel took its third slot, which is 0.45% of internal SRAM for a hand-off with no
+    data race in it; the alternatives that fit in two slots are discussed in §08. Publishing costs one 1,168-byte copy per event at
     the baseline trace's 13.6 events/s, which is about 16 KB/s of <code>memcpy</code>
     (<code>summary</code> frames emit no event, so the event rate sits below the 15.6
     frames/s wire rate). Neither number is
@@ -1442,17 +1453,38 @@ classDiagram
     <p class="verdict">Resolves: <b>a debug-build generation counter on AnvilFrame, asserted in LevelSpan — no release cost, no layout change</b></p>
   </div>
 
-  <div class="strain">
-    <h4>2 · <code>SnapshotChannel</code> is currently a claim, not a mechanism</h4>
+  <div class="strain settled">
+    <h4>2 · <code>SnapshotChannel</code> was a claim; M3 stage A made it a mechanism</h4>
     <p>
-      <code>published_</code> and <code>consumed_</code> are plain <code>uint32_t</code> over
-      a single slot. Concurrent use today is undefined behaviour, and the M1 test exercises
-      it single-threaded only. This is disclosed rather than hidden — the header says so —
-      and the API already forbids the design mistakes that would be expensive to undo later:
-      no reference escapes into producer storage, no way for the consumer to make the
-      producer wait, no way to observe a partial frame.
+      Until stage A this was a single slot behind two plain <code>uint32_t</code>s, with the
+      header saying plainly that concurrent use was undefined and the M1 test exercising it
+      single-threaded only. It is now three <code>DisplaySnapshot</code> slots and one atomic
+      word: <code>publish</code> and <code>consume</code> each swap their slot into that word
+      with a single <code>exchange</code>, so the writer's slot, the reader's slot and the
+      ready slot are always three distinct objects and neither thread ever touches the frame
+      the other is using.
     </p>
-    <p class="verdict">Resolves: <b>M3 stage A — seqlock or double buffer, plus a TSan-clean two-thread test</b></p>
+    <p>
+      Three rather than the two the constitution's wording implies, and that is the part
+      worth arguing with. A seqlock and a two-slot buffer both let the reader copy a slot the
+      writer is writing and then discard the result — the tear happens; the version check
+      only stops it being drawn. Measured both ways: a seqlock of exactly that shape
+      delivered 4.8 M frames with <em>zero</em> tears reaching the consumer on x86 GCC 10
+      <code>-O2</code>, and ThreadSanitizer flagged it on the <em>first</em> frame. So the
+      case against it is not that it misbehaves on today's compiler; it is that the copy is a
+      data race, and the only way to have both a seqlock and a clean report is a suppression
+      sitting on the one cross-core path, on a target compiler generation nobody here
+      controls. The third slot costs 2,352 bytes (§07).
+    </p>
+    <p>
+      Evidence: <code>harness/tests/test_snapshot_channel.cpp</code> races two threads over
+      100,000 frames whose every field is stamped from the frame's own version, so a
+      delivered frame is either whole or provably spliced and the checker names the field
+      where it split; <code>harness/tests/tsan_clean.txt</code> is the committed
+      ThreadSanitizer report. Both mutation-verified — collapsing the slots back to M1's one
+      fails at version 12.
+    </p>
+    <p class="verdict">Resolves: <b>done — the residual strain is that TSan needs Linux, so the report is refreshed by hand via harness/tsan.sh rather than by the host gate</b></p>
   </div>
 
   <div class="strain">
@@ -1562,15 +1594,16 @@ classDiagram
   <ul>
     <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical.</li>
     <li>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</li>
-    <li>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version; §07's figure moves to ~2,344 bytes.</li>
-    <li>§08 — strain points 2 and 7 should close; 1 and 3 will not.</li>
+    <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
+    <li>§08 — strain point 2 closed at stage A; 7 should close at stage D; 1 and 3 will not.</li>
   </ul>
 </section>
 
 <footer>
-  Drawn from source at <b>94c8df7</b> · engine 1,151 lines · harness 3,097 (1,601 of it
-  tests) · plus 575 lines of Python capture tooling in <code>tools/</code>.<br>
-  Verified against a green <code>host-mingw</code> workflow run: 5/5 ctest, 55/55 doctest.
+  Drawn from source at <b>a56ccd6</b> · engine 1,197 lines · harness 3,810 (2,285 of it
+  tests) · plus 529 lines of Python capture tooling in <code>tools/</code>.<br>
+  Verified against a green <code>host-mingw</code> workflow run: 6/6 ctest, 70/70 doctest
+  (6,970 assertions), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1.
   Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64.<br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
   current work order: <code>docs/briefs/M3-live-anvil-on-the-panel.md</code>.<br>
