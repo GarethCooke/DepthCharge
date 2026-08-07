@@ -4,7 +4,10 @@
 # phase-1 book, console ladder, goldens). Firmware is a separate PlatformIO
 # project under firmware/ and is not built here. See ARCHITECTURE.md; the loop is
 #   cmake --workflow --preset host
-cmake_minimum_required(VERSION 3.20)
+# 3.25 to match CMakePresets.json's own cmakeMinimumRequired: a 3.20-3.24 CMake
+# satisfied this line and then failed on the presets file with a much less
+# obvious error.
+cmake_minimum_required(VERSION 3.25)
 project(DepthCharge LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -50,6 +53,53 @@ foreach(hdr ${DC_ENGINE_HEADERS})
 endforeach()
 add_library(dc_engine_header_check OBJECT ${DC_HEADER_CHECK_TUS})
 target_link_libraries(dc_engine_header_check PRIVATE dc_engine dc_warnings)
+
+# --- invariant #1, the other half: engine/ builds for the TARGET -------------
+# The check above proves engine/ compiles on the host. It cannot prove it
+# compiles for the ESP32-S3, and the two disagree: the target toolchain is a
+# different compiler generation with a different libstdc++, so a header can be
+# perfectly valid here and reject on the board. That is not hypothetical — a
+# constexpr std::reverse_copy compiles on GCC 15.2 and is ill-formed on the
+# xtensa GCC 8.4 that espressif32 6.5.0 pins, and nothing in this build would
+# have said so before M3 tried to link.
+#
+# So: compile the same generated per-header TUs with the PlatformIO xtensa
+# compiler when it is installed, with ESP-IDF-shaped flags. Optional by design —
+# a contributor without PlatformIO still gets a working host build, and the
+# check simply reports that it was skipped.
+set(DC_XTENSA_GXX "$ENV{USERPROFILE}/.platformio/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf-g++.exe"
+    CACHE FILEPATH "xtensa-esp32s3 g++ used to prove engine/ compiles for the target")
+if(NOT EXISTS ${DC_XTENSA_GXX})
+  file(GLOB _dc_xtensa_candidates
+    "$ENV{USERPROFILE}/.platformio/packages/toolchain-xtensa-esp32s3*/bin/xtensa-esp32s3-elf-g++.exe"
+    "$ENV{HOME}/.platformio/packages/toolchain-xtensa-esp32s3*/bin/xtensa-esp32s3-elf-g++")
+  if(_dc_xtensa_candidates)
+    list(GET _dc_xtensa_candidates 0 DC_XTENSA_GXX)
+  endif()
+endif()
+
+if(EXISTS ${DC_XTENSA_GXX})
+  # -std=c++2a, not c++20: GCC 8.4 does not recognise the latter spelling, and
+  # the point of this target is to fail the way the firmware build would.
+  add_custom_target(dc_engine_target_check ALL
+    COMMAND ${CMAKE_COMMAND} -E echo "engine/: checking target build (${DC_XTENSA_GXX})"
+    COMMENT "Compiling engine/ headers for ESP32-S3 (invariant #1, target half)")
+  foreach(tu ${DC_HEADER_CHECK_TUS})
+    get_filename_component(_tu_name "${tu}" NAME_WE)
+    add_custom_command(TARGET dc_engine_target_check POST_BUILD
+      COMMAND ${DC_XTENSA_GXX} -std=c++2a -Os -mlongcalls
+              -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti
+              -Wall -Wextra -Wpedantic -Werror
+              -I ${CMAKE_CURRENT_SOURCE_DIR}/engine/include
+              -c ${tu} -o ${CMAKE_CURRENT_BINARY_DIR}/header_checks/${_tu_name}.xtensa.o
+      VERBATIM)
+  endforeach()
+else()
+  message(STATUS
+    "engine/ target check SKIPPED: no xtensa-esp32s3 toolchain found. "
+    "engine/ is proven host-buildable only; set -DDC_XTENSA_GXX=<path> to check "
+    "the ESP32-S3 build too.")
+endif()
 
 # --- vendored third-party (harness + host adapter parser) --------------------
 # nlohmann/json + doctest, included as SYSTEM so -Werror does not police them.

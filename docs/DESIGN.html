@@ -1,0 +1,1581 @@
+<title>DepthCharge — Design</title>
+<style>
+  :root {
+    --bid:        #2E9E68;
+    --bid-lit:    #35D07F;
+    --ask:        #D2483C;
+    --ask-lit:    #FF5C4D;
+    --stale:      #B8862A;
+    --stale-lit:  #F2B33D;
+
+    --ground:     #F4F7F5;
+    --surface:    #FFFFFF;
+    --plate:      #F7FAF8;
+    --plate-line: #CBD9D2;
+    --ink:        #131A18;
+    --ink-soft:   #3D4B46;
+    --muted:      #64756E;
+    --rule:       #DCE5E0;
+    --chip:       #EAF1ED;
+
+    --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono",
+            "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+            "Helvetica Neue", Arial, sans-serif;
+
+    --col: 68ch;
+    --wide: 1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:   #0B100E;
+      --surface:  #121917;
+      --ink:      #DCE6E1;
+      --ink-soft: #B3C2BC;
+      --muted:    #7E918A;
+      --rule:     #222E2A;
+      --chip:     #18211E;
+      --bid:      #35D07F;
+      --ask:      #FF6B5C;
+      --stale:    #F2B33D;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:   #0B100E;
+    --surface:  #121917;
+    --ink:      #DCE6E1;
+    --ink-soft: #B3C2BC;
+    --muted:    #7E918A;
+    --rule:     #222E2A;
+    --chip:     #18211E;
+    --bid:      #35D07F;
+    --ask:      #FF6B5C;
+    --stale:    #F2B33D;
+  }
+  :root[data-theme="light"] {
+    --ground:   #F4F7F5;
+    --surface:  #FFFFFF;
+    --ink:      #131A18;
+    --ink-soft: #3D4B46;
+    --muted:    #64756E;
+    --rule:     #DCE5E0;
+    --chip:     #EAF1ED;
+    --bid:      #2E9E68;
+    --ask:      #D2483C;
+    --stale:    #B8862A;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 0 28px 120px;
+  }
+
+  .col { max-width: var(--col); }
+
+  /* ---------- masthead ---------- */
+
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    padding: 56px 0 30px;
+    margin-bottom: 8px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.06;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+  h1 .tick { color: var(--bid); }
+  .standfirst {
+    font-size: 18.5px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0 0 26px;
+    text-wrap: pretty;
+  }
+
+  .statusbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .status {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    padding: 6px 11px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface);
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .status b { font-weight: 600; color: var(--ink); }
+  .status.green { border-color: color-mix(in srgb, var(--bid) 45%, var(--rule)); }
+  .status.green b { color: var(--bid); }
+  .status.amber { border-color: color-mix(in srgb, var(--stale) 45%, var(--rule)); }
+  .status.amber b { color: var(--stale); }
+
+  /* ---------- sections ---------- */
+
+  section { padding-top: 58px; }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 23px;
+    letter-spacing: -0.01em;
+    font-weight: 600;
+    margin: 0 0 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    text-wrap: balance;
+  }
+  h2 .num {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--bid);
+    letter-spacing: 0.06em;
+    flex: none;
+  }
+  h3 {
+    font-family: var(--mono);
+    font-size: 15.5px;
+    font-weight: 600;
+    letter-spacing: 0;
+    margin: 38px 0 8px;
+    color: var(--ink);
+  }
+
+  .invchips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 22px 0;
+    padding: 0 0 0 44px;
+  }
+  .inv {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 3px;
+    background: var(--chip);
+    color: var(--muted);
+    border: 1px solid var(--rule);
+  }
+  .inv b { color: var(--ink-soft); font-weight: 600; }
+
+  p { margin: 0 0 17px; max-width: var(--col); text-wrap: pretty; }
+  ul, ol { max-width: var(--col); margin: 0 0 17px; padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  li::marker { color: var(--muted); }
+
+  strong { font-weight: 650; color: var(--ink); }
+  em { font-style: italic; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.885em;
+    background: var(--chip);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.08em 0.36em;
+    white-space: nowrap;
+  }
+  h2 code, h3 code { background: none; border: none; padding: 0; font-size: 1em; }
+
+  a { color: var(--bid); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, .status:focus-visible {
+    outline: 2px solid var(--bid);
+    outline-offset: 2px;
+  }
+
+  /* ---------- figures: illuminated plates ---------- */
+
+  figure {
+    margin: 30px 0 34px;
+    max-width: var(--wide);
+  }
+  .plate {
+    background: var(--plate);
+    background-image:
+      linear-gradient(rgba(19,26,24,0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(19,26,24,0.045) 1px, transparent 1px);
+    background-size: 18px 18px;
+    border: 1px solid var(--plate-line);
+    border-radius: 5px;
+    padding: 22px 20px;
+    overflow-x: auto;
+  }
+  @media (prefers-color-scheme: dark) {
+    .plate { box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 22px 46px -26px rgba(53,208,127,0.35); }
+  }
+  :root[data-theme="dark"] .plate {
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 22px 46px -26px rgba(53,208,127,0.35);
+  }
+  :root[data-theme="light"] .plate { box-shadow: none; }
+
+  .plate svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+  .plate pre.mermaid {
+    margin: 0;
+    background: none;
+    border: none;
+    text-align: center;
+  }
+
+  figcaption {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--muted);
+    margin-top: 11px;
+    max-width: 78ch;
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ---------- tables ---------- */
+
+  .tablewrap { overflow-x: auto; margin: 24px 0 30px; }
+  table {
+    border-collapse: collapse;
+    font-size: 14px;
+    width: 100%;
+    min-width: 560px;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 14px 9px 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    border-bottom-color: var(--ink-soft);
+  }
+  td.num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    padding-right: 22px;
+    white-space: nowrap;
+  }
+  td code { white-space: nowrap; }
+
+  /* ---------- strain cards ---------- */
+
+  .strain {
+    border-left: 2px solid var(--stale);
+    padding: 2px 0 2px 18px;
+    margin: 0 0 26px;
+    max-width: var(--col);
+  }
+  .strain.settled { border-left-color: var(--bid); }
+  .strain h4 {
+    font-family: var(--mono);
+    font-size: 14.5px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    line-height: 1.4;
+  }
+  .strain p { margin-bottom: 10px; }
+  .strain .verdict {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .strain .verdict b { color: var(--stale); font-weight: 600; }
+  .strain.settled .verdict b { color: var(--bid); }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 54px 0 0;
+  }
+
+  footer {
+    margin-top: 54px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  @media (max-width: 720px) {
+    .invchips { padding-left: 0; }
+    h2 { flex-direction: column; gap: 2px; }
+  }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">DepthCharge · design reference · maintained document</p>
+  <h1>Every frame takes<br>the same <span class="tick">five steps</span>.</h1>
+  <p class="standfirst">
+    A desk-top order-book terminal whose entire correctness argument rests on one
+    claim: the code between the socket and the pixels does not know which of them
+    it is talking to. This document draws that code — the classes that exist today,
+    the calls they actually make, and the places where the design is carrying load
+    it has not yet been asked to bear.
+  </p>
+  <div class="statusbar">
+    <span class="status green">engine <b>M1 shipped</b></span>
+    <span class="status green">host gate <b>ctest green</b></span>
+    <span class="status amber">next <b>M3 — live Anvil on the panel</b></span>
+    <span class="status">first-party C++ <b>~4,250 lines</b></span>
+    <span class="status">drawn from source at <b>94c8df7</b></span>
+  </div>
+</header>
+
+<section id="shape">
+  <h2><span class="num">01</span> The shape of the whole thing</h2>
+  <div class="invchips">
+    <span class="inv"><b>#1</b> host-buildable</span>
+    <span class="inv"><b>#2</b> one boundary type</span>
+    <span class="inv"><b>#8</b> one writer</span>
+  </div>
+
+  <p>
+    DepthCharge is a pipeline with swappable ends. Bytes arrive from a replay file on
+    a desk or a TLS WebSocket on an ESP32-S3; pixels leave to a terminal or to a HUB75
+    DMA driver. Between those two swaps sits <code>engine/</code>, which is the same
+    translation units in both cases — not a port, not a shared interface, the same code.
+  </p>
+  <p>
+    That is the bet the whole project makes, and it is enforced rather than asserted:
+    CMake generates one translation unit per engine header that includes only that
+    header, so the moment an ESP-IDF include leaks into <code>engine/</code> the
+    <em>host</em> build fails, because the host has no such header to find.
+  </p>
+
+  <figure>
+    <div class="plate">
+      <svg viewBox="0 0 760 700" role="img" aria-label="Vertical pipeline: bytes enter from either a replay trace reader or a TLS WebSocket client, pass through AnvilAdapter, FeedEvent, Book, DisplaySnapshot and SnapshotChannel inside the portable engine, and leave to either a console ladder or a HUB75 render task.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4A5B55"/>
+          </marker>
+          <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#2E9E68"/>
+          </marker>
+        </defs>
+
+        <text x="380" y="24" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" letter-spacing="1.6" fill="#64756E">BYTES IN — SWAPPABLE</text>
+
+        <rect x="52" y="40" width="300" height="54" rx="4" fill="#FFFFFF" stroke="#9FB3AA" stroke-width="1"/>
+        <text x="202" y="62" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="13" fill="#131A18">TraceReader</text>
+        <text x="202" y="80" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#64756E">NDJSON replay · harness/ · shipped</text>
+
+        <rect x="408" y="40" width="300" height="54" rx="4" fill="#FFFFFF" stroke="#9FB3AA" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="558" y="62" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="13" fill="#4A5B55">esp_websocket_client</text>
+        <text x="558" y="80" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#7E918A">TLS WS · firmware/ · M3 stage C</text>
+
+        <polyline points="202,94 202,116 380,116" fill="none" stroke="#4A5B55" stroke-width="1.3"/>
+        <polyline points="558,94 558,116 380,116" fill="none" stroke="#4A5B55" stroke-width="1.3" stroke-dasharray="4 3"/>
+        <line x1="380" y1="116" x2="380" y2="186" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar)"/>
+        <text x="392" y="140" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">one received text frame,</text>
+        <text x="392" y="155" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">verbatim — never re-serialised</text>
+
+        <rect x="40" y="170" width="680" height="416" rx="8" fill="none" stroke="#2E9E68" stroke-width="1.2" stroke-dasharray="6 4"/>
+        <text x="56" y="192" font-family="ui-monospace, Consolas, monospace" font-size="11.5" letter-spacing="0.6" fill="#2E9E68">engine/ — portable C++20 · zero ESP-IDF / FreeRTOS / Arduino · inv #1</text>
+
+        <rect x="230" y="204" width="300" height="50" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.4"/>
+        <text x="380" y="234" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="14" fill="#131A18">AnvilAdapter</text>
+
+        <line x1="380" y1="254" x2="380" y2="286" stroke="#2E9E68" stroke-width="1.4" marker-end="url(#arg)"/>
+        <text x="392" y="274" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#2E9E68">emits 0 or 1</text>
+
+        <rect x="248" y="286" width="264" height="46" rx="23" fill="#E4F3EB" stroke="#2E9E68" stroke-width="1.6"/>
+        <text x="380" y="308" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="14" fill="#1C5F3F">FeedEvent</text>
+        <text x="380" y="323" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#2E9E68">the only type that crosses here · inv #2</text>
+
+        <line x1="380" y1="332" x2="380" y2="364" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar)"/>
+        <text x="392" y="352" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">apply()</text>
+
+        <rect x="230" y="364" width="300" height="50" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.4"/>
+        <text x="380" y="386" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="14" fill="#131A18">Book</text>
+        <text x="380" y="402" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">phase 1: adopt latest snapshot + trade ring</text>
+
+        <line x1="380" y1="414" x2="380" y2="446" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar)"/>
+        <text x="392" y="434" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">publish() — fills caller's snapshot</text>
+
+        <rect x="248" y="446" width="264" height="46" rx="23" fill="#F1F5F3" stroke="#4A5B55" stroke-width="1.4"/>
+        <text x="380" y="468" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="14" fill="#131A18">DisplaySnapshot</text>
+        <text x="380" y="483" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">top 27/side · tape · status · 1,168 B</text>
+
+        <line x1="380" y1="492" x2="380" y2="524" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar)"/>
+        <text x="392" y="512" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">publish() — wait-free on the writer · inv #4</text>
+
+        <rect x="230" y="524" width="300" height="50" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.4"/>
+        <text x="380" y="554" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="14" fill="#131A18">SnapshotChannel</text>
+
+        <line x1="380" y1="586" x2="380" y2="622" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar)"/>
+        <text x="392" y="608" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">consume() — a whole frame, or nothing new</text>
+
+        <text x="380" y="642" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" letter-spacing="1.6" fill="#64756E">PIXELS OUT — SWAPPABLE</text>
+
+        <rect x="52" y="652" width="300" height="40" rx="4" fill="#FFFFFF" stroke="#9FB3AA" stroke-width="1"/>
+        <text x="202" y="677" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#131A18">console ladder · harness/ · shipped</text>
+
+        <rect x="408" y="652" width="300" height="40" rx="4" fill="#FFFFFF" stroke="#9FB3AA" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="558" y="677" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#4A5B55">HUB75 DMA, Core 1 · M3 stage D</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>The mechanism, not the org chart.</b> Solid boxes exist today and run under
+      <code>ctest</code>; dashed boxes are M3. Everything inside the green boundary is
+      linked, unmodified, into both. The two pill shapes are values, not objects — they
+      are copied, never referenced across a task.
+    </figcaption>
+  </figure>
+
+  <h3>What the build actually produces</h3>
+  <p>
+    The CMake targets encode the same separation, which is what makes the claim checkable
+    rather than aspirational. <code>dc_engine</code> is an <code>INTERFACE</code> library —
+    header-only, so nothing can be compiled into it with the wrong flags.
+    <code>dc_engine_anvil</code> is deliberately its own static library because it is the
+    single target that touches <code>nlohmann/json</code>, and therefore the single target
+    that must not reach the microcontroller.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Target</th><th>Kind</th><th>Contains</th><th>Reaches the ESP32?</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>dc_engine</code></td><td>INTERFACE</td><td>all of <code>engine/include</code></td><td>yes — this is the point</td></tr>
+        <tr><td><code>dc_engine_header_check</code></td><td>OBJECT</td><td>one generated TU per header</td><td>no — build-time guard only</td></tr>
+        <tr><td><code>dc_engine_anvil</code></td><td>STATIC</td><td><code>anvil_frame_nlohmann.cpp</code></td><td><strong>no</strong> — replaced at M3</td></tr>
+        <tr><td><code>dc_vendor</code></td><td>INTERFACE</td><td>nlohmann, doctest (SYSTEM)</td><td>no</td></tr>
+        <tr><td><code>dc_harness</code></td><td>STATIC</td><td>trace, replay driver, ladder</td><td>no</td></tr>
+        <tr><td><code>dc_replay</code> · <code>dc_ladder</code> · <code>dc_tests</code></td><td>EXE</td><td>host tooling and goldens</td><td>no</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<section id="vocabulary">
+  <h2><span class="num">02</span> The vocabulary that crosses the boundary</h2>
+  <div class="invchips">
+    <span class="inv"><b>#2</b> one boundary type</span>
+    <span class="inv"><b>#3</b> integer ticks only</span>
+    <span class="inv"><b>#7</b> allocation-free</span>
+  </div>
+
+  <p>
+    <code>FeedEvent</code> is a plain aggregate with no methods and no ownership. Four
+    kinds share one flat layout, and which fields mean anything is a function of
+    <code>kind</code>. That is a tagged union written without a union — deliberately, because
+    a <code>static_assert</code> on trivial copyability is what lets the render hand-off be
+    a <code>memcpy</code> and lets the whole feed path avoid the heap.
+  </p>
+  <p>
+    Prices are <code>int64_t</code> ticks and quantities are <code>int64_t</code> steps.
+    There is no floating-point number anywhere in the type, and the conversion from the
+    wire's decimal strings happens in <code>parse_scaled</code>, which refuses to round:
+    a price carrying more precision than the declared scale is a reported error, never a
+    quietly truncated level.
+  </p>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'13px'}}}%%
+classDiagram
+    direction LR
+
+    class FeedEvent {
+        &lt;&lt;value type - 72 B&gt;&gt;
+        +kind : Kind
+        +seq : Seq
+        +px : PriceTicks
+        +qty : Qty
+        +side : Side
+        +reason : GapReason
+        +bids : LevelSpan
+        +asks : LevelSpan
+    }
+
+    class Kind {
+        &lt;&lt;enumeration&gt;&gt;
+        Snapshot
+        Delta
+        Trade
+        Gap
+    }
+
+    class LevelSpan {
+        &lt;&lt;borrowed view&gt;&gt;
+        +data : const BookLevel ptr
+        +size : uint32
+        +empty() bool
+        +begin() const BookLevel ptr
+        +end() const BookLevel ptr
+    }
+
+    class BookLevel {
+        +px : PriceTicks
+        +qty : Qty
+    }
+
+    class Side {
+        &lt;&lt;enumeration&gt;&gt;
+        Bid
+        Ask
+    }
+
+    class GapReason {
+        &lt;&lt;enumeration&gt;&gt;
+        SeqGap
+        ChecksumFail
+        Disconnect
+        Overflow
+        Resync
+    }
+
+    class SymbolSpec {
+        +id : uint32
+        +price_decimals : int32
+        +qty_step : Qty
+    }
+
+    class DecimalParse {
+        +value : int64
+        +error : DecimalError
+        +ok() bool
+    }
+
+    FeedEvent *-- Kind
+    FeedEvent *-- Side
+    FeedEvent *-- GapReason
+    FeedEvent o-- LevelSpan : bids and asks, Snapshot only
+    LevelSpan ..> BookLevel : points at adapter storage
+    SymbolSpec ..> DecimalParse : declares the scale parse_scaled verifies
+</pre>
+    </div>
+    <figcaption>
+      <b>engine/include/depthcharge/</b> — <code>feed_event.hpp</code>,
+      <code>symbol.hpp</code>, <code>decimal.hpp</code>. The open diamond on
+      <code>LevelSpan</code> is the whole subtlety: <code>FeedEvent</code> aggregates a
+      view it does not own.
+    </figcaption>
+  </figure>
+
+  <h3>The lifetime rule, which the compiler does not enforce</h3>
+  <p>
+    A <code>Snapshot</code> carries 84–126 levels per side across the committed baseline
+    trace — measured, not assumed. Putting
+    them in <code>FeedEvent</code> by value would make the boundary type kilobytes wide;
+    putting them in a container would make it allocate. So the levels stay in the adapter's
+    reusable <code>AnvilFrame</code> and travel as two raw pointers, valid for exactly the
+    duration of the sink call.
+  </p>
+
+  <figure>
+    <div class="plate">
+      <svg viewBox="0 0 760 250" role="img" aria-label="Timeline of one on_frame call showing that the borrowed level spans are valid only during the sink callback, and that Book adopt copies them within that window.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4A5B55"/>
+          </marker>
+        </defs>
+
+        <text x="30" y="26" font-family="ui-monospace, Consolas, monospace" font-size="11" letter-spacing="1.4" fill="#64756E">ONE CALL TO AnvilAdapter::on_frame()</text>
+
+        <line x1="30" y1="150" x2="730" y2="150" stroke="#4A5B55" stroke-width="1.2" marker-end="url(#ar2)"/>
+
+        <line x1="70"  y1="140" x2="70"  y2="160" stroke="#4A5B55" stroke-width="1.2"/>
+        <line x1="215" y1="140" x2="215" y2="160" stroke="#4A5B55" stroke-width="1.2"/>
+        <line x1="360" y1="140" x2="360" y2="160" stroke="#2E9E68" stroke-width="1.6"/>
+        <line x1="560" y1="140" x2="560" y2="160" stroke="#2E9E68" stroke-width="1.6"/>
+        <line x1="680" y1="140" x2="680" y2="160" stroke="#D2483C" stroke-width="1.6"/>
+
+        <text x="70"  y="176" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#4A5B55">frame_.reset()</text>
+        <text x="215" y="176" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#4A5B55">parse fills frame_</text>
+        <text x="360" y="176" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#1C5F3F">sink(ev) enters</text>
+        <text x="560" y="176" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#1C5F3F">sink returns</text>
+        <text x="686" y="176" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#D2483C">next reset()</text>
+
+        <rect x="360" y="96" width="200" height="30" rx="4" fill="#D9EFE3" stroke="#2E9E68" stroke-width="1.4"/>
+        <text x="460" y="116" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#1C5F3F">ev.bids / ev.asks valid</text>
+
+        <rect x="70" y="96" width="290" height="30" rx="4" fill="#F1F1F1" stroke="#B9C4BF" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="215" y="116" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#8A9A95">event does not exist yet</text>
+
+        <rect x="560" y="96" width="170" height="30" rx="4" fill="#FBE9E7" stroke="#D2483C" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="645" y="116" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#A03428">dangling</text>
+
+        <line x1="430" y1="126" x2="430" y2="205" stroke="#2E9E68" stroke-width="1.2" stroke-dasharray="3 3"/>
+        <circle cx="430" cy="126" r="3.2" fill="#2E9E68"/>
+        <text x="440" y="200" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#1C5F3F">Book::adopt() → copy_clamped() copies here — inside the window</text>
+        <text x="440" y="216" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#64756E">anything that defers instead of copying is a use-after-free</text>
+
+        <text x="30" y="72" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#64756E">frame_ is an 8,256 B member of the adapter — allocated once, reused for the life of the process</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>The one rule a reader has to hold in their head.</b> Today only one consumer
+      exists and it copies immediately. Nothing in the type system says it must —
+      see <a href="#strain">§08, strain point 1</a>.
+    </figcaption>
+  </figure>
+</section>
+
+<hr>
+
+<section id="adapter">
+  <h2><span class="num">03</span> The adapter, and the seam inside it</h2>
+  <div class="invchips">
+    <span class="inv"><b>#2</b> venue mess quarantined</span>
+    <span class="inv"><b>#3</b> no float touches a price</span>
+    <span class="inv"><b>#7</b> no virtual call, no allocation</span>
+  </div>
+
+  <p>
+    <code>AnvilAdapter</code> owns every Anvil-specific decision so that <code>Book</code>
+    owns none. Three of those decisions are load-bearing and each one is a place a
+    naive implementation would have gone wrong:
+  </p>
+  <ul>
+    <li>
+      <strong>The wire <code>seq</code> is decoded and then ignored.</strong> Anvil's
+      <code>seq</code> is one global counter shared by every ticker and frame type, so a
+      single socket's subsequence runs backwards — 42 times in five minutes, measured at M0.
+      The adapter synthesises its own dense <code>Seq</code> from receive order and keeps
+      the wire value only as a diagnostic counter. It can therefore never emit
+      <code>Gap{SeqGap}</code>, which is safe <em>only</em> because Anvil's book frames are
+      idempotent full replaces.
+    </li>
+    <li>
+      <strong><code>snapshot</code> and <code>book</code> are the same event.</strong> Both
+      become <code>FeedEvent::Snapshot</code>. <code>book</code> is not a delta and treating
+      it as one would corrupt the ladder silently.
+    </li>
+    <li>
+      <strong>A malformed frame is dropped, not gapped.</strong> Anvil republishes the whole
+      book every ~80 ms, so one bad frame self-heals within a refresh; greying the panel for
+      it would be dishonest in the opposite direction. A systematic failure shows up as a
+      stalled ladder plus a non-zero <code>parse_errors</code> count.
+    </li>
+  </ul>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'13px'}}}%%
+classDiagram
+    direction TB
+
+    class AnvilAdapter {
+        -symbol_ : SymbolSpec
+        -frame_ : AnvilFrame
+        -next_seq_ : Seq
+        -last_wire_seq_ : int64
+        -stats_ : Stats
+        +on_frame(json, Sink) void
+        +on_transport_gap(GapReason, Sink) void
+        +stats() const Stats
+        +next_seq() Seq
+        -take_seq() Seq
+        -emit_snapshot(Sink&) void
+        -emit_trade(Sink&) void
+        -emit(FeedEvent&, Sink&) void
+    }
+
+    class AdapterStats {
+        +frames_in : uint64
+        +events_out : uint64
+        +snapshot_frames : uint64
+        +book_frames : uint64
+        +trade_frames : uint64
+        +summary_ignored : uint64
+        +other_ticker : uint64
+        +unknown_kind : uint64
+        +parse_errors : uint64
+        +price_errors : uint64
+        +truncated_frames : uint64
+        +transport_gaps : uint64
+        +wire_seq_backward : uint64
+    }
+
+    class AnvilFrame {
+        &lt;&lt;adapter-internal - 8256 B&gt;&gt;
+        +kind : FrameKind
+        +wire_seq : int64
+        +ticker : uint32
+        +bid_count : uint32
+        +ask_count : uint32
+        +levels_truncated : bool
+        +bids : BookLevel x256
+        +asks : BookLevel x256
+        +trade_px : PriceTicks
+        +trade_qty : Qty
+        +aggressor : Side
+        +reset() void
+    }
+
+    class FrameKind {
+        &lt;&lt;enumeration&gt;&gt;
+        Unknown
+        Snapshot
+        Book
+        Trade
+        Summary
+    }
+
+    class ParseStatus {
+        &lt;&lt;enumeration&gt;&gt;
+        Ok
+        NotJson
+        MissingType
+        BadShape
+        BadPrice
+        OtherTicker
+    }
+
+    class parse_anvil_frame {
+        &lt;&lt;free function - declared only&gt;&gt;
+        +parse_anvil_frame(json, SymbolSpec, AnvilFrame) ParseStatus
+    }
+
+    AnvilAdapter *-- AnvilFrame : owns one, reused forever
+    AnvilAdapter *-- AdapterStats
+    AnvilAdapter ..> parse_anvil_frame : calls
+    AnvilAdapter ..> FeedEvent : emits into Sink
+    parse_anvil_frame ..> ParseStatus : returns
+    AnvilFrame *-- FrameKind
+    parse_anvil_frame ..> parse_scaled : prices via exact string conversion
+</pre>
+    </div>
+    <figcaption>
+      <b>engine/include/depthcharge/anvil/</b>. <code>Sink</code> is a template parameter,
+      not an interface — there is no virtual dispatch on the feed path. The cost of that
+      choice is that "what an adapter looks like" is currently convention rather than a type.
+    </figcaption>
+  </figure>
+
+  <h3>One declaration, two definitions, chosen by the linker</h3>
+  <p>
+    The only genuinely environment-specific work in the adapter is turning JSON bytes into
+    fields. That work sits behind a single free-function declaration, and the implementation
+    is selected by which static library a binary links. It is the cheapest possible seam —
+    no virtual call, no template, no runtime branch — and it is precisely what M3 stage B
+    swaps.
+  </p>
+
+  <figure>
+    <div class="plate">
+      <svg viewBox="0 0 760 310" role="img" aria-label="One declaration of parse_anvil_frame in the engine headers, with two alternative definitions: the nlohmann host implementation shipped today, and a streaming allocation-free parser arriving at M3. Exactly one is linked into any binary.">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4A5B55"/>
+          </marker>
+        </defs>
+
+        <rect x="230" y="24" width="300" height="46" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.3"/>
+        <text x="380" y="44" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="13" fill="#131A18">AnvilAdapter::on_frame()</text>
+        <text x="380" y="60" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">header-only · identical on host and target</text>
+
+        <line x1="380" y1="70" x2="380" y2="104" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar3)"/>
+
+        <rect x="150" y="104" width="460" height="56" rx="4" fill="#E4F3EB" stroke="#2E9E68" stroke-width="1.6"/>
+        <text x="380" y="126" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1C5F3F">ParseStatus parse_anvil_frame(json, SymbolSpec, AnvilFrame&amp;)</text>
+        <text x="380" y="145" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#2E9E68">declared in anvil_frame.hpp · defined nowhere in engine/include</text>
+
+        <polyline points="380,160 380,186 210,186 210,212" fill="none" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar3)"/>
+        <polyline points="380,160 380,186 550,186 550,212" fill="none" stroke="#4A5B55" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ar3)"/>
+        <text x="392" y="182" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">exactly one is linked</text>
+
+        <rect x="60" y="212" width="300" height="72" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.3"/>
+        <text x="210" y="234" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#131A18">anvil_frame_nlohmann.cpp</text>
+        <text x="210" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">target dc_engine_anvil · shipped M1</text>
+        <text x="210" y="268" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#A03428">allocates per parse — host only</text>
+
+        <rect x="400" y="212" width="300" height="72" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.3" stroke-dasharray="4 3"/>
+        <text x="550" y="234" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#4A5B55">streaming parser</text>
+        <text x="550" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#7E918A">M3 stage B · host + target</text>
+        <text x="550" y="268" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#1C5F3F">allocation-free — inv #7</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>The acceptance test for the swap already exists.</b> A host binary links the new
+      parser instead of <code>dc_engine_anvil</code> and runs
+      <code>test_replay_goldens.cpp</code> unchanged. If a golden moves, the swap changed
+      behaviour and is out of scope.
+    </figcaption>
+  </figure>
+
+  <h3>A healthy <code>book</code> frame, end to end</h3>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','actorBkg':'#FFFFFF','actorBorder':'#4A5B55','actorTextColor':'#131A18','signalColor':'#4A5B55','signalTextColor':'#2C3A35','noteBkgColor':'#E4F3EB','noteBorderColor':'#2E9E68','noteTextColor':'#1C5F3F','activationBkgColor':'#DDEBE4','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'12.5px'}}}%%
+sequenceDiagram
+    autonumber
+    participant SRC as TraceReader / WebSocket
+    participant DRV as Replay driver
+    participant AD as AnvilAdapter
+    participant P as parse_anvil_frame
+    participant BK as Book
+    participant CH as SnapshotChannel
+    participant R as Renderer
+
+    SRC->>DRV: next(frame) — verbatim JSON, rx_ns
+    DRV->>DRV: rx_ns hole vs 1000 ms? no
+    DRV->>AD: on_frame(json, sink)
+    activate AD
+    AD->>AD: frames_in++, frame_.reset()
+    AD->>P: parse(json, symbol_, frame_)
+    activate P
+    P->>P: type is "book" → FrameKind::Book
+    P->>P: ticker must equal symbol_.id
+    P->>P: each price string → parse_scaled(s, 4)
+    P-->>AD: ParseStatus::Ok
+    deactivate P
+    AD->>AD: wire_seq backwards? count it, ignore it
+    AD->>AD: emit_snapshot → emit — seq = next_seq_++
+    Note over AD,BK: spans point into frame_ and are valid only for this call
+    AD->>BK: sink(ev) → apply(Snapshot)
+    activate BK
+    BK->>BK: adopt — copy_clamped both sides, status = Live
+    deactivate BK
+    deactivate AD
+    DRV->>BK: publish(latest_)
+    activate BK
+    BK->>BK: version_++, copy top 27/side, unwind trade ring
+    deactivate BK
+    DRV->>CH: publish(latest_)
+    R->>CH: consume(out)
+    CH-->>R: true — a complete frame, by copy
+    R->>R: draw ladder
+</pre>
+    </div>
+    <figcaption>
+      <b>The path most frames take</b> — 1,088 of the committed baseline trace's 1,406
+      frames are <code>book</code>. Steps 4–17 are the same instructions on host and target;
+      only steps 1 and 21–23 differ. Note that <code>publish</code> is driven by the caller,
+      not by <code>Book</code> — the book never decides when to be read.
+    </figcaption>
+  </figure>
+</section>
+
+<hr>
+
+<section id="book">
+  <h2><span class="num">04</span> The book, and why it is barely a book</h2>
+  <div class="invchips">
+    <span class="inv"><b>#3</b> integer ticks</span>
+    <span class="inv"><b>#5</b> stale is first-class</span>
+    <span class="inv"><b>#7</b> fixed capacity</span>
+    <span class="inv"><b>#8</b> one writer</span>
+  </div>
+
+  <p>
+    Anvil publishes a full top-N replace every ~80 ms. Against a venue like that, book
+    maintenance is not a data-structure problem — "adopt the latest snapshot" is the entire
+    engine, plus a ring of recent prints. The tick-indexed dense window that the architecture
+    describes is real work, but it is M4 work, and building it now would mean building it
+    against no delta stream to test it with.
+  </p>
+  <p>
+    So <code>Book</code> today is two fixed arrays, a ring, and a status flag. What makes it
+    interesting is not the storage; it is the four ways <code>apply()</code> can end, and
+    the fact that one of them is deliberately impossible-in-practice.
+  </p>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'13px'}}}%%
+classDiagram
+    direction LR
+
+    class Book {
+        -symbol_ : SymbolSpec
+        -bids_ : BookLevel x256
+        -asks_ : BookLevel x256
+        -bid_count_ : uint32
+        -ask_count_ : uint32
+        -trades_ : TradePrint x8
+        -trade_head_ : uint32
+        -trade_count_ : uint32
+        -last_px_ : PriceTicks
+        -has_last_ : bool
+        -status_ : FeedStatus
+        -stale_reason_ : GapReason
+        -last_seq_ : Seq
+        -version_ : uint32
+        +apply(FeedEvent) void
+        +publish(DisplaySnapshot) void
+        +status() FeedStatus
+        +stale_reason() GapReason
+        +stats() const Stats
+        -adopt(FeedEvent) void
+        -record_trade(FeedEvent) void
+        -mark_stale(GapReason) void
+        -reject_delta() void
+    }
+
+    class BookStats {
+        +snapshots_adopted : uint64
+        +trades_applied : uint64
+        +gaps : uint64
+        +deltas_rejected : uint64
+        +publishes : uint64
+    }
+
+    class DisplaySnapshot {
+        &lt;&lt;value type - 1168 B&gt;&gt;
+        +version : uint32
+        +symbol : SymbolSpec
+        +seq : Seq
+        +status : FeedStatus
+        +stale_reason : GapReason
+        +bid_count : uint8
+        +ask_count : uint8
+        +trade_count : uint8
+        +has_last : bool
+        +last_px : PriceTicks
+        +bids : BookLevel x27
+        +asks : BookLevel x27
+        +trades : TradePrint x8
+        +live() bool
+        +has_top() bool
+        +best_bid() PriceTicks
+        +best_ask() PriceTicks
+        +spread_ticks() PriceTicks
+        +mid_ticks_x2() PriceTicks
+    }
+
+    class TradePrint {
+        +px : PriceTicks
+        +qty : Qty
+        +seq : Seq
+        +aggressor : Side
+    }
+
+    class FeedStatus {
+        &lt;&lt;enumeration&gt;&gt;
+        Live
+        Stale
+    }
+
+    class SnapshotChannel {
+        -slot_ : DisplaySnapshot
+        -published_ : uint32
+        -consumed_ : uint32
+        +publish(DisplaySnapshot) void
+        +consume(DisplaySnapshot) bool
+        +published_version() uint32
+        +consumed_version() uint32
+    }
+
+    Book *-- BookStats
+    Book ..> FeedEvent : apply consumes
+    Book ..> DisplaySnapshot : publish fills caller storage
+    DisplaySnapshot *-- TradePrint
+    DisplaySnapshot *-- FeedStatus
+    SnapshotChannel *-- DisplaySnapshot : one slot today, two at M3
+</pre>
+    </div>
+    <figcaption>
+      <b>engine/include/depthcharge/</b> — <code>book.hpp</code>,
+      <code>display_snapshot.hpp</code>, <code>snapshot_channel.hpp</code>.
+      <code>publish()</code> is non-const because the version stamp is producer state;
+      <code>Book</code> retains 256 levels per side but publishes 27.
+    </figcaption>
+  </figure>
+
+  <h3>Two states, and only one way back</h3>
+  <p>
+    The asymmetry is the design. Four different things drive the book into
+    <code>Stale</code>; exactly one thing brings it out, and that is a fresh
+    <code>Snapshot</code>. A trade print arriving during an outage is still real tape and is
+    still recorded — but it does not clear the flag, because it says nothing about whether
+    the resting levels are still true.
+  </p>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'13px'}}}%%
+stateDiagram-v2
+    direction LR
+    [*] --> Stale : construction — stale_reason = Resync
+    Stale --> Live : Snapshot — adopt, replace both sides
+    Live --> Stale : Gap — keep the levels, grey the panel
+    Live --> Stale : Delta — phase 1 cannot amend, so Resync
+    Live --> Live : Trade — record print, set last_px
+    Stale --> Stale : Trade — tape is still real, flag stays
+    Stale --> Stale : Gap — same outage continuing
+</pre>
+    </div>
+    <figcaption>
+      <b>Book::status_.</b> There is no third state and no "probably fine". A frozen ladder
+      that looks live is the one output the project treats as unacceptable, so the honesty
+      bit travels inside <code>DisplaySnapshot</code> — a renderer cannot draw the ladder
+      without also holding it.
+    </figcaption>
+  </figure>
+
+  <p>
+    <code>reject_delta()</code> is the interesting one. Anvil never sends a delta, so on the
+    only venue that exists this branch is unreachable. It exists because the alternative —
+    silently ignoring an event kind the book cannot apply — would produce exactly the failure
+    mode the project is built to prevent. It is a tripwire for a future adapter bug, and it
+    costs one enum comparison per event.
+  </p>
+</section>
+
+<hr>
+
+<section id="outage">
+  <h2><span class="num">05</span> When it goes wrong</h2>
+  <div class="invchips">
+    <span class="inv"><b>#5</b> stale is a rendered state</span>
+    <span class="inv"><b>#6</b> replay coverage</span>
+  </div>
+
+  <p>
+    Anvil emits no error frame and no gap frame. Absence of data is the only signal there is,
+    which means the disconnect is <em>synthesised by the transport</em> — and the harness has
+    to synthesise it too, or the host replay would be an analogy rather than a preview.
+  </p>
+  <p>
+    Two rules were available for a capture file with no disconnect marker. "A mid-stream
+    snapshot means we reconnected" was rejected: the gap would be raised in the same breath
+    as the snapshot that clears it, so the book would never actually be stale and the
+    invariant-5 proof would be vacuous. The rule chosen instead is a watchdog, and the
+    number is measured rather than picked — across two five-minute captures the worst
+    <em>healthy</em> inter-frame gap is 640 ms against a ~70 ms median, so 1000 ms sits
+    1.6× above the worst healthy silence and 4.5× below the observed drop.
+  </p>
+  <p>
+    The detail that makes the stale window real is the timestamp. The gap is dated at
+    <code>prev_rx + 1000 ms</code> — the moment the watchdog <em>would have</em> fired — not
+    at the moment the next frame eventually arrived. In the committed reconnect trace that
+    turns an instantaneous blip between two frames into 3.47 s of grey.
+  </p>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','actorBkg':'#FFFFFF','actorBorder':'#4A5B55','actorTextColor':'#131A18','signalColor':'#4A5B55','signalTextColor':'#2C3A35','noteBkgColor':'#FCEFD6','noteBorderColor':'#B8862A','noteTextColor':'#6B4E13','activationBkgColor':'#DDEBE4','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'12.5px'}}}%%
+sequenceDiagram
+    autonumber
+    participant SRC as Trace / socket
+    participant DRV as Replay driver
+    participant AD as AnvilAdapter
+    participant BK as Book
+    participant CH as SnapshotChannel
+    participant R as Renderer
+
+    SRC->>DRV: next(frame) — rx_ns jumps 4470 ms
+    DRV->>DRV: gap 4470 ms exceeds 1000 ms threshold
+    DRV->>DRV: open StaleEpisode, dated prev_rx + 1000 ms
+    Note over DRV,BK: the watchdog fires at the deadline, not at the next frame
+    DRV->>AD: on_transport_gap(Disconnect, sink)
+    AD->>BK: sink(Gap) → apply
+    activate BK
+    BK->>BK: mark_stale(Disconnect) — levels KEPT, not cleared
+    deactivate BK
+    DRV->>BK: publish(latest_)
+    DRV->>CH: publish — status = Stale
+    R->>CH: consume
+    R->>R: draw the SAME levels, greyed, banner reads STALE
+
+    SRC-->>DRV: (3.47 s of nothing)
+
+    DRV->>AD: on_frame(the reconnect snapshot)
+    AD->>BK: sink(Snapshot) → apply
+    activate BK
+    BK->>BK: adopt — full replace, status = Live
+    deactivate BK
+    DRV->>DRV: episode.cleared = true, stale_ms = 3470
+    DRV->>CH: publish — status = Live
+    R->>CH: consume
+    R->>R: clean live ladder, no torn intermediate
+</pre>
+    </div>
+    <figcaption>
+      <b>The invariant-5 story, which the goldens pin.</b> A second hole arriving while the
+      panel is already grey folds into the open episode rather than opening a new one —
+      the book has not been re-baselined in between, so it is the same outage continuing.
+      Opening a second window would report the first as never cleared and measure the grey
+      period from the wrong start.
+    </figcaption>
+  </figure>
+
+  <h3>The other failure, which deliberately does nothing</h3>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','actorBkg':'#FFFFFF','actorBorder':'#4A5B55','actorTextColor':'#131A18','signalColor':'#4A5B55','signalTextColor':'#2C3A35','noteBkgColor':'#FBE9E7','noteBorderColor':'#D2483C','noteTextColor':'#A03428','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'12.5px'}}}%%
+sequenceDiagram
+    autonumber
+    participant DRV as Replay driver
+    participant AD as AnvilAdapter
+    participant P as parse_anvil_frame
+    participant BK as Book
+
+    DRV->>AD: on_frame(price "10.01234", scale is 4 decimals)
+    AD->>P: parse
+    P->>P: parse_scaled → DecimalError::TooManyDecimals
+    P-->>AD: ParseStatus::BadPrice
+    AD->>AD: price_errors++
+    Note over AD,BK: no event is emitted — the book is never told
+    AD-->>DRV: returns, 0 events
+    DRV->>DRV: nothing published, ladder holds its last good frame
+</pre>
+    </div>
+    <figcaption>
+      <b>Declare and verify, never guess and round.</b> Anvil's protocol carries no tick-size
+      metadata, so DepthCharge declares <code>price_decimals = 4</code> and the adapter
+      rejects anything finer. A server that started quoting five decimals fails loudly on the
+      first frame instead of drawing a subtly wrong ladder. The frame is dropped rather than
+      gapped because the next republish is ~80 ms away.
+    </figcaption>
+  </figure>
+</section>
+
+<hr>
+
+<section id="harness">
+  <h2><span class="num">06</span> How any of this is proved</h2>
+  <div class="invchips">
+    <span class="inv"><b>#6</b> no merge without replay coverage</span>
+    <span class="inv"><b>#7</b> allocation-free, measured</span>
+  </div>
+
+  <p>
+    The harness is not test scaffolding around the engine; it is the host stand-in for the
+    M3 firmware feed task, and it is deliberately the <em>only</em> place the engine is wired
+    together. That is why the goldens and the console ladder can never disagree about what a
+    trace means — there is one assembly, and both read it.
+  </p>
+  <p>
+    One detail carries more weight than its size suggests. <code>TraceReader</code> hands the
+    adapter a <code>string_view</code> sliced out of the capture line by a string-aware
+    scanner, not a re-serialised object. The adapter sees exactly the bytes the server sent,
+    key order and spacing included — otherwise the harness would be validating a parser
+    against its own output.
+  </p>
+
+  <figure>
+    <div class="plate">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#EDF5F1','primaryTextColor':'#131A18','primaryBorderColor':'#4A5B55','lineColor':'#4A5B55','secondaryColor':'#E4F3EB','tertiaryColor':'#FFFFFF','background':'#F7FAF8','fontFamily':'ui-monospace, Consolas, monospace','fontSize':'13px'}}}%%
+classDiagram
+    direction TB
+
+    class TraceReader {
+        -in_ : istream ptr
+        -meta_ : TraceMeta
+        -line_no_ : size_t
+        -frame_index_ : size_t
+        +next(TraceFrame) bool
+        +meta() const TraceMeta
+        +frames_read() size_t
+    }
+
+    class TraceFrame {
+        +index : size_t
+        +line_no : size_t
+        +rx_ns : int64
+        +frame_json : string_view
+    }
+
+    class TraceMeta {
+        +captured_at : string
+        +url : string
+        +tool_version : string
+        +capture_mode : string
+        +ticker : int64
+        +complete() bool
+    }
+
+    class Replay {
+        &lt;&lt;file-local — the single writer&gt;&gt;
+        -adapter_ : AnvilAdapter
+        -book_ : Book
+        -channel_ : SnapshotChannel
+        -latest_ : DisplaySnapshot
+        -episodes_ : vector of StaleEpisode
+        -prev_rx_ns_ : int64
+        +run(TraceReader) ReplayResult
+        -raise_watchdog_gap(double) void
+        -on_event(FeedEvent) void
+    }
+
+    class ReplayOptions {
+        +disconnect_gap_ms : double = 1000
+        +max_frames : size_t
+    }
+
+    class StaleEpisode {
+        +gap_seq : Seq
+        +reason : GapReason
+        +frame_before : size_t
+        +cleared_frame : size_t
+        +gap_events : size_t
+        +watchdog_rx_ns : int64
+        +observed_gap_ms : double
+        +stale_ms : double
+        +cleared : bool
+    }
+
+    class ReplayResult {
+        +meta : TraceMeta
+        +frames : size_t
+        +events : size_t
+        +adapter : AdapterStats
+        +book : BookStats
+        +episodes : vector of StaleEpisode
+        +final_snapshot : DisplaySnapshot
+        +first_stale_snapshot : DisplaySnapshot
+        +saw_stale : bool
+    }
+
+    class LadderStyle {
+        +color : bool
+        +unicode : bool
+        +levels : size_t = 12
+        +bar_width : size_t = 18
+        +show_tape : bool
+    }
+
+    class render_ladder {
+        &lt;&lt;free function&gt;&gt;
+        +render_ladder(DisplaySnapshot, LadderStyle) string
+    }
+
+    TraceReader ..> TraceFrame : fills
+    TraceReader *-- TraceMeta
+    Replay ..> TraceReader : pulls frames
+    Replay *-- ReplayOptions
+    Replay *-- StaleEpisode : opens and closes
+    Replay ..> ReplayResult : returns
+    Replay ..> AnvilAdapter : owns
+    Replay ..> Book : owns
+    Replay ..> SnapshotChannel : owns
+    render_ladder ..> DisplaySnapshot : reads
+    render_ladder *-- LadderStyle
+</pre>
+    </div>
+    <figcaption>
+      <b>harness/</b> — <code>trace.hpp</code>, <code>replay_driver.hpp</code>,
+      <code>console_ladder.hpp</code>. <code>Replay</code> is file-local by design: the
+      engine pieces are members in the same arrangement the firmware feed task will own
+      them, so the object <em>is</em> invariant #8's single writer.
+    </figcaption>
+  </figure>
+
+  <h3>What the gate actually runs</h3>
+  <p>
+    <code>cmake --workflow --preset host</code> configures, builds and tests in one step
+    (<code>host-mingw</code> is the Windows MinGW-w64 equivalent; the two presets share a
+    binary directory, so switching between them needs <code>build/host</code> cleared).
+    Five ctest entries run; the doctest binary carries 55 cases across six files.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>ctest entry</th><th>What a failure would mean</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>dc_tests</code></td><td>55 doctest cases: decimal exactness, adapter behaviour, book semantics, ladder legibility, replay goldens, allocation probe</td></tr>
+        <tr><td><code>dc_replay_baseline</code></td><td>the committed 1,406-frame baseline trace (89.9 s, 15.6 frames/s) stopped being structurally valid</td></tr>
+        <tr><td><code>dc_replay_reconnect</code></td><td>ditto for the 1,288-frame reconnect trace, whose 4,468 ms hole is the outage</td></tr>
+        <tr><td><code>dc_ladder_baseline</code></td><td>parse → adapt → adopt → publish → draw broke on some frame of a real capture</td></tr>
+        <tr><td><code>dc_ladder_reconnect</code></td><td>ditto, including across the outage</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    Invariant #7 is not asserted in prose anywhere that matters — it is measured.
+    <code>alloc_probe</code> replaces global <code>operator new</code> in the test binary, so
+    "allocation-free steady state" becomes: take the counter, run the feed path, take it
+    again, require no change. Two cases do exactly that, one over the book and one over the
+    channel round trip.
+  </p>
+</section>
+
+<hr>
+
+<section id="cost">
+  <h2><span class="num">07</span> What it costs</h2>
+  <div class="invchips">
+    <span class="inv"><b>#7</b> fixed footprint</span>
+  </div>
+
+  <p>
+    Every figure below is <code>sizeof</code> under GCC 15.2 x86-64, measured rather than
+    estimated. Layout on the Xtensa target will differ slightly in padding but not in order
+    of magnitude.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Bytes</th><th>Lives where</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>BookLevel</code></td><td class="num">16</td><td>everywhere</td><td>two <code>int64_t</code>, no padding</td></tr>
+        <tr><td><code>LevelSpan</code></td><td class="num">16</td><td>inside <code>FeedEvent</code></td><td>pointer + size, borrowed</td></tr>
+        <tr><td><code>TradePrint</code></td><td class="num">32</td><td>ring, snapshot</td><td>7 bytes of tail padding</td></tr>
+        <tr><td><code>FeedEvent</code></td><td class="num">72</td><td>stack only</td><td>the boundary type — never stored</td></tr>
+        <tr><td><code>DisplaySnapshot</code></td><td class="num">1,168</td><td>copied per publish</td><td>864 B of it is the two 27-level ladders</td></tr>
+        <tr><td><code>SnapshotChannel</code></td><td class="num">1,176</td><td>one per pipeline</td><td>one slot today; ~2,344 as a double buffer</td></tr>
+        <tr><td><code>AnvilFrame</code></td><td class="num">8,256</td><td>inside the adapter</td><td>2 × 256 × 16 B staging</td></tr>
+        <tr><td><code>AnvilAdapter</code></td><td class="num">8,400</td><td>feed task</td><td>the frame plus 13 counters</td></tr>
+        <tr><td><code>Book</code></td><td class="num">8,552</td><td>feed task</td><td>2 × 256 levels + ring + status</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    The whole engine as instantiated for one symbol is <strong>18,128 bytes</strong> —
+    adapter, book and channel together — against 512 KB of internal SRAM on the S3, before
+    the HUB75 framebuffer takes its share. Publishing costs one 1,168-byte copy per event at
+    the baseline trace's 13.6 events/s, which is about 16 KB/s of <code>memcpy</code>
+    (<code>summary</code> frames emit no event, so the event rate sits below the 15.6
+    frames/s wire rate). Neither number is
+    close to a constraint, which is the point of having measured them: the argument for the
+    dense window at M4 has to be made on delta-venue correctness, not on this.
+  </p>
+</section>
+
+<hr>
+
+<section id="strain">
+  <h2><span class="num">08</span> Where this design is carrying load it has not been asked to bear</h2>
+  <div class="invchips">
+    <span class="inv">the section to argue with</span>
+  </div>
+
+  <p>
+    Everything above describes code that works and is green. This section is the honest
+    counterweight: nine places where the current shape is either unenforced, speculative,
+    or about to be tested by a milestone that does not exist yet. Each is stated with what
+    would break it and what resolves it.
+  </p>
+
+  <div class="strain">
+    <h4>0 · <code>engine/</code> is proven host-buildable, and now target-buildable too</h4>
+    <p>
+      This entry used to be implicit and unenforced. The generated per-header check proved
+      <code>engine/</code> compiles on the host; nothing proved it compiles for the ESP32-S3,
+      and the two genuinely disagree — the target toolchain that <code>espressif32 6.5.0</code>
+      pins is xtensa GCC 8.4, which does not accept <code>-std=c++20</code> at all and whose
+      libstdc++ lacks <code>&lt;span&gt;</code>, <code>&lt;ranges&gt;</code>,
+      <code>&lt;concepts&gt;</code>, <code>&lt;bit&gt;</code>, floating-point
+      <code>from_chars</code>, and <code>constexpr</code> algorithms. A header can be valid on
+      the desk and reject on the board, silently, until M3 tries to link.
+    </p>
+    <p>
+      <code>dc_engine_target_check</code> now compiles the same generated TUs with the
+      PlatformIO xtensa compiler when it is installed, at ESP-IDF-shaped flags. All eight
+      engine headers pass; the hot path costs 1541 B of <code>.text</code> at <code>-Os</code>.
+      The remaining strain is that the check is <em>optional</em> — a contributor without
+      PlatformIO gets a host-only guarantee and a <code>STATUS</code> line saying so.
+    </p>
+    <p class="verdict">Resolves: <b>CI that has the toolchain installed, so the target half is never the skipped half</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>1 · <code>LevelSpan</code> is a lifetime contract with no compiler behind it</h4>
+    <p>
+      The rule — copy before you defer — is enforced today only by the fact that a single
+      consumer exists and it copies immediately. Nothing stops an M3 feed task from pushing a
+      <code>FeedEvent</code> onto a queue, and if it does there is no diagnostic, no
+      sanitiser hit on the common path, and a ladder that is subtly wrong rather than
+      obviously broken. Invariant #7 forbids the obvious fix, since a guard type would stop
+      <code>FeedEvent</code> being trivially copyable.
+    </p>
+    <p class="verdict">Resolves: <b>a debug-build generation counter on AnvilFrame, asserted in LevelSpan — no release cost, no layout change</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>2 · <code>SnapshotChannel</code> is currently a claim, not a mechanism</h4>
+    <p>
+      <code>published_</code> and <code>consumed_</code> are plain <code>uint32_t</code> over
+      a single slot. Concurrent use today is undefined behaviour, and the M1 test exercises
+      it single-threaded only. This is disclosed rather than hidden — the header says so —
+      and the API already forbids the design mistakes that would be expensive to undo later:
+      no reference escapes into producer storage, no way for the consumer to make the
+      producer wait, no way to observe a partial frame.
+    </p>
+    <p class="verdict">Resolves: <b>M3 stage A — seqlock or double buffer, plus a TSan-clean two-thread test</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>3 · There is no <code>VenueAdapter</code> type</h4>
+    <p>
+      The architecture diagram names one; the code has <code>AnvilAdapter</code> with a
+      template <code>Sink</code>, no base class and no concept. That is the right call for
+      invariant #7 — no virtual dispatch on the feed path — but it means "what an adapter
+      is" is currently convention. Kraken at M4 is the forcing function: either a C++20
+      <code>concept</code> pins the shape, or two adapters drift apart with nothing to catch
+      it. <strong>This is the largest open design question in the repo.</strong>
+    </p>
+    <p class="verdict">Resolves: <b>decide at M4, before the second adapter has behaviour worth preserving</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>4 · The book retains 8,552 bytes to publish 1,168</h4>
+    <p>
+      <code>kBookCapacity</code> is defined as <code>kMaxSnapshotLevels</code> — 256 per side
+      — while the panel renders 27. The justification is the M7 zoom mode, which is four
+      milestones away and may never take that form. The coupling itself is defensible (a
+      snapshot the adapter accepted can never be truncated a second time), but the
+      <em>value</em> is speculative capacity.
+    </p>
+    <p class="verdict">Resolves: <b>cheap to leave; revisit only if S3 SRAM gets tight against the framebuffer</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>5 · <code>Book</code>'s face has never met a delta</h4>
+    <p>
+      M4 requires the tick-indexed dense window to land "behind this same
+      <code>apply()</code>/<code>publish()</code> face". That is an untested assumption.
+      Re-anchoring by bounded copy, a cold tail in a map, and CRC verification are all
+      things a snapshot-only book never had to express, and if the face does not survive
+      them, this section of the design is what changes.
+    </p>
+    <p class="verdict">Resolves: <b>M4 — and a face change there is a §9 amendment, not a refactor</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>6 · Every event republishes the whole ladder</h4>
+    <p>
+      <code>publish()</code> bumps <code>version_</code> unconditionally, so a trade-only
+      event produces a new version and the render side redraws even though no level moved.
+      At Anvil's ~15 events/s that is comfortably under the 30 fps target and costs nothing
+      worth reclaiming. It becomes a real question only at a venue with a much higher
+      per-event rate.
+    </p>
+    <p class="verdict">Resolves: <b>nothing to do now; note it before M5's Binance diff stream</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>7 · <code>format_px</code> returns a <code>std::string</code></h4>
+    <p>
+      The console ladder allocates freely, which is correct for the display edge on a desk.
+      But <code>format_px</code> lives in the harness header a firmware renderer will be
+      tempted to imitate, and the target must use <code>format_scaled</code> into a stack
+      buffer instead. Nothing currently enforces the distinction, and the alloc probe covers
+      the feed path, not the render path.
+    </p>
+    <p class="verdict">Resolves: <b>M3 stage D — extend the alloc probe across the render side too</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>8 · The harness reads meaning into <code>Seq == 0</code></h4>
+    <p>
+      <code>StaleEpisode::gap_seq == 0</code> is used as "not yet set", which is only safe
+      because <code>AnvilAdapter::next_seq_</code> starts at 1 and 0 is reserved for "no
+      event yet". That is a real convention, documented in the adapter — but it is an engine
+      convention that harness logic now depends on, across a boundary neither file names.
+    </p>
+    <p class="verdict">Resolves: <b>a one-line comment, or an explicit optional; low stakes, worth knowing</b></p>
+  </div>
+</section>
+
+<hr>
+
+<section id="maintenance">
+  <h2><span class="num">09</span> Keeping this true</h2>
+  <div class="invchips">
+    <span class="inv">hand-off protocol</span>
+  </div>
+
+  <p>
+    A design document that drifts is worse than none, because it is believed. This one is a
+    single file in the repo, so it diffs with the code it describes, and it is deliberately
+    scoped to things that are expensive to rediscover: which type crosses which boundary,
+    what a call actually does in order, and where the design is under strain.
+  </p>
+  <p>
+    It does <strong>not</strong> restate <code>ARCHITECTURE.md</code>. That file is the
+    constitution and stays the source of truth for the invariants and for any decision with
+    architectural weight; this file draws the code that implements them. When the two
+    disagree, the constitution wins and this file is the one that is wrong.
+  </p>
+
+  <h3>What triggers an update</h3>
+  <ul>
+    <li>A class gains, loses or renames a member that appears in a diagram here.</li>
+    <li>A call order changes — anything a sequence diagram would now draw differently.</li>
+    <li>A new type crosses an existing boundary, or a new boundary appears.</li>
+    <li>A strain point in §08 is resolved, newly created, or turns out to be wrong.</li>
+    <li>A milestone completes: the status strip and the dashed boxes move.</li>
+  </ul>
+
+  <h3>Known M3 edits, already queued</h3>
+  <ul>
+    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical.</li>
+    <li>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</li>
+    <li>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version; §07's figure moves to ~2,344 bytes.</li>
+    <li>§08 — strain points 2 and 7 should close; 1 and 3 will not.</li>
+  </ul>
+</section>
+
+<footer>
+  Drawn from source at <b>94c8df7</b> · engine 1,151 lines · harness 3,097 (1,601 of it
+  tests) · plus 575 lines of Python capture tooling in <code>tools/</code>.<br>
+  Verified against a green <code>host-mingw</code> workflow run: 5/5 ctest, 55/55 doctest.
+  Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64.<br>
+  Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
+  current work order: <code>docs/briefs/M3-live-anvil-on-the-panel.md</code>.<br>
+  Every claim here is checkable against a named file; where it is not, treat it as a bug in
+  this document.
+</footer>
+
+</div>

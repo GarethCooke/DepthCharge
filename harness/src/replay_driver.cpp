@@ -30,10 +30,13 @@ public:
         result.meta = reader.meta();
 
         TraceFrame frame;
-        while (reader.next(frame)) {
-            if (stopped_) { break; }
-            if (opts_.max_frames != 0 && frame.index > opts_.max_frames) { break; }
-
+        // Both stop conditions live in the loop condition, so neither reads a
+        // line it will not use. They used to sit in the body after next() had
+        // already parsed and validated one more line, which meant a malformed
+        // line just past the stop point still threw at a caller that had asked
+        // to stop.
+        while (!stopped_ && (opts_.max_frames == 0 || frames_ < opts_.max_frames) &&
+               reader.next(frame)) {
             if (have_prev_rx_) {
                 const double gap_ms = static_cast<double>(frame.rx_ns - prev_rx_ns_) / 1e6;
                 if (gap_ms > opts_.disconnect_gap_ms) {
@@ -51,6 +54,16 @@ public:
             current_frame_ = frame.index;
             current_rx_ns_ = frame.rx_ns;
             adapter_.on_frame(frame.frame_json, [this](const FeedEvent& ev) { on_event(ev); });
+        }
+
+        // The trace ended. If the caller told us how long the stream stayed
+        // silent afterwards, apply the same watchdog rule to that silence — a
+        // file has no "now", so this is the only way trailing silence can grey
+        // the panel the way the M3 timer would.
+        if (!stopped_ && have_prev_rx_ &&
+            opts_.end_of_trace_silence_ms > opts_.disconnect_gap_ms) {
+            raise_watchdog_gap(opts_.end_of_trace_silence_ms);
+            result.last_rx_ns = prev_rx_ns_;
         }
 
         // Latest published state is the run's answer; if the trace produced no
@@ -165,6 +178,14 @@ private:
 };
 
 }  // namespace
+
+depthcharge::SymbolSpec symbol_for(const TraceMeta& meta) {
+    const auto& declared = depthcharge::anvil::kAnvilTicker101;
+    return depthcharge::SymbolSpec{
+        meta.ticker >= 0 ? static_cast<std::uint32_t>(meta.ticker) : declared.id,
+        declared.price_decimals,
+        declared.qty_step};
+}
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,
                         const ReplayOptions& opts, const ReplayObserver& observer) {

@@ -8,6 +8,9 @@
 // the bar glyph.
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -16,6 +19,7 @@
 #include <depthcharge/feed_event.hpp>
 
 #include "dc_harness/console_ladder.hpp"
+#include "dc_test_support.hpp"
 
 using depthcharge::Book;
 using depthcharge::BookLevel;
@@ -23,13 +27,17 @@ using depthcharge::DisplaySnapshot;
 using depthcharge::FeedEvent;
 using depthcharge::GapReason;
 using depthcharge::Side;
-using depthcharge::SymbolSpec;
 using dc::harness::LadderStyle;
 using dc::harness::render_ladder;
+using dc::testing::columns;
+using dc::testing::contains;
+using dc::testing::gap_event;
+using dc::testing::kSpec;
+using dc::testing::lines_of;
+using dc::testing::snapshot_event;
+using dc::testing::trade_event;
 
 namespace {
-
-constexpr SymbolSpec kSpec{101, 4, 1};
 
 DisplaySnapshot make_snapshot(bool with_gap, bool with_trades = true) {
     Book book(kSpec);
@@ -38,66 +46,17 @@ DisplaySnapshot make_snapshot(bool with_gap, bool with_trades = true) {
         bids.push_back({99972 - i * 3, 20 + i * 7});
         asks.push_back({99979 + i * 3, 15 + i * 5});
     }
-    FeedEvent ev{};
-    ev.kind = FeedEvent::Kind::Snapshot;
-    ev.seq = 1;
-    ev.bids = {bids.data(), static_cast<std::uint32_t>(bids.size())};
-    ev.asks = {asks.data(), static_cast<std::uint32_t>(asks.size())};
-    book.apply(ev);
+    book.apply(snapshot_event(1, bids, asks));
 
     if (with_trades) {
-        FeedEvent t{};
-        t.kind = FeedEvent::Kind::Trade;
-        t.seq = 2;
-        t.px = 99972;
-        t.qty = 9;
-        t.side = Side::Bid;
-        book.apply(t);
-        t.seq = 3;
-        t.px = 99979;
-        t.qty = 14;
-        t.side = Side::Ask;
-        book.apply(t);
+        book.apply(trade_event(2, 99972, 9, Side::Bid));
+        book.apply(trade_event(3, 99979, 14, Side::Ask));
     }
-    if (with_gap) {
-        FeedEvent g{};
-        g.kind = FeedEvent::Kind::Gap;
-        g.seq = 4;
-        g.reason = GapReason::Disconnect;
-        book.apply(g);
-    }
+    if (with_gap) { book.apply(gap_event(4, GapReason::Disconnect)); }
 
     DisplaySnapshot snap{};
     book.publish(snap);
     return snap;
-}
-
-std::vector<std::string> lines_of(const std::string& s) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (const char ch : s) {
-        if (ch == '\n') {
-            out.push_back(cur);
-            cur.clear();
-        } else {
-            cur += ch;
-        }
-    }
-    if (!cur.empty()) { out.push_back(cur); }
-    return out;
-}
-
-// Display columns, not bytes: the box glyphs are multi-byte UTF-8.
-std::size_t columns(const std::string& line) {
-    std::size_t n = 0;
-    for (const unsigned char b : line) {
-        if ((b & 0xC0) != 0x80) { ++n; }  // count lead bytes only
-    }
-    return n;
-}
-
-bool contains(const std::string& hay, std::string_view needle) {
-    return hay.find(needle) != std::string::npos;
 }
 
 LadderStyle plain() {
@@ -170,15 +129,107 @@ TEST_CASE("every row is the same width, in both glyph modes and both states") {
     }
 }
 
+// The header and the stale banner grow with the seq digits and the gap reason,
+// and both used to overflow the box: a fresh book renders "STALE awaiting
+// snapshot" at seq 0 as a 62-column header inside a 57-column frame. The width
+// test above missed it because make_snapshot() only ever produces Disconnect at
+// a single-digit seq. This sweeps the two axes that actually drive the width.
+TEST_CASE("the box contains the header and the banner at every reason and seq width") {
+    const GapReason reasons[] = {GapReason::SeqGap, GapReason::ChecksumFail,
+                                 GapReason::Disconnect, GapReason::Overflow,
+                                 GapReason::Resync};
+    const depthcharge::Seq seqs[] = {0, 4, 332, 1225, 999999, 18446744073709551615ULL};
+
+    for (const bool unicode : {true, false}) {
+        for (const GapReason reason : reasons) {
+            for (const depthcharge::Seq seq : seqs) {
+                LadderStyle style = plain();
+                style.unicode = unicode;
+
+                Book book(kSpec);
+                std::vector<BookLevel> bids, asks;
+                for (int i = 0; i < 6; ++i) {
+                    bids.push_back({99972 - i * 3, 20 + i * 7});
+                    asks.push_back({99979 + i * 3, 15 + i * 5});
+                }
+                FeedEvent ev{};
+                ev.kind = FeedEvent::Kind::Snapshot;
+                ev.seq = 1;
+                ev.bids = {bids.data(), static_cast<std::uint32_t>(bids.size())};
+                ev.asks = {asks.data(), static_cast<std::uint32_t>(asks.size())};
+                book.apply(ev);
+
+                FeedEvent gap{};
+                gap.kind = FeedEvent::Kind::Gap;
+                gap.seq = seq;
+                gap.reason = reason;
+                book.apply(gap);
+
+                DisplaySnapshot snap{};
+                book.publish(snap);
+
+                const std::string label = "unicode=" + std::to_string(unicode) +
+                                          " reason=" + std::to_string(static_cast<int>(reason)) +
+                                          " seq=" + std::to_string(seq);
+                INFO(label);
+
+                const auto rows = lines_of(render_ladder(snap, style));
+                REQUIRE(rows.size() > 4);
+                const std::size_t w = columns(rows.front());
+                for (const auto& row : rows) {
+                    CHECK(columns(row) == w);
+                }
+            }
+        }
+    }
+}
+
+// The state every panel boots into, and the widest of all of them: nothing
+// adopted, so the reason is "awaiting snapshot" and there are no level rows to
+// pad the box out.
+TEST_CASE("the boot ladder — nothing adopted — is square") {
+    for (const bool unicode : {true, false}) {
+        LadderStyle style = plain();
+        style.unicode = unicode;
+
+        Book book(kSpec);
+        DisplaySnapshot snap{};
+        book.publish(snap);
+
+        const auto rows = lines_of(render_ladder(snap, style));
+        REQUIRE(rows.size() >= 5);
+        const std::size_t w = columns(rows.front());
+        for (const auto& row : rows) {
+            CHECK(columns(row) == w);
+        }
+        CHECK(contains(render_ladder(snap, style), "awaiting snapshot"));
+    }
+}
+
 TEST_CASE("--ascii emits no non-ASCII bytes and --no-color emits no escapes") {
     LadderStyle style = plain();
     style.unicode = false;
     const std::string out = render_ladder(make_snapshot(true), style);
 
-    for (const unsigned char b : out) {
-        CHECK(b < 0x80);
-        CHECK(b != 0x1b);
+    // Two separate probes rather than one all_of: the test's own title names two
+    // independent requirements, and merging them into a single bool would say
+    // "some byte was wrong" without saying which rule broke. Each reports the
+    // offset, which the old per-byte loop never did — it had no index.
+    const auto non_ascii = std::ranges::find_if(out, [](unsigned char b) { return b >= 0x80; });
+    if (non_ascii != out.end()) {
+        const std::string at = "first non-ASCII byte at offset " +
+                               std::to_string(non_ascii - out.begin());
+        INFO(at);
     }
+    CHECK(non_ascii == out.end());
+
+    const auto escape = std::ranges::find(out, '\x1b');
+    if (escape != out.end()) {
+        const std::string at = "first ANSI escape at offset " +
+                               std::to_string(escape - out.begin());
+        INFO(at);
+    }
+    CHECK(escape == out.end());
     CHECK(contains(out, "STALE"));
     CHECK(contains(out, ":"));         // hatched ASCII bar: stale
     CHECK_FALSE(contains(out, "#"));   // solid ASCII bar: live only

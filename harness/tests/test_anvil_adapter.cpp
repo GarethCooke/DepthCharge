@@ -7,10 +7,13 @@
 // 90-second capture happens not to contain.
 #include <doctest/doctest.h>
 
+#include <cstddef>
+#include <iterator>
 #include <string>
 #include <vector>
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
+#include <depthcharge/anvil/anvil_frame.hpp>
 #include <depthcharge/decimal.hpp>
 #include <depthcharge/feed_event.hpp>
 
@@ -75,6 +78,105 @@ const char* kSummary =
     R"({"type":"summary","seq":244492218,"tickers":[{"ticker":101,"restingBuy":11179,)"
     R"("restingSell":8780,"last":"9.9975"},{"ticker":102,"restingBuy":9474,"restingSell":8577,)"
     R"("last":"10.017"}]})";
+
+// Every way a frame can fail to become an event, in one place. Two tests drive
+// from this: the adapter's counting behaviour and the parse seam's
+// postcondition. Keeping one corpus is what stops the two drifting apart, and
+// it is what the M3 streaming parser will be pointed at.
+struct BadFrame {
+    const char* what;
+    const char* json;
+    depthcharge::anvil::ParseStatus expected;
+};
+
+using depthcharge::anvil::ParseStatus;
+
+const BadFrame kBadFrames[] = {
+    {"not json at all",      "this is not json",                          ParseStatus::NotJson},
+    {"json but not object",  "[1,2,3]",                                   ParseStatus::NotJson},
+    {"truncated mid-object", R"({"type":"bo)",                            ParseStatus::NotJson},
+    {"no type field",        R"({"seq":1,"ticker":101})",                  ParseStatus::MissingType},
+    {"type is not a string", R"({"type":7,"ticker":101})",                 ParseStatus::MissingType},
+    {"no ticker",            R"({"type":"book","bids":[],"asks":[]})",     ParseStatus::BadShape},
+    {"ticker not integer",   R"({"type":"book","ticker":"101"})",          ParseStatus::BadShape},
+    {"negative ticker",      R"({"type":"book","ticker":-1})",             ParseStatus::BadShape},
+    {"book without sides",   R"({"type":"book","ticker":101})",            ParseStatus::BadShape},
+    {"level not an object",  R"({"type":"book","ticker":101,"bids":[1],"asks":[]})",
+                                                                          ParseStatus::BadShape},
+    {"level missing qty",    R"({"type":"book","ticker":101,)"
+                             R"("bids":[{"price":"1.0"}],"asks":[]})",     ParseStatus::BadShape},
+    {"price as a number",    R"({"type":"book","ticker":101,)"
+                             R"("bids":[{"price":1.0,"qty":1}],"asks":[]})",
+                                                                          ParseStatus::BadShape},
+    {"negative resting qty", R"({"type":"book","ticker":101,)"
+                             R"("bids":[{"price":"1.0","qty":-5}],"asks":[]})",
+                                                                          ParseStatus::BadShape},
+    {"fractional qty",       R"({"type":"trade","ticker":101,"price":"1.0",)"
+                             R"("qty":1.5,"aggr":"B"})",                   ParseStatus::BadShape},
+    {"negative fill qty",    R"({"type":"trade","ticker":101,"price":"1.0",)"
+                             R"("qty":-1,"aggr":"B"})",                    ParseStatus::BadShape},
+    {"bogus aggressor",      R"({"type":"trade","ticker":101,"price":"1.0",)"
+                             R"("qty":1,"aggr":"X"})",                     ParseStatus::BadShape},
+    {"trade without price",  R"({"type":"trade","ticker":101,"qty":1,"aggr":"B"})",
+                                                                          ParseStatus::BadShape},
+    {"price beyond scale",   R"({"type":"book","seq":9,"ticker":101,)"
+                             R"("bids":[{"price":"9.99725","qty":9}],"asks":[]})",
+                                                                          ParseStatus::BadPrice},
+    {"someone else's ticker", R"({"type":"book","seq":9,"ticker":107,)"
+                              R"("bids":[{"price":"9.9","qty":1}],"asks":[]})",
+                                                                          ParseStatus::OtherTicker},
+};
+
+// How many of the corpus land in each of the adapter's three error counters
+// (anvil_adapter.hpp on_frame): BadPrice -> price_errors, OtherTicker ->
+// other_ticker, everything else non-Ok -> parse_errors. Derived, so adding a
+// case to the corpus never leaves a hand-written count behind.
+constexpr std::size_t count_expecting(ParseStatus st) {
+    std::size_t n = 0;
+    for (const BadFrame& f : kBadFrames) {
+        if (f.expected == st) { ++n; }
+    }
+    return n;
+}
+constexpr std::size_t kOtherTickerFrames = count_expecting(ParseStatus::OtherTicker);
+constexpr std::size_t kPriceErrorFrames = count_expecting(ParseStatus::BadPrice);
+constexpr std::size_t kParseErrorFrames =
+    std::size(kBadFrames) - kOtherTickerFrames - kPriceErrorFrames;
+
+// The parse seam's postcondition, in one place: "leave `out` well-formed
+// (kind == Unknown) on any non-Ok status" (anvil_frame.hpp). Asserted field by
+// field rather than as a single bool so a failure names what was left behind.
+void check_well_formed(const depthcharge::anvil::AnvilFrame& frame) {
+    CHECK(frame.kind == depthcharge::anvil::FrameKind::Unknown);
+    CHECK(frame.bid_count == 0);
+    CHECK(frame.ask_count == 0);
+    CHECK_FALSE(frame.levels_truncated);
+    CHECK_FALSE(frame.has_wire_seq);
+    CHECK_FALSE(frame.has_ticker);
+    CHECK(frame.wire_seq == 0);
+    CHECK(frame.ticker == 0);
+    CHECK(frame.trade_px == 0);
+    CHECK(frame.trade_qty == 0);
+    CHECK(frame.aggressor == Side::Bid);
+}
+
+// Plausible leftovers from a previous good parse, so "well-formed" means the
+// parser cleared them rather than that it was handed a fresh object.
+depthcharge::anvil::AnvilFrame dirtied_frame() {
+    depthcharge::anvil::AnvilFrame frame{};
+    frame.kind = depthcharge::anvil::FrameKind::Trade;
+    frame.wire_seq = 12345;
+    frame.has_wire_seq = true;
+    frame.ticker = 101;
+    frame.has_ticker = true;
+    frame.bid_count = 7;
+    frame.ask_count = 9;
+    frame.levels_truncated = true;
+    frame.trade_px = 99972;
+    frame.trade_qty = 42;
+    frame.aggressor = Side::Ask;
+    return frame;
+}
 
 }  // namespace
 
@@ -180,25 +282,20 @@ TEST_CASE("malformed input is counted and dropped, never turned into a Gap") {
     AnvilAdapter adapter(kAnvilTicker101);
     Collector sink;
 
-    adapter.on_frame("this is not json", sink);
-    adapter.on_frame("[1,2,3]", sink);                       // JSON, wrong shape
-    adapter.on_frame(R"({"seq":1,"ticker":101})", sink);     // no type
-    adapter.on_frame(R"({"type":"book","ticker":101})", sink);  // no bids/asks
-    adapter.on_frame(R"({"type":"trade","ticker":101,"price":"1.0","qty":1.5,"aggr":"B"})",
-                     sink);                                  // fractional qty
-    adapter.on_frame(R"({"type":"trade","ticker":101,"price":"1.0","qty":1,"aggr":"X"})",
-                     sink);                                  // bogus aggressor
-    adapter.on_frame(R"({"type":"book","ticker":101,"bids":[{"price":1.0,"qty":1}],)"
-                     R"("asks":[]})", sink);                 // price as a number
-    adapter.on_frame(R"({"type":"book","ticker":101,)"
-                     R"("bids":[{"price":"1.0","qty":-5}],"asks":[]})",
-                     sink);                                  // negative resting size
-    adapter.on_frame(R"({"type":"trade","ticker":101,"price":"1.0","qty":-1,"aggr":"B"})",
-                     sink);                                  // negative fill size
+    for (const BadFrame& tc : kBadFrames) {
+        adapter.on_frame(tc.json, sink);
+    }
 
     CHECK(sink.events.empty());
-    CHECK(adapter.stats().parse_errors == 9);
     CHECK(adapter.stats().events_out == 0);
+    CHECK(adapter.stats().frames_in == std::size(kBadFrames));
+
+    // The three counters partition the corpus — a scale disagreement and a
+    // frame for another ticker are distinct diagnoses, not "malformed".
+    CHECK(adapter.stats().parse_errors == kParseErrorFrames);
+    CHECK(adapter.stats().price_errors == kPriceErrorFrames);
+    CHECK(adapter.stats().other_ticker == kOtherTickerFrames);
+
     // A dropped frame is not a stale panel: Anvil republishes the whole book
     // every ~80 ms, so the next frame heals it.
     CHECK(adapter.stats().transport_gaps == 0);
@@ -251,7 +348,7 @@ TEST_CASE("a book deeper than the engine carries is truncated at the tail and fl
         // Descending prices: 10.0000, 9.9999, ... so the *best* levels are the
         // ones that must survive.
         frame += R"({"price":")";
-        char buf[32] = {};
+        char buf[depthcharge::kMaxFormattedChars] = {};
         const auto n = depthcharge::format_scaled(
             100000 - static_cast<std::int64_t>(i), 4, buf, sizeof buf);
         frame.append(buf, n);
@@ -282,4 +379,53 @@ TEST_CASE("an empty book is a legal Snapshot, not an error") {
     CHECK(sink.events[0].kind == FeedEvent::Kind::Snapshot);
     CHECK(sink.events[0].bids.empty());
     CHECK(sink.events[0].asks.empty());
+}
+
+// --- the parse seam's postcondition -----------------------------------------
+//
+// anvil_frame.hpp: "Implementations must be reentrant, must not allocate into
+// `out`, and must leave `out` well-formed (kind == Unknown) on any non-Ok
+// status." Today that is hand-enforced at ten separate return statements in the
+// nlohmann implementation. M3 Stage B links a SECOND implementation of the same
+// declaration behind the same seam, and it has to honour the identical
+// contract — so the contract is asserted here, against the declaration rather
+// than against either implementation, over every failure mode the parser has.
+TEST_CASE("a non-Ok parse leaves the frame well-formed, whatever went wrong") {
+    using depthcharge::anvil::AnvilFrame;
+    using depthcharge::anvil::parse_anvil_frame;
+
+    for (const BadFrame& tc : kBadFrames) {
+        // Built as a std::string first: doctest stringifies a const char* as
+        // its pointer, so CAPTURE(tc.what) and INFO(... << tc.what) both name
+        // the failing case as an address instead of a name.
+        const std::string label = std::string("case: ") + tc.what;
+        INFO(label);
+
+        AnvilFrame frame = dirtied_frame();
+        CHECK(parse_anvil_frame(tc.json, kAnvilTicker101, frame) == tc.expected);
+        check_well_formed(frame);
+    }
+}
+
+// The seam is also required to be reentrant: the same frame object is reused
+// for every wire frame the adapter sees, so a good parse after a bad one must
+// not inherit anything from it.
+TEST_CASE("the parse seam is reentrant across a failure") {
+    using depthcharge::anvil::AnvilFrame;
+    using depthcharge::anvil::FrameKind;
+    using depthcharge::anvil::parse_anvil_frame;
+    using depthcharge::anvil::ParseStatus;
+
+    AnvilFrame frame{};
+    REQUIRE(parse_anvil_frame(kSnapshot, kAnvilTicker101, frame) == ParseStatus::Ok);
+    REQUIRE(frame.bid_count == 2);
+
+    REQUIRE(parse_anvil_frame("not json", kAnvilTicker101, frame) == ParseStatus::NotJson);
+    check_well_formed(frame);   // the whole postcondition, not just the kind
+
+    REQUIRE(parse_anvil_frame(kTradeBuy, kAnvilTicker101, frame) == ParseStatus::Ok);
+    CHECK(frame.kind == FrameKind::Trade);
+    CHECK(frame.trade_px == 99972);
+    CHECK(frame.bid_count == 0);   // not the snapshot's 2
+    CHECK(frame.ask_count == 0);
 }

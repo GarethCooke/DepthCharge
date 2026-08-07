@@ -34,6 +34,12 @@ inline constexpr std::size_t kDisplayLevels = 27;
 // tape, which is what the bottom strip can show.
 inline constexpr std::size_t kTradeRingSize = 8;
 
+// The published counts below are uint8_t, so the two capacities must fit one.
+// Raising either past 255 would otherwise narrow silently in Book::publish and
+// show up as a truncated ladder rather than a build failure.
+static_assert(kDisplayLevels <= 255, "bid_count/ask_count are uint8_t");
+static_assert(kTradeRingSize <= 255, "trade_count is uint8_t");
+
 // Live means: a Snapshot has been adopted and nothing has told us to doubt it.
 // Anything else is Stale — there is no third state and no "probably fine"
 // (invariant #5).

@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import hashlib
+import itertools
 import json
 import os
 import signal
@@ -214,7 +216,7 @@ class WsClient:
             return None
         payload = bytes(b[offset:offset + length])
         if masked:  # servers must not mask, but tolerate defensively
-            payload = bytes(p ^ mask_key[i % 4] for i, p in enumerate(payload))
+            payload = bytes(b ^ m for b, m in zip(payload, itertools.cycle(mask_key)))
         del b[:offset + length]
         return (fin | opcode, payload)
 
@@ -267,7 +269,7 @@ class WsClient:
 
     def _send_frame(self, opcode: int, payload: bytes = b"") -> None:
         mask = os.urandom(4)
-        masked = bytes(p ^ mask[i % 4] for i, p in enumerate(payload))
+        masked = bytes(b ^ m for b, m in zip(payload, itertools.cycle(mask)))
         header = bytearray([0x80 | opcode])
         n = len(payload)
         if n < 126:
@@ -335,16 +337,19 @@ def capture(args) -> int:
     url = f"{args.url}?ticker={args.ticker}"
 
     frame_count = 0
-    kind_counts: dict[str, int] = {}
+    kind_counts: collections.Counter[str] = collections.Counter()
     reconnects = 0
+    skipped_multiline = 0
     effective_origin = args.origin
     origin_note = None
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as out:
-        # Metadata header line (line 1). Written first, patched-in fields last.
-        # We stream frames as we go, so metadata is written up front with the
-        # fields known at connect time; per-run summary is printed to stderr.
-        meta_placeholder_pos = None
+        # Metadata header line (line 1). We stream frames as we go, so it is
+        # written up front with the fields known at connect time; the per-run
+        # summary goes to stderr. The achieved cycle count is recoverable from
+        # the frames themselves — snapshot_count is the number of connections
+        # and mid_stream_snapshots the number of reconnects, both of which
+        # harness/src/trace.cpp already computes.
         cycles = max(1, args.cycles)
         per_cycle = args.duration if cycles == 1 else (args.reconnect_after or args.duration)
 
@@ -403,10 +408,20 @@ def capture(args) -> int:
                         except json.JSONDecodeError:
                             sys.stderr.write("[capture] skipping non-JSON frame\n")
                             continue
+                        # The whole file format is one JSON object per line, and
+                        # the frame text is spliced in unescaped. A pretty-printed
+                        # frame parses perfectly and would still split the record
+                        # across several lines. Every downstream reader rejects
+                        # the result loudly, so this is belt and braces — but the
+                        # invariant is one line to state and free to keep.
+                        if "\n" in text or "\r" in text:
+                            skipped_multiline += 1
+                            sys.stderr.write("[capture] skipping frame containing a newline\n")
+                            continue
                         out.write('{"rx_ns": %d, "frame": %s}\n' % (rx_ns, text))
                         frame_count += 1
                         kind = obj.get("type", "?") if isinstance(obj, dict) else "?"
-                        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+                        kind_counts[kind] += 1
                         if frame_count % 200 == 0:
                             out.flush()
                             sys.stderr.write(
@@ -427,7 +442,8 @@ def capture(args) -> int:
 
     sys.stderr.write("\n")
     sys.stderr.write(
-        f"[capture] done: {frame_count} frames, kinds={kind_counts}, "
+        f"[capture] done: {frame_count} frames, kinds={dict(kind_counts)}, "
+        f"skipped_multiline={skipped_multiline}, "
         f"reconnects={reconnects}, origin_sent={effective_origin!r}, "
         f"handshake={client.handshake_status!r}\n"
     )

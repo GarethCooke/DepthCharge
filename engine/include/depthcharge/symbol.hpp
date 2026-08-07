@@ -12,6 +12,7 @@
 
 #include <cstdint>
 
+#include "depthcharge/decimal.hpp"
 #include "depthcharge/feed_event.hpp"
 
 namespace depthcharge {
@@ -28,6 +29,17 @@ struct SymbolSpec {
 
     // Wire quantity units per Qty step. Anvil quotes whole units, so 1.
     Qty qty_step = 1;
+
+    // A spec the adapter cannot decode against: a non-positive qty_step would
+    // divide by zero or invert every size, and a scale outside parse_scaled's
+    // range rejects every price. Deliberately a query rather than a constructor
+    // precondition — SymbolSpec stays an aggregate (so it stays usable as an
+    // `inline constexpr` constant and keeps DisplaySnapshot trivially
+    // copyable), and the declared constants assert this at compile time while
+    // the adapter checks a runtime-supplied one once per frame.
+    constexpr bool valid() const noexcept {
+        return qty_step > 0 && price_decimals >= 0 && price_decimals <= kMaxDecimals;
+    }
 };
 
 }  // namespace depthcharge
