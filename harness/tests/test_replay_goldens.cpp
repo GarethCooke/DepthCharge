@@ -364,6 +364,118 @@ TEST_CASE("an outage that never resyncs leaves the panel stale to the last frame
     CHECK(r.final_snapshot.stale_reason == GapReason::Disconnect);
 }
 
+// --- stopping early, and the end of the trace -------------------------------
+
+TEST_CASE("an observer that stops the replay does not consume the next line") {
+    // Frame 3 is deliberately malformed. Before the stop conditions moved into
+    // the loop condition, the driver read and fully validated one line past the
+    // stop point, so an observer stopping at frame 2 still threw on frame 3.
+    const std::string trace =
+        R"({"captured_at":"t","url":"u","ticker":101,"tool_version":"0.1.0"})"
+        "\n"
+        R"({"rx_ns":1000000000,"frame":{"type":"book","seq":1,"ticker":101,)"
+        R"("bids":[{"price":"10.0","qty":5}],"asks":[]}})"
+        "\n"
+        R"({"rx_ns":1100000000,"frame":{"type":"book","seq":2,"ticker":101,)"
+        R"("bids":[{"price":"10.001","qty":6}],"asks":[]}})"
+        "\n"
+        R"({"rx_ns":1200000000,"frame":{"seq":3,"ticker":101}})"   // no "type"
+        "\n";
+
+    SUBCASE("stopping via the observer") {
+        std::size_t seen = 0;
+        dc::harness::TraceReader reader(trace, dc::harness::in_memory, "<stop>");
+        const ReplayResult r = dc::harness::run_replay(
+            reader, kAnvilTicker101, ReplayOptions{},
+            [&](const dc::harness::ReplayStep&, const depthcharge::DisplaySnapshot&) -> bool {
+                ++seen;
+                return seen < 2;   // stop after the second event
+            });
+        CHECK(seen == 2);
+        CHECK(r.frames == 2);
+        CHECK(reader.frames_read() == 2);   // frame 3 was never read
+    }
+
+    SUBCASE("stopping via --at") {
+        ReplayOptions opts;
+        opts.max_frames = 2;
+        dc::harness::TraceReader reader(trace, dc::harness::in_memory, "<at>");
+        const ReplayResult r = dc::harness::run_replay(reader, kAnvilTicker101, opts);
+        CHECK(r.frames == 2);
+        CHECK(reader.frames_read() == 2);   // the two stop paths agree
+    }
+
+    SUBCASE("running to the end does still reject the malformed line") {
+        CHECK_THROWS_AS(run_replay_text(trace, kAnvilTicker101, ReplayOptions{}),
+                        dc::harness::TraceError);
+    }
+}
+
+TEST_CASE("trailing silence greys the panel only when the caller reports it") {
+    // Two frames 100 ms apart, then the trace simply stops. A file has no "now",
+    // so the watchdog — which is edge-triggered by the next frame — cannot see
+    // what happened afterwards.
+    const std::string trace =
+        R"({"captured_at":"t","url":"u","ticker":101,"tool_version":"0.1.0"})"
+        "\n"
+        R"({"rx_ns":1000000000,"frame":{"type":"snapshot","seq":1,"ticker":101,)"
+        R"("bids":[{"price":"10.0","qty":5}],"asks":[{"price":"10.001","qty":6}]}})"
+        "\n"
+        R"({"rx_ns":1100000000,"frame":{"type":"book","seq":2,"ticker":101,)"
+        R"("bids":[{"price":"10.002","qty":7}],"asks":[{"price":"10.003","qty":8}]}})"
+        "\n";
+
+    SUBCASE("default: unknown silence, so the replay ends live") {
+        const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions{});
+        CHECK(r.episodes.empty());
+        CHECK(r.final_snapshot.live());
+    }
+
+    SUBCASE("silence shorter than the watchdog is just a quiet market") {
+        ReplayOptions opts;
+        opts.end_of_trace_silence_ms = 500.0;   // under the 1000 ms threshold
+        const ReplayResult r = run_replay_text(trace, kAnvilTicker101, opts);
+        CHECK(r.episodes.empty());
+        CHECK(r.final_snapshot.live());
+    }
+
+    SUBCASE("silence past the watchdog greys it, and nothing clears it") {
+        ReplayOptions opts;
+        opts.end_of_trace_silence_ms = 30000.0;
+        const ReplayResult r = run_replay_text(trace, kAnvilTicker101, opts);
+        REQUIRE(r.episodes.size() == 1);
+        const auto& ep = r.episodes.front();
+        CHECK(ep.reason == GapReason::Disconnect);
+        CHECK(ep.frame_before == 2);
+        CHECK_FALSE(ep.cleared);            // no frame follows to re-baseline
+        CHECK(ep.observed_gap_ms == doctest::Approx(30000.0));
+        CHECK_FALSE(r.final_snapshot.live());
+        CHECK(r.final_snapshot.stale_reason == GapReason::Disconnect);
+        // The book is greyed, not blanked.
+        CHECK(r.final_snapshot.has_top());
+    }
+}
+
+TEST_CASE("symbol_for is the single rule both the ladder and the goldens use") {
+    dc::harness::TraceMeta meta;
+    meta.ticker = 101;
+    CHECK(dc::harness::symbol_for(meta).id == kAnvilTicker101.id);
+    CHECK(dc::harness::symbol_for(meta).price_decimals == kAnvilTicker101.price_decimals);
+    CHECK(dc::harness::symbol_for(meta).qty_step == kAnvilTicker101.qty_step);
+
+    // A trace for another ticker takes its id from the metadata but keeps the
+    // declared scale — Anvil publishes no tick metadata, so the scale is
+    // DepthCharge's declaration and a wrong one must fail loudly on the first
+    // price rather than be silently re-interpreted (ARCHITECTURE §4).
+    meta.ticker = 107;
+    CHECK(dc::harness::symbol_for(meta).id == 107);
+    CHECK(dc::harness::symbol_for(meta).price_decimals == kAnvilTicker101.price_decimals);
+
+    // Metadata with no ticker falls back to the declared constant.
+    meta.ticker = -1;
+    CHECK(dc::harness::symbol_for(meta).id == kAnvilTicker101.id);
+}
+
 TEST_CASE("the verbatim frame text is what reaches the adapter") {
     // slice_frame_json must hand over the server's bytes untouched — key order
     // included — or the harness would be testing a re-serialised frame.

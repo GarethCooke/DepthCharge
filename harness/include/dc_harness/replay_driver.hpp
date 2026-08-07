@@ -61,6 +61,20 @@ struct ReplayOptions {
 
     // Cap on frames processed (0 = whole trace). Used by `dc_ladder --at`.
     std::size_t max_frames = 0;
+
+    // How long the stream stayed silent AFTER the last frame, in milliseconds.
+    //
+    // A trace file has no "now", so trailing silence is invisible to a replay:
+    // the watchdog above is edge-triggered by the arrival of the next frame, and
+    // a capture that ended with thirty seconds of nothing still replays as Live
+    // to the last frame. On the panel the watchdog is a timer and would have
+    // fired. Setting this tells the replay how long the silence actually lasted,
+    // so the same rule applies at the end of the trace as in the middle of it.
+    //
+    // 0 (the default) keeps the historical behaviour, and therefore every
+    // committed golden. Nothing infers it: the capture tool does not record when
+    // it stopped listening, so a caller that knows must say.
+    double end_of_trace_silence_ms = 0.0;
 };
 
 // One stale window, opened by a Gap and closed by the Snapshot that re-baselined
@@ -114,7 +128,24 @@ struct ReplayResult {
 };
 
 // Called after every publish. Return false to stop the replay early.
+//
+// LIFETIME: the observer is borrowed for the duration of the run_replay call
+// and never stored beyond it. It is deliberately taken by const reference rather
+// than by value — a std::function copy is a heap allocation, and this object is
+// documented above as the host stand-in for the M3 firmware feed task, where
+// that is exactly the thing invariant #7 forbids.
 using ReplayObserver = std::function<bool(const ReplayStep&, const depthcharge::DisplaySnapshot&)>;
+
+// The one rule for turning trace metadata into a SymbolSpec.
+//
+// dc_ladder derived the id from the trace while the goldens passed
+// kAnvilTicker101 wholesale, so the same trace could in principle be replayed
+// two ways. The id comes from the metadata when it has one; the scale does not,
+// because Anvil publishes no tick metadata and DepthCharge declares it
+// (ARCHITECTURE §4) — a trace for another ticker is decoded at the declared
+// scale and fails loudly on the first price that will not fit, which is the
+// intended behaviour and not a silent re-interpretation.
+depthcharge::SymbolSpec symbol_for(const TraceMeta& meta);
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,
                         const ReplayOptions& opts, const ReplayObserver& observer = {});

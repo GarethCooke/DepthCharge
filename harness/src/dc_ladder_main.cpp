@@ -13,18 +13,25 @@
 //     --at <frame>       stop after frame N (0 = whole trace)
 //     --levels <n>       levels per side, max 27 (default 12)
 //     --gap-ms <ms>      RX-watchdog threshold for Gap{Disconnect} (default 1000)
+//     --end-silence-ms <ms>  silence after the last frame (default 0 = unknown);
+//                        a file has no "now", so trailing silence is invisible
+//                        unless the caller says how long it lasted
 //     --no-color         plain text, no ANSI
 //     --ascii            no box-drawing / block glyphs
 //     --quiet            report only, no ladder
 //
 // Exit 0 on a clean replay; 1 on bad usage or a malformed trace.
+#include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
@@ -54,9 +61,36 @@ struct Args {
     if (problem != nullptr) { std::fprintf(stderr, "dc_ladder: %s\n", problem); }
     std::fprintf(stderr,
                  "usage: %s <trace.ndjson> [--follow] [--speed x] [--at N]\n"
-                 "          [--levels n] [--gap-ms ms] [--no-color] [--ascii] [--quiet]\n",
+                 "          [--levels n] [--gap-ms ms] [--end-silence-ms ms]\n"
+                 "          [--no-color] [--ascii] [--quiet]\n",
                  argv0);
     std::exit(1);
+}
+
+// Parse a whole argument, or exit with usage.
+//
+// std::from_chars rather than strtoull/strtod: the old form reported nothing, so
+// `--at nonsense` silently replayed the entire trace and `--at -1` wrapped
+// through to SIZE_MAX and did the same. Requiring the whole token to be consumed
+// also rejects `--at 5x`.
+//
+// The narrowing this brings is deliberate and small: from_chars does not accept
+// a leading '+', which strtod/strtoull did. Nobody writes `--speed +2.5`, and
+// keeping it would mean writing code to preserve a syntax with no users.
+template <typename T>
+T parse_arg(const char* argv0, std::string_view text, const char* what) {
+    T value{};
+    const char* const last = text.data() + text.size();
+    const auto res = std::from_chars(text.data(), last, value);
+    if (res.ec != std::errc{} || res.ptr != last) { usage_exit(argv0, what); }
+    if constexpr (std::is_floating_point_v<T>) {
+        // from_chars accepts "nan" and "inf" exactly as strtod did, and since
+        // `nan <= 0.0` is false they sail straight through the range guards
+        // below. This is the check that actually closes the class of input the
+        // switch to from_chars was made for.
+        if (!std::isfinite(value)) { usage_exit(argv0, what); }
+    }
+    return value;
 }
 
 bool parse_args(int argc, char** argv, Args& args) {
@@ -75,21 +109,28 @@ bool parse_args(int argc, char** argv, Args& args) {
         } else if (a == "--ascii") {
             args.style.unicode = false;
         } else if (a == "--speed") {
-            args.speed = std::strtod(value("--speed needs a number").c_str(), nullptr);
+            args.speed = parse_arg<double>(argv[0], value("--speed needs a number"),
+                                           "--speed needs a finite number");
             if (args.speed <= 0.0) { usage_exit(argv[0], "--speed must be > 0"); }
         } else if (a == "--at") {
-            args.replay.max_frames =
-                static_cast<std::size_t>(std::strtoull(value("--at needs a frame").c_str(),
-                                                       nullptr, 10));
+            args.replay.max_frames = parse_arg<std::size_t>(
+                argv[0], value("--at needs a frame"), "--at needs a whole frame number");
         } else if (a == "--levels") {
-            args.style.levels =
-                static_cast<std::size_t>(std::strtoull(value("--levels needs a count").c_str(),
-                                                       nullptr, 10));
+            args.style.levels = parse_arg<std::size_t>(
+                argv[0], value("--levels needs a count"), "--levels needs a whole count");
         } else if (a == "--gap-ms") {
             args.replay.disconnect_gap_ms =
-                std::strtod(value("--gap-ms needs a number").c_str(), nullptr);
+                parse_arg<double>(argv[0], value("--gap-ms needs a number"),
+                                  "--gap-ms needs a finite number");
             if (args.replay.disconnect_gap_ms <= 0.0) {
                 usage_exit(argv[0], "--gap-ms must be > 0");
+            }
+        } else if (a == "--end-silence-ms") {
+            args.replay.end_of_trace_silence_ms =
+                parse_arg<double>(argv[0], value("--end-silence-ms needs a number"),
+                                  "--end-silence-ms needs a finite number");
+            if (args.replay.end_of_trace_silence_ms < 0.0) {
+                usage_exit(argv[0], "--end-silence-ms must be >= 0");
             }
         } else if (!a.empty() && a[0] == '-') {
             usage_exit(argv[0], "unknown option");
@@ -102,6 +143,14 @@ bool parse_args(int argc, char** argv, Args& args) {
     return !args.path.empty();
 }
 
+// std::uint64_t is `unsigned long` on Ubuntu and `unsigned long long` on
+// MinGW-w64, so %llu needs the cast on one and not the other — and
+// -Werror=format makes the mismatch fatal on the first. One helper instead of
+// thirteen call-site casts. Deliberately not std::format: it pulls in the whole
+// std::locale facet suite (+90 KiB stripped, +3.4 s on this TU) and allocates
+// per call, an idiom that must not get anywhere near engine/ or firmware/.
+constexpr unsigned long long ull(std::uint64_t v) noexcept { return v; }
+
 void print_report(const Args& args, const ReplayResult& r) {
     const auto& a = r.adapter;
     std::printf("dc_ladder — DepthCharge M1 replay\n\n");
@@ -113,27 +162,27 @@ void print_report(const Args& args, const ReplayResult& r) {
     std::printf("frames    : %zu over %.1f s\n", r.frames, r.span_seconds());
     std::printf("adapter   : events=%llu  snapshot=%llu book=%llu trade=%llu  "
                 "summary_ignored=%llu\n",
-                static_cast<unsigned long long>(a.events_out),
-                static_cast<unsigned long long>(a.snapshot_frames),
-                static_cast<unsigned long long>(a.book_frames),
-                static_cast<unsigned long long>(a.trade_frames),
-                static_cast<unsigned long long>(a.summary_ignored));
+                ull(a.events_out),
+                ull(a.snapshot_frames),
+                ull(a.book_frames),
+                ull(a.trade_frames),
+                ull(a.summary_ignored));
     std::printf("            parse_errors=%llu price_errors=%llu other_ticker=%llu "
                 "unknown_kind=%llu truncated=%llu\n",
-                static_cast<unsigned long long>(a.parse_errors),
-                static_cast<unsigned long long>(a.price_errors),
-                static_cast<unsigned long long>(a.other_ticker),
-                static_cast<unsigned long long>(a.unknown_kind),
-                static_cast<unsigned long long>(a.truncated_frames));
+                ull(a.parse_errors),
+                ull(a.price_errors),
+                ull(a.other_ticker),
+                ull(a.unknown_kind),
+                ull(a.truncated_frames));
     std::printf("            wire seq went backwards %llu times "
                 "(diagnostic only — Seq is synthesised)\n",
-                static_cast<unsigned long long>(a.wire_seq_backward));
+                ull(a.wire_seq_backward));
     std::printf("book      : snapshots_adopted=%llu trades=%llu gaps=%llu "
                 "deltas_rejected=%llu\n",
-                static_cast<unsigned long long>(r.book.snapshots_adopted),
-                static_cast<unsigned long long>(r.book.trades_applied),
-                static_cast<unsigned long long>(r.book.gaps),
-                static_cast<unsigned long long>(r.book.deltas_rejected));
+                ull(r.book.snapshots_adopted),
+                ull(r.book.trades_applied),
+                ull(r.book.gaps),
+                ull(r.book.deltas_rejected));
     std::printf("watchdog  : %.0f ms  ->  %zu stale episode(s)\n",
                 args.replay.disconnect_gap_ms, r.episodes.size());
     for (const StaleEpisode& ep : r.episodes) {
@@ -165,12 +214,7 @@ int main(int argc, char** argv) {
 
     try {
         dc::harness::TraceReader reader(args.path);
-        const depthcharge::SymbolSpec symbol{
-            static_cast<std::uint32_t>(reader.meta().ticker >= 0 ? reader.meta().ticker
-                                                                 : depthcharge::anvil::
-                                                                       kAnvilTicker101.id),
-            depthcharge::anvil::kAnvilTicker101.price_decimals,
-            depthcharge::anvil::kAnvilTicker101.qty_step};
+        const depthcharge::SymbolSpec symbol = dc::harness::symbol_for(reader.meta());
 
         dc::harness::ReplayObserver observer;
         std::int64_t last_rx = 0;
