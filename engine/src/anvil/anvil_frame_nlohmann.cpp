@@ -30,6 +30,13 @@ namespace {
 
 using nlohmann::json;
 
+// The only way this file reads a JSON string. is_string() already guarantees
+// get_ptr() is non-null, so the three hand-written null checks it replaces were
+// unreachable branches — untestable, and therefore permanently uncovered.
+const std::string* as_string(const json& node) noexcept {
+    return node.is_string() ? node.get_ptr<const std::string*>() : nullptr;
+}
+
 FrameKind kind_from_type(std::string_view type) noexcept {
     if (type == "book") { return FrameKind::Book; }
     if (type == "snapshot") { return FrameKind::Snapshot; }
@@ -42,11 +49,7 @@ FrameKind kind_from_type(std::string_view type) noexcept {
 // a null — is a shape error, not something to coerce.
 bool price_to_ticks(const json& node, const SymbolSpec& spec, PriceTicks& out,
                     ParseStatus& status) noexcept {
-    if (!node.is_string()) {
-        status = ParseStatus::BadShape;
-        return false;
-    }
-    const std::string* s = node.get_ptr<const std::string*>();
+    const std::string* s = as_string(node);
     if (s == nullptr) {
         status = ParseStatus::BadShape;
         return false;
@@ -65,9 +68,10 @@ bool price_to_ticks(const json& node, const SymbolSpec& spec, PriceTicks& out,
 
 // Wire quantities are whole units; SymbolSpec::qty_step says how many wire units
 // make one Qty step (Anvil: 1, so this is an identity with an exactness check).
+// The spec itself is validated once per frame by the caller, not once per level.
 bool qty_to_steps(const json& node, const SymbolSpec& spec, Qty& out,
                   ParseStatus& status) noexcept {
-    if (!node.is_number_integer() || spec.qty_step <= 0) {
+    if (!node.is_number_integer()) {
         status = ParseStatus::BadShape;
         return false;
     }
@@ -121,11 +125,16 @@ bool parse_side(const json& arr, const SymbolSpec& spec, BookLevel* dst,
     return true;
 }
 
-}  // namespace
-
-ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
-                              AnvilFrame& out) noexcept {
-    out.reset();
+// The body. Returns a status and may leave `out` half-written; the wrapper
+// below is what guarantees the postcondition, so nothing in here has to
+// remember to.
+ParseStatus parse_into(std::string_view text, const SymbolSpec& spec,
+                       AnvilFrame& out) noexcept {
+    // A spec the adapter cannot decode against is a shape error like any other,
+    // and checking it here costs one compare per frame instead of one per level
+    // (~250 at Anvil's live depth). The declared constants assert it at compile
+    // time; this catches one built at runtime from trace metadata.
+    if (!spec.valid()) { return ParseStatus::BadShape; }
 
     // Iterator pair (not the string_view overload) so this compiles against any
     // nlohmann 3.x, and allow_exceptions=false so nothing escapes a noexcept fn.
@@ -133,9 +142,10 @@ ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
                                  /*allow_exceptions=*/false);
     if (doc.is_discarded() || !doc.is_object()) { return ParseStatus::NotJson; }
 
-    const auto type_it = doc.find("type");
-    if (type_it == doc.end() || !type_it->is_string()) { return ParseStatus::MissingType; }
-    const std::string* type = type_it->get_ptr<const std::string*>();
+    const std::string* type = nullptr;
+    if (const auto type_it = doc.find("type"); type_it != doc.end()) {
+        type = as_string(*type_it);
+    }
     if (type == nullptr) { return ParseStatus::MissingType; }
 
     const FrameKind kind = kind_from_type(*type);
@@ -158,10 +168,7 @@ ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
         if (ticker < 0) { return ParseStatus::BadShape; }
         out.ticker = static_cast<std::uint32_t>(ticker);
         out.has_ticker = true;
-        if (out.ticker != spec.id) {
-            out.reset();
-            return ParseStatus::OtherTicker;
-        }
+        if (out.ticker != spec.id) { return ParseStatus::OtherTicker; }
     }
 
     ParseStatus status = ParseStatus::Ok;
@@ -170,15 +177,11 @@ ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
         case FrameKind::Book: {
             const auto bids_it = doc.find("bids");
             const auto asks_it = doc.find("asks");
-            if (bids_it == doc.end() || asks_it == doc.end()) {
-                out.reset();
-                return ParseStatus::BadShape;
-            }
+            if (bids_it == doc.end() || asks_it == doc.end()) { return ParseStatus::BadShape; }
             if (!parse_side(*bids_it, spec, out.bids, out.bid_count, out.levels_truncated,
                             status) ||
                 !parse_side(*asks_it, spec, out.asks, out.ask_count, out.levels_truncated,
                             status)) {
-                out.reset();
                 return status;
             }
             break;
@@ -187,21 +190,15 @@ ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
             const auto px_it = doc.find("price");
             const auto qty_it = doc.find("qty");
             const auto aggr_it = doc.find("aggr");
-            if (px_it == doc.end() || qty_it == doc.end() || aggr_it == doc.end() ||
-                !aggr_it->is_string()) {
-                out.reset();
+            if (px_it == doc.end() || qty_it == doc.end() || aggr_it == doc.end()) {
                 return ParseStatus::BadShape;
             }
             if (!price_to_ticks(*px_it, spec, out.trade_px, status) ||
                 !qty_to_steps(*qty_it, spec, out.trade_qty, status)) {
-                out.reset();
                 return status;
             }
-            const std::string* aggr = aggr_it->get_ptr<const std::string*>();
-            if (aggr == nullptr) {
-                out.reset();
-                return ParseStatus::BadShape;
-            }
+            const std::string* aggr = as_string(*aggr_it);
+            if (aggr == nullptr) { return ParseStatus::BadShape; }
             // "B"/"S" are the engine's AggrSide (protocol §1): the aggressor is
             // the incoming order, so B => a buy hit the offer.
             if (*aggr == "B") {
@@ -209,7 +206,6 @@ ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
             } else if (*aggr == "S") {
                 out.aggressor = Side::Ask;
             } else {
-                out.reset();
                 return ParseStatus::BadShape;
             }
             break;
@@ -221,6 +217,21 @@ ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
 
     out.kind = kind;
     return ParseStatus::Ok;
+}
+
+}  // namespace
+
+ParseStatus parse_anvil_frame(std::string_view text, const SymbolSpec& spec,
+                              AnvilFrame& out) noexcept {
+    // The declared postcondition (anvil_frame.hpp) in two lines, instead of a
+    // hand-written `out.reset()` before each of ten failing returns — three of
+    // which did not have one and were correct only because of the reset here.
+    // The M3 streaming parser has to reproduce this contract; giving it one
+    // place to honour rather than ten is the point.
+    out.reset();
+    const ParseStatus st = parse_into(text, spec, out);
+    if (st != ParseStatus::Ok) { out.reset(); }
+    return st;
 }
 
 }  // namespace depthcharge::anvil

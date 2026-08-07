@@ -93,8 +93,12 @@ struct AnvilFrame {
 // every price string must fit exactly; a price with more precision than that
 // yields BadPrice rather than a rounded level (ARCHITECTURE §4).
 //
-// Implementations must be reentrant, must not allocate into `out`, and must
-// leave `out` well-formed (kind == Unknown) on any non-Ok status.
+// Implementations must be reentrant, must not allocate into `out`, must reset
+// `out` on entry, and must leave it well-formed (kind == Unknown, all counts
+// and flags cleared) on any non-Ok status. The parser is the sole owner of that
+// reset — callers do not pre-clear the frame. test_anvil_adapter.cpp asserts
+// this against every failure mode, so a second implementation of this
+// declaration inherits the check rather than the habit.
 ParseStatus parse_anvil_frame(std::string_view json, const SymbolSpec& spec,
                               AnvilFrame& out) noexcept;
 

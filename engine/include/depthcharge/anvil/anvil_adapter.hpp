@@ -29,7 +29,6 @@
 
 #include <cstdint>
 #include <string_view>
-#include <utility>
 
 #include "depthcharge/anvil/anvil_frame.hpp"
 #include "depthcharge/feed_event.hpp"
@@ -45,6 +44,7 @@ namespace depthcharge::anvil {
 // it, so a server that started quoting 5 decimals would fail loudly on the
 // first frame instead of drawing a subtly wrong ladder.
 inline constexpr SymbolSpec kAnvilTicker101{/*id=*/101, /*price_decimals=*/4, /*qty_step=*/1};
+static_assert(kAnvilTicker101.valid(), "a declared SymbolSpec must be decodable");
 
 class AnvilAdapter {
 public:
@@ -80,8 +80,9 @@ public:
     template <typename Sink>
     void on_frame(std::string_view json, Sink&& sink) {
         ++stats_.frames_in;
-        frame_.reset();
-
+        // frame_ is not reset here: parse_anvil_frame owns that, on entry and on
+        // every non-Ok exit (anvil_frame.hpp). Two owners meant two places for a
+        // future implementation of the seam to get it wrong.
         const ParseStatus st = parse_anvil_frame(json, symbol_, frame_);
         if (st != ParseStatus::Ok) {
             switch (st) {
@@ -107,15 +108,15 @@ public:
         switch (frame_.kind) {
             case FrameKind::Snapshot:
                 ++stats_.snapshot_frames;
-                emit_snapshot(std::forward<Sink>(sink));
+                emit_snapshot(sink);
                 break;
             case FrameKind::Book:
                 ++stats_.book_frames;
-                emit_snapshot(std::forward<Sink>(sink));
+                emit_snapshot(sink);
                 break;
             case FrameKind::Trade:
                 ++stats_.trade_frames;
-                emit_trade(std::forward<Sink>(sink));
+                emit_trade(sink);
                 break;
             case FrameKind::Summary:
                 ++stats_.summary_ignored;
@@ -133,10 +134,8 @@ public:
         ++stats_.transport_gaps;
         FeedEvent ev{};
         ev.kind = FeedEvent::Kind::Gap;
-        ev.seq = take_seq();
         ev.reason = reason;
-        ++stats_.events_out;
-        sink(ev);
+        emit(ev, sink);
     }
 
 private:
@@ -144,30 +143,36 @@ private:
     // requires and the wire does not give us.
     Seq take_seq() noexcept { return next_seq_++; }
 
+    // The one door every event leaves by: stamp the synthesised Seq, count it,
+    // hand it to the sink. Three copies of that tail meant the density
+    // guarantee lived in three places; now it can be checked by reading one.
     template <typename Sink>
-    void emit_snapshot(Sink&& sink) {
-        FeedEvent ev{};
-        ev.kind = FeedEvent::Kind::Snapshot;
+    void emit(FeedEvent& ev, Sink& sink) {
         ev.seq = take_seq();
-        ev.bids = LevelSpan{frame_.bids, frame_.bid_count};
-        ev.asks = LevelSpan{frame_.asks, frame_.ask_count};
         ++stats_.events_out;
-        // The spans point into frame_, which stays valid for exactly this call —
-        // the lifetime rule in feed_event.hpp. frame_.reset() on the next frame
-        // is what ends it.
         sink(ev);
     }
 
     template <typename Sink>
-    void emit_trade(Sink&& sink) {
+    void emit_snapshot(Sink& sink) {
+        FeedEvent ev{};
+        ev.kind = FeedEvent::Kind::Snapshot;
+        ev.bids = LevelSpan{frame_.bids, frame_.bid_count};
+        ev.asks = LevelSpan{frame_.asks, frame_.ask_count};
+        // The spans point into frame_, which stays valid for exactly this call —
+        // the lifetime rule in feed_event.hpp. The parser's reset on the next
+        // frame is what ends it.
+        emit(ev, sink);
+    }
+
+    template <typename Sink>
+    void emit_trade(Sink& sink) {
         FeedEvent ev{};
         ev.kind = FeedEvent::Kind::Trade;
-        ev.seq = take_seq();
         ev.px = frame_.trade_px;
         ev.qty = frame_.trade_qty;
         ev.side = frame_.aggressor;
-        ++stats_.events_out;
-        sink(ev);
+        emit(ev, sink);
     }
 
     SymbolSpec symbol_{};
