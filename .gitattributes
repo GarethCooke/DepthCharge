@@ -1,0 +1,13 @@
+# Shell scripts keep LF in the working copy, on every platform.
+#
+# The desk here is Windows with core.autocrlf=true, and harness/tsan.sh is meant
+# to be run from that same checkout under WSL — ThreadSanitizer needs Linux. A
+# CRLF checkout makes the shebang `/usr/bin/env bash\r`, which bash reports as
+# "bad interpreter" with the carriage return invisible in the error. Without
+# this line a fresh clone would ship a script that cannot run on the only
+# platform it targets.
+*.sh text eol=lf
+
+# Replay traces are the project's ground truth and are compared byte for byte;
+# nothing may rewrite their line endings on the way through a working copy.
+*.ndjson -text
