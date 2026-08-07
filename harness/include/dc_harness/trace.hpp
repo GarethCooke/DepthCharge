@@ -54,7 +54,9 @@ struct TraceStats {
     TraceMeta meta;
 
     std::size_t frame_count = 0;
-    std::map<std::string, std::size_t> kind_counts;  // keyed by wire "type"
+    // std::less<> so count() can look up a string_view without materialising a
+    // std::string for every probe.
+    std::map<std::string, std::size_t, std::less<>> kind_counts;  // keyed by wire "type"
 
     std::int64_t first_rx_ns = 0;
     std::int64_t last_rx_ns = 0;
@@ -84,18 +86,26 @@ struct TraceStats {
         double s = span_seconds();
         return s > 0.0 ? static_cast<double>(frame_count) / s : 0.0;
     }
-    std::size_t count(const std::string& kind) const {
+    std::size_t count(std::string_view kind) const {
         auto it = kind_counts.find(kind);
         return it == kind_counts.end() ? 0 : it->second;
     }
 };
 
-// Thrown on any structural violation; carries the 1-based line number.
+// Thrown on any structural violation; carries the 1-based line number and, when
+// the caller named the source, which trace it came from — so a failure across
+// several fixtures says which one.
 struct TraceError : std::runtime_error {
     std::size_t line_no;
-    TraceError(std::size_t ln, const std::string& msg)
-        : std::runtime_error("line " + std::to_string(ln) + ": " + msg),
-          line_no(ln) {}
+    std::string source;
+
+    TraceError(std::size_t ln, const std::string& msg) : TraceError(std::string{}, ln, msg) {}
+
+    TraceError(std::string src, std::size_t ln, const std::string& msg)
+        : std::runtime_error((src.empty() ? std::string{} : src + ": ") + "line " +
+                             std::to_string(ln) + ": " + msg),
+          line_no(ln),
+          source(std::move(src)) {}
 };
 
 // Read + validate a trace from disk. Throws TraceError on malformed structure,
@@ -121,18 +131,34 @@ struct TraceFrame {
     std::size_t line_no = 0;    // 1-based line in the file
     std::int64_t rx_ns = 0;     // capture-tool monotonic clock
     std::string_view frame_json;  // borrowed; valid until the next next() call
+
+    // The frame's wire "type", and its wire seq when it carries one. Both are
+    // decoded here because the reader already holds the parsed line: without
+    // them read_trace() would have to re-parse frame_json for its per-kind and
+    // seq statistics, which measured at roughly double the cost of reading the
+    // trace at all.
+    std::string_view type;      // borrowed; valid until the next next() call
+    std::int64_t seq = 0;
+    bool has_seq = false;
 };
 
 class TraceReader {
 public:
     explicit TraceReader(const std::string& path);            // from disk
-    TraceReader(std::string_view text, InMemoryTag);          // from memory
+    TraceReader(std::string_view text, InMemoryTag, std::string name = "<text>");
 
     const TraceMeta& meta() const noexcept { return meta_; }
+    const std::string& name() const noexcept { return name_; }
     std::size_t frames_read() const noexcept { return frame_index_; }
 
     // Advance to the next frame. Returns false at end of trace. Throws
     // TraceError with the line number on a malformed line.
+    //
+    // Structural rules, which are the harness's single definition of a valid
+    // trace: the line is a JSON object carrying an integer rx_ns and an object
+    // `frame`; the frame carries a string `type`; and rx_ns never decreases,
+    // because it comes from a monotonic clock in the capture tool and a
+    // decrease is a corrupt trace rather than a market phenomenon.
     bool next(TraceFrame& out);
 
 private:
@@ -140,10 +166,14 @@ private:
 
     std::unique_ptr<std::istream> owned_;
     std::istream* in_ = nullptr;
+    std::string name_;
     std::string line_;
+    std::string type_;          // backs TraceFrame::type across the next() call
     TraceMeta meta_;
     std::size_t line_no_ = 0;
     std::size_t frame_index_ = 0;
+    std::int64_t last_rx_ns_ = 0;
+    bool have_rx_ = false;
 };
 
 // Slice the verbatim value of the top-level "frame" key out of a capture line.
