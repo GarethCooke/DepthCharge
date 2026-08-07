@@ -11,6 +11,10 @@
 // Snapshot clears it. That is the executable form of invariant #5.
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <functional>
+#include <iterator>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -94,10 +98,22 @@ TEST_CASE("baseline trace: the wire seq misbehaves and the synthesised Seq does 
     CHECK(r.adapter.wire_seq_backward == 14);
 
     // ...and the boundary Seq the engine actually sees is dense and monotonic.
+    //
+    // std::ranges::mismatch rather than ranges::equal: equal returns a bare
+    // bool, which on a golden pinning 1225 synthesised Seqs would say only that
+    // something was wrong. This names the first index that diverged and both
+    // values, the way the per-element loop it replaces did — in one assertion
+    // instead of 1225.
     REQUIRE(seqs.size() == 1225);
-    for (std::size_t i = 0; i < seqs.size(); ++i) {
-        REQUIRE(seqs[i] == i + 1);
+    const auto dense = std::views::iota(depthcharge::Seq{1}, depthcharge::Seq{1226});
+    const auto [got, want] = std::ranges::mismatch(seqs, dense);
+    if (got != seqs.end()) {
+        const std::string at = "first divergence at index " +
+                               std::to_string(got - seqs.begin()) + ": got " +
+                               std::to_string(*got) + ", want " + std::to_string(*want);
+        INFO(at);
     }
+    CHECK(got == seqs.end());
     CHECK(gaps == 0);  // a non-monotonic wire seq never becomes a Gap
 }
 
@@ -163,10 +179,17 @@ TEST_CASE("baseline trace: final book and the whole trade ring") {
         CHECK(s.trades[i].aggressor == expected[i].side);
     }
 
-    // Prints are strictly older as you walk down the tape.
-    for (std::size_t i = 1; i < depthcharge::kTradeRingSize; ++i) {
-        CHECK(s.trades[i - 1].seq > s.trades[i].seq);
+    // Prints are strictly older as you walk down the tape. is_sorted_until
+    // rather than is_sorted: the same call, but it names the position where the
+    // ordering broke instead of returning a bare false.
+    const auto* inversion =
+        std::ranges::is_sorted_until(s.trades, std::greater{}, &depthcharge::TradePrint::seq);
+    if (inversion != std::end(s.trades)) {
+        const std::string at = "tape ordering breaks at position " +
+                               std::to_string(inversion - std::begin(s.trades));
+        INFO(at);
     }
+    CHECK(inversion == std::end(s.trades));
 }
 
 TEST_CASE("baseline trace: the ladder never goes stale on a healthy feed") {

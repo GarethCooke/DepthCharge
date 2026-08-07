@@ -15,6 +15,7 @@
 #include <depthcharge/snapshot_channel.hpp>
 
 #include "alloc_probe.hpp"
+#include "dc_test_support.hpp"
 
 using depthcharge::Book;
 using depthcharge::BookLevel;
@@ -24,42 +25,10 @@ using depthcharge::FeedStatus;
 using depthcharge::GapReason;
 using depthcharge::Side;
 using depthcharge::SnapshotChannel;
-using depthcharge::SymbolSpec;
-
-namespace {
-
-constexpr SymbolSpec kSpec{101, 4, 1};
-
-FeedEvent snapshot_event(depthcharge::Seq seq, const std::vector<BookLevel>& bids,
-                         const std::vector<BookLevel>& asks) {
-    FeedEvent ev{};
-    ev.kind = FeedEvent::Kind::Snapshot;
-    ev.seq = seq;
-    ev.bids = {bids.data(), static_cast<std::uint32_t>(bids.size())};
-    ev.asks = {asks.data(), static_cast<std::uint32_t>(asks.size())};
-    return ev;
-}
-
-FeedEvent trade_event(depthcharge::Seq seq, depthcharge::PriceTicks px, depthcharge::Qty qty,
-                      Side side) {
-    FeedEvent ev{};
-    ev.kind = FeedEvent::Kind::Trade;
-    ev.seq = seq;
-    ev.px = px;
-    ev.qty = qty;
-    ev.side = side;
-    return ev;
-}
-
-FeedEvent gap_event(depthcharge::Seq seq, GapReason reason) {
-    FeedEvent ev{};
-    ev.kind = FeedEvent::Kind::Gap;
-    ev.seq = seq;
-    ev.reason = reason;
-    return ev;
-}
-
-}  // namespace
+using dc::testing::gap_event;
+using dc::testing::kSpec;
+using dc::testing::snapshot_event;
+using dc::testing::trade_event;
 
 TEST_CASE("a fresh book is stale by construction — nothing adopted, nothing drawable") {
     Book book(kSpec);
