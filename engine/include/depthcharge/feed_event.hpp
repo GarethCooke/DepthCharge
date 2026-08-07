@@ -72,6 +72,13 @@ inline constexpr std::size_t kMaxSnapshotLevels = 256;
 // the levels first. The phase-1 book copies on adopt.
 //
 // Ordering: best-first. bids descending by px, asks ascending.
+//
+// begin()/end() are not decoration: they make LevelSpan a contiguous range, so
+// std::copy_n / std::ranges::copy and a range-for all work on it directly. That
+// is what keeps the M4 dense-window book cheap to write against this contract.
+// It is deliberately NOT std::span — <span> is absent from the ESP32-S3
+// toolchain's libstdc++ (xtensa GCC 8.4), and an explicit uint32_t size keeps
+// the struct layout identical on a 32-bit target and a 64-bit host.
 struct LevelSpan {
     const BookLevel* data{};
     std::uint32_t    size{};
