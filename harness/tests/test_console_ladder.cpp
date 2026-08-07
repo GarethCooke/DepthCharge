@@ -170,6 +170,83 @@ TEST_CASE("every row is the same width, in both glyph modes and both states") {
     }
 }
 
+// The header and the stale banner grow with the seq digits and the gap reason,
+// and both used to overflow the box: a fresh book renders "STALE awaiting
+// snapshot" at seq 0 as a 62-column header inside a 57-column frame. The width
+// test above missed it because make_snapshot() only ever produces Disconnect at
+// a single-digit seq. This sweeps the two axes that actually drive the width.
+TEST_CASE("the box contains the header and the banner at every reason and seq width") {
+    const GapReason reasons[] = {GapReason::SeqGap, GapReason::ChecksumFail,
+                                 GapReason::Disconnect, GapReason::Overflow,
+                                 GapReason::Resync};
+    const depthcharge::Seq seqs[] = {0, 4, 332, 1225, 999999, 18446744073709551615ULL};
+
+    for (const bool unicode : {true, false}) {
+        for (const GapReason reason : reasons) {
+            for (const depthcharge::Seq seq : seqs) {
+                LadderStyle style = plain();
+                style.unicode = unicode;
+
+                Book book(kSpec);
+                std::vector<BookLevel> bids, asks;
+                for (int i = 0; i < 6; ++i) {
+                    bids.push_back({99972 - i * 3, 20 + i * 7});
+                    asks.push_back({99979 + i * 3, 15 + i * 5});
+                }
+                FeedEvent ev{};
+                ev.kind = FeedEvent::Kind::Snapshot;
+                ev.seq = 1;
+                ev.bids = {bids.data(), static_cast<std::uint32_t>(bids.size())};
+                ev.asks = {asks.data(), static_cast<std::uint32_t>(asks.size())};
+                book.apply(ev);
+
+                FeedEvent gap{};
+                gap.kind = FeedEvent::Kind::Gap;
+                gap.seq = seq;
+                gap.reason = reason;
+                book.apply(gap);
+
+                DisplaySnapshot snap{};
+                book.publish(snap);
+
+                const std::string label = "unicode=" + std::to_string(unicode) +
+                                          " reason=" + std::to_string(static_cast<int>(reason)) +
+                                          " seq=" + std::to_string(seq);
+                INFO(label);
+
+                const auto rows = lines_of(render_ladder(snap, style));
+                REQUIRE(rows.size() > 4);
+                const std::size_t w = columns(rows.front());
+                for (const auto& row : rows) {
+                    CHECK(columns(row) == w);
+                }
+            }
+        }
+    }
+}
+
+// The state every panel boots into, and the widest of all of them: nothing
+// adopted, so the reason is "awaiting snapshot" and there are no level rows to
+// pad the box out.
+TEST_CASE("the boot ladder — nothing adopted — is square") {
+    for (const bool unicode : {true, false}) {
+        LadderStyle style = plain();
+        style.unicode = unicode;
+
+        Book book(kSpec);
+        DisplaySnapshot snap{};
+        book.publish(snap);
+
+        const auto rows = lines_of(render_ladder(snap, style));
+        REQUIRE(rows.size() >= 5);
+        const std::size_t w = columns(rows.front());
+        for (const auto& row : rows) {
+            CHECK(columns(row) == w);
+        }
+        CHECK(contains(render_ladder(snap, style), "awaiting snapshot"));
+    }
+}
+
 TEST_CASE("--ascii emits no non-ASCII bytes and --no-color emits no escapes") {
     LadderStyle style = plain();
     style.unicode = false;

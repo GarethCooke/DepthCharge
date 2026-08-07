@@ -4,6 +4,12 @@
 // box-drawing and block glyphs are multi-byte UTF-8 but one column wide, so
 // std::string::size() would misalign every row. A tiny Row builder counts
 // columns for us and treats colour escapes as zero width.
+//
+// The box width is chosen up front from the widest thing any row can contain,
+// in one pass and without buffering rows — see `inner` in render_ladder. That
+// matters beyond this file: M3 Stage D takes this renderer as the visual spec
+// for the HUB75 panel, where invariant #7 forbids the obvious alternative of
+// building every row, measuring, and padding in a second pass.
 #include "dc_harness/console_ladder.hpp"
 
 #include <algorithm>
@@ -15,6 +21,7 @@
 namespace dc::harness {
 namespace {
 
+using depthcharge::BookLevel;
 using depthcharge::DisplaySnapshot;
 using depthcharge::GapReason;
 using depthcharge::Qty;
@@ -34,24 +41,58 @@ constexpr std::string_view kStale = "\x1b[1;93m";  // amber: the honest warning
 constexpr std::string_view kTape = "\x1b[97m";
 }  // namespace ansi
 
+// The fixed text of the two rows whose width depends on their content. Named
+// rather than inlined so the width calculation below and the drawing code
+// cannot disagree about how long they are.
+constexpr std::string_view kTitle = " DEPTHCHARGE ";
+constexpr std::string_view kVenue = " ANVIL ";
+constexpr std::string_view kSeqLabel = " seq ";
+constexpr std::string_view kBannerLead = "!! STALE - book unknown (";
+constexpr std::string_view kBannerTail = ") - not live data";
+
+// The header's right-hand run: " ● " before the status text, then a preferred
+// column of breathing room before the border.
+//
+// The margin is deliberately NOT part of the width floor. The floor is what the
+// header must have or it overflows the box; the margin is a nicety the fill
+// stops short for and pad_to() reclaims when the row is otherwise short. That
+// keeps a narrow "LIVE" header spaced off the frame while a wide "STALE
+// awaiting snapshot" one simply uses the room — which is what the old
+// status_cols arithmetic did when it happened to fit, and the box now grows to
+// guarantee rather than leaving the header hanging outside it.
+constexpr std::size_t kStatusLead = 3;    // ' ' + dot + ' '
+constexpr std::size_t kStatusMargin = 1;  // preferred gap before the border
+
 struct Glyphs {
     std::string_view tl, tr, bl, br, h, v, ml, mr;
     std::string_view fill, empty, stale_fill;
     std::string_view live_dot, stale_dot, up, down, times, sep;
 };
 
-constexpr Glyphs kUnicode{"┌", "┐", "└", "┘", "─", "│", "├", "┤",
-                          "█", "░", "·",
-                          "●", "▒", "▲", "▼", "×", "·"};
-constexpr Glyphs kAscii{"+", "+", "+", "+", "-", "|", "+", "+",
-                        "#", ".", ":",
-                        "*", "!", "^", "v", "x", "-"};
+// Designated rather than positional: seventeen same-typed members in a row is a
+// transposition waiting to happen, and swapping two would still compile.
+constexpr Glyphs kUnicode{
+    .tl = "┌", .tr = "┐", .bl = "└", .br = "┘",
+    .h = "─", .v = "│", .ml = "├", .mr = "┤",
+    .fill = "█", .empty = "░", .stale_fill = "·",
+    .live_dot = "●", .stale_dot = "▒", .up = "▲", .down = "▼", .times = "×", .sep = "·",
+};
+constexpr Glyphs kAscii{
+    .tl = "+", .tr = "+", .bl = "+", .br = "+",
+    .h = "-", .v = "|", .ml = "+", .mr = "+",
+    .fill = "#", .empty = ".", .stale_fill = ":",
+    .live_dot = "*", .stale_dot = "!", .up = "^", .down = "v", .times = "x", .sep = "-",
+};
 
 // A row under construction: `w` counts display columns, colour escapes add none.
+// The colour flag is a member rather than an argument to esc(), which used to
+// mean threading it through two dozen call sites.
 class Row {
 public:
-    void esc(std::string_view code, bool enabled) {
-        if (enabled) { text_ += code; }
+    explicit Row(bool color) noexcept : color_(color) {}
+
+    void esc(std::string_view code) {
+        if (color_) { text_ += code; }
     }
     void glyph(std::string_view g) {  // one column, possibly multi-byte
         text_ += g;
@@ -61,21 +102,38 @@ public:
         text_ += s;
         w_ += s.size();
     }
-    void repeat(std::string_view g, std::size_t n) {
-        for (std::size_t i = 0; i < n; ++i) { glyph(g); }
+    // Kept as a loop: 25 of the 26 pads per ladder are a single column, where
+    // append(n, ' ') does not inline and measures slower.
+    void pad(std::size_t n) {
+        while (n-- > 0) { put(" "); }
     }
     void pad_to(std::size_t width) {
-        while (w_ < width) { put(" "); }
+        if (w_ < width) { pad(width - w_); }
+    }
+    void repeat(std::string_view g, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) { glyph(g); }
     }
     void fill_to(std::size_t width, std::string_view g) {
         while (w_ < width) { glyph(g); }
     }
-    std::size_t width() const { return w_; }
-    const std::string& str() const { return text_; }
+    std::size_t width() const noexcept { return w_; }
+    const std::string& str() const noexcept { return text_; }
 
 private:
     std::string text_;
     std::size_t w_ = 0;
+    bool color_;
+};
+
+// Everything a row needs that does not change within a frame.
+struct Ctx {
+    const Glyphs& g;
+    bool color;
+    bool stale;
+    std::size_t inner;    // box interior width, in columns
+    std::size_t bar_w;
+    std::int32_t dp;      // price decimals
+    Qty max_qty;
 };
 
 std::string qty_text(Qty q) {
@@ -84,7 +142,7 @@ std::string qty_text(Qty q) {
 
 // Right-align within a fixed field.
 void put_right(Row& row, std::string_view s, std::size_t width) {
-    for (std::size_t i = s.size(); i < width; ++i) { row.put(" "); }
+    if (s.size() < width) { row.pad(width - s.size()); }
     row.put(s);
 }
 
@@ -97,7 +155,7 @@ void put_right_at(Row& row, std::string_view s, std::size_t end_col) {
     row.put(s);
 }
 
-const char* reason_text(GapReason r) {
+std::string_view reason_text(GapReason r) {
     switch (r) {
         case GapReason::SeqGap:       return "seq gap";
         case GapReason::ChecksumFail: return "checksum fail";
@@ -110,24 +168,61 @@ const char* reason_text(GapReason r) {
 
 // Largest quantity in the drawn window; the bars are scaled to it so the shape
 // of the visible book is readable regardless of the venue's absolute sizes.
+//
+// Seeded at 1, and each side guarded for emptiness: a book that has adopted
+// nothing renders through here (test_console_ladder.cpp covers it), and
+// std::ranges::max over an empty range is undefined behaviour, not an error.
 Qty window_max_qty(const DisplaySnapshot& s, std::size_t levels) {
-    Qty m = 1;
-    for (std::size_t i = 0; i < levels && i < s.bid_count; ++i) { m = std::max(m, s.bids[i].qty); }
-    for (std::size_t i = 0; i < levels && i < s.ask_count; ++i) { m = std::max(m, s.asks[i].qty); }
-    return m;
+    const auto side_max = [levels](const BookLevel* side, std::size_t count) {
+        const std::size_t n = std::min(count, levels);
+        Qty m = 0;
+        for (std::size_t i = 0; i < n; ++i) { m = std::max(m, side[i].qty); }
+        return m;
+    };
+    return std::max({Qty{1}, side_max(s.bids, s.bid_count), side_max(s.asks, s.ask_count)});
 }
 
-void draw_bar(Row& row, Qty qty, Qty max_qty, std::size_t width, bool stale, const Glyphs& g) {
+void draw_bar(Row& row, const Ctx& ctx, Qty qty) {
     std::size_t filled = 0;
-    if (qty > 0 && max_qty > 0) {
-        filled = static_cast<std::size_t>((static_cast<std::int64_t>(width) * qty) / max_qty);
+    if (qty > 0 && ctx.max_qty > 0) {
+        filled = static_cast<std::size_t>((static_cast<std::int64_t>(ctx.bar_w) * qty) /
+                                          ctx.max_qty);
         if (filled == 0) { filled = 1; }  // a level that exists is never invisible
-        filled = std::min(filled, width);
+        filled = std::min(filled, ctx.bar_w);
     }
     // Stale bars are hatched, not solid: the ladder is legible but obviously
     // not a live depth profile, even with colour stripped out.
-    row.repeat(stale ? g.stale_fill : g.fill, filled);
-    row.repeat(stale ? " " : g.empty, width - filled);
+    row.repeat(ctx.stale ? ctx.g.stale_fill : ctx.g.fill, filled);
+    row.repeat(ctx.stale ? " " : ctx.g.empty, ctx.bar_w - filled);
+}
+
+// Every row ends the same way: back to frame colour, pad out to the box width,
+// the right-hand border, reset. Six copies of that became one.
+void close_row(Row& r, const Ctx& ctx, std::string_view border) {
+    r.esc(ansi::kFrame);
+    r.pad_to(ctx.inner);
+    r.glyph(border);
+    r.esc(ansi::kReset);
+}
+
+// One price level. The ask and bid loops were the same fourteen lines differing
+// only in side, colour pair and iteration direction.
+void level_row(Row& r, const Ctx& ctx, const BookLevel& lvl, bool best, bool is_bid) {
+    r.esc(ansi::kFrame);
+    r.glyph(ctx.g.v);
+    const std::string_view tone =
+        ctx.stale ? ansi::kGrey
+                  : (is_bid ? (best ? ansi::kBidBest : ansi::kBid)
+                            : (best ? ansi::kAskBest : ansi::kAsk));
+    r.esc(tone);
+    r.put(is_bid ? " B " : " A ");
+    put_right(r, format_px(lvl.px, ctx.dp), 10);
+    r.put(" ");
+    draw_bar(r, ctx, lvl.qty);
+    // Quantities right-align against the frame, so the column reads as one
+    // number no matter how wide the box is.
+    put_right_at(r, qty_text(lvl.qty), ctx.inner - 1);
+    close_row(r, ctx, ctx.g.v);
 }
 
 }  // namespace
@@ -135,6 +230,10 @@ void draw_bar(Row& row, Qty qty, Qty max_qty, std::size_t width, bool stale, con
 std::string format_px(depthcharge::PriceTicks px, std::int32_t decimals) {
     char buf[depthcharge::kMaxFormattedChars] = {};
     const std::size_t n = depthcharge::format_scaled(px, decimals, buf, sizeof buf);
+    // A price the declared scale cannot render is a configuration error, not an
+    // empty column. Say so where it will be seen: a blank price reads as "no
+    // level here", which is the one thing the ladder must never imply falsely.
+    if (n == 0) { return "?"; }
     return std::string(buf, n);
 }
 
@@ -148,10 +247,33 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
     const bool stale = !snap.live();
     const std::size_t levels = std::min(style.levels, depthcharge::kDisplayLevels);
     const std::size_t bar_w = std::max<std::size_t>(style.bar_width, 4);
-    // Wide enough for the level rows, and never so narrow that the tape row can
-    // only hold one print.
-    const std::size_t inner = std::max<std::size_t>(23 + bar_w, 56);
     const std::int32_t dp = snap.symbol.price_decimals;
+
+    const std::string id_text = std::to_string(snap.symbol.id);
+    const std::string seq_text = std::to_string(static_cast<unsigned long long>(snap.seq));
+    const std::string_view reason = reason_text(snap.stale_reason);
+    const std::string status =
+        stale ? std::string("STALE ") + std::string(reason) : std::string("LIVE");
+
+    // The box has to be at least as wide as the widest row it will contain.
+    // Level rows set a floor of 23 + bar_w, and 56 keeps the tape row able to
+    // hold more than one print — but the header and the stale banner both grow
+    // with the seq digits and the gap reason, and used to overflow the box
+    // silently (a 62-column header inside a 57-column frame at boot).
+    //
+    // Both are computed here from the same string_views the drawing code uses,
+    // so they cannot drift apart. tl + h + title + sep + venue + id + ' ' + sep
+    // + seq label + seq + ' ', then ' ' + dot + ' ' + status.
+    const std::size_t header_cols = 2 + kTitle.size() + 1 + kVenue.size() + id_text.size() +
+                                    1 + 1 + kSeqLabel.size() + seq_text.size() + 1 +
+                                    kStatusLead + status.size();
+    // v + ' ' + lead + reason + tail.
+    const std::size_t banner_cols =
+        stale ? 2 + kBannerLead.size() + reason.size() + kBannerTail.size() : 0;
+    const std::size_t inner =
+        std::max({23 + bar_w, std::size_t{56}, header_cols, banner_cols});
+
+    const Ctx ctx{g, c, stale, inner, bar_w, dp, window_max_qty(snap, levels)};
 
     std::string out;
     const auto line = [&out](const Row& r) {
@@ -161,35 +283,30 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
 
     // --- header -------------------------------------------------------------
     {
-        Row r;
-        r.esc(ansi::kFrame, c);
+        Row r(c);
+        r.esc(ansi::kFrame);
         r.glyph(g.tl);
         r.glyph(g.h);
-        r.put(" DEPTHCHARGE ");
-        r.esc(ansi::kReset, c);
+        r.put(kTitle);
+        r.esc(ansi::kReset);
         r.glyph(g.sep);
-        r.put(" ANVIL ");
-        r.put(std::to_string(snap.symbol.id));
+        r.put(kVenue);
+        r.put(id_text);
         r.put(" ");
         r.glyph(g.sep);
-        r.put(" seq ");
-        r.put(std::to_string(static_cast<unsigned long long>(snap.seq)));
+        r.put(kSeqLabel);
+        r.put(seq_text);
         r.put(" ");
-        r.esc(ansi::kFrame, c);
+        r.esc(ansi::kFrame);
         // Status sits hard against the right edge, where the eye lands last.
-        const std::string status = stale ? std::string("STALE ") + reason_text(snap.stale_reason)
-                                         : std::string("LIVE");
-        const std::size_t status_cols = status.size() + 4;  // dot + spaces + margin
-        r.fill_to(inner > status_cols ? inner - status_cols : 0, g.h);
+        const std::size_t want = kStatusLead + status.size() + kStatusMargin;
+        r.fill_to(inner - std::min(inner, want), g.h);
         r.put(" ");
-        r.esc(stale ? ansi::kStale : ansi::kLive, c);
+        r.esc(stale ? ansi::kStale : ansi::kLive);
         r.glyph(stale ? g.stale_dot : g.live_dot);
         r.put(" ");
         r.put(status);
-        r.esc(ansi::kFrame, c);
-        r.pad_to(inner);
-        r.glyph(g.tr);
-        r.esc(ansi::kReset, c);
+        close_row(r, ctx, g.tr);
         line(r);
     }
 
@@ -197,49 +314,31 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
     // Channel two of the three: the word STALE on its own line, present only
     // when the book is not to be trusted (invariant #5).
     if (stale) {
-        Row r;
-        r.esc(ansi::kFrame, c);
+        Row r(c);
+        r.esc(ansi::kFrame);
         r.glyph(g.v);
-        r.esc(ansi::kStale, c);
+        r.esc(ansi::kStale);
         r.put(" ");
-        r.put("!! STALE - book unknown (");
-        r.put(reason_text(snap.stale_reason));
-        r.put(") - not live data");
-        r.esc(ansi::kFrame, c);
-        r.pad_to(inner);
-        r.glyph(g.v);
-        r.esc(ansi::kReset, c);
+        r.put(kBannerLead);
+        r.put(reason);
+        r.put(kBannerTail);
+        close_row(r, ctx, g.v);
         line(r);
     }
-
-    const Qty max_qty = window_max_qty(snap, levels);
 
     // --- asks, worst first so the touch meets the spread row ----------------
     const std::size_t n_ask = std::min<std::size_t>(levels, snap.ask_count);
     for (std::size_t k = n_ask; k > 0; --k) {
         const std::size_t i = k - 1;
-        Row r;
-        r.esc(ansi::kFrame, c);
-        r.glyph(g.v);
-        r.esc(stale ? ansi::kGrey : (i == 0 ? ansi::kAskBest : ansi::kAsk), c);
-        r.put(" A ");
-        put_right(r, format_px(snap.asks[i].px, dp), 10);
-        r.put(" ");
-        draw_bar(r, snap.asks[i].qty, max_qty, bar_w, stale, g);
-        // Quantities right-align against the frame, so the column reads as one
-        // number no matter how wide the box is.
-        put_right_at(r, qty_text(snap.asks[i].qty), inner - 1);
-        r.esc(ansi::kFrame, c);
-        r.pad_to(inner);
-        r.glyph(g.v);
-        r.esc(ansi::kReset, c);
+        Row r(c);
+        level_row(r, ctx, snap.asks[i], /*best=*/i == 0, /*is_bid=*/false);
         line(r);
     }
 
     // --- the spread gap -----------------------------------------------------
     {
-        Row r;
-        r.esc(ansi::kFrame, c);
+        Row r(c);
+        r.esc(ansi::kFrame);
         r.glyph(g.ml);
         r.glyph(g.h);
         if (snap.has_top()) {
@@ -252,46 +351,35 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
             r.put(" no book ");
         }
         if (snap.has_last) {
-            r.esc(ansi::kTape, c);
+            r.esc(ansi::kTape);
             r.put("  last ");
             r.put(format_px(snap.last_px, dp));
-            r.esc(ansi::kFrame, c);
+            r.esc(ansi::kFrame);
         }
         r.put(" ");
         r.fill_to(inner, g.h);
         r.glyph(g.mr);
-        r.esc(ansi::kReset, c);
+        r.esc(ansi::kReset);
         line(r);
     }
 
     // --- bids, best first ---------------------------------------------------
     const std::size_t n_bid = std::min<std::size_t>(levels, snap.bid_count);
     for (std::size_t i = 0; i < n_bid; ++i) {
-        Row r;
-        r.esc(ansi::kFrame, c);
-        r.glyph(g.v);
-        r.esc(stale ? ansi::kGrey : (i == 0 ? ansi::kBidBest : ansi::kBid), c);
-        r.put(" B ");
-        put_right(r, format_px(snap.bids[i].px, dp), 10);
-        r.put(" ");
-        draw_bar(r, snap.bids[i].qty, max_qty, bar_w, stale, g);
-        put_right_at(r, qty_text(snap.bids[i].qty), inner - 1);
-        r.esc(ansi::kFrame, c);
-        r.pad_to(inner);
-        r.glyph(g.v);
-        r.esc(ansi::kReset, c);
+        Row r(c);
+        level_row(r, ctx, snap.bids[i], /*best=*/i == 0, /*is_bid=*/true);
         line(r);
     }
 
     // --- trade tape ---------------------------------------------------------
     if (style.show_tape) {
-        Row r;
-        r.esc(ansi::kFrame, c);
+        Row r(c);
+        r.esc(ansi::kFrame);
         r.glyph(g.v);
-        r.esc(stale ? ansi::kDim : ansi::kTape, c);
+        r.esc(stale ? ansi::kDim : ansi::kTape);
         r.put(" tape ");
         if (snap.trade_count == 0) {
-            r.esc(ansi::kDim, c);
+            r.esc(ansi::kDim);
             r.put("(no prints yet)");
         }
         for (std::size_t i = 0; i < snap.trade_count; ++i) {
@@ -302,29 +390,26 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
             // tape survives an ASCII terminal.
             const bool buy = t.aggressor == Side::Bid;
             if (r.width() + px.size() + qty.size() + 4 > inner) { break; }
-            r.esc(stale ? ansi::kGrey : (buy ? ansi::kBid : ansi::kAsk), c);
+            r.esc(stale ? ansi::kGrey : (buy ? ansi::kBid : ansi::kAsk));
             r.put(px);
             r.glyph(g.times);
             r.put(qty);
             r.glyph(buy ? g.up : g.down);
             r.put(" ");
-            r.esc(stale ? ansi::kDim : ansi::kTape, c);
+            r.esc(stale ? ansi::kDim : ansi::kTape);
         }
-        r.esc(ansi::kFrame, c);
-        r.pad_to(inner);
-        r.glyph(g.v);
-        r.esc(ansi::kReset, c);
+        close_row(r, ctx, g.v);
         line(r);
     }
 
     // --- footer -------------------------------------------------------------
     {
-        Row r;
-        r.esc(ansi::kFrame, c);
+        Row r(c);
+        r.esc(ansi::kFrame);
         r.glyph(g.bl);
         r.fill_to(inner, g.h);
         r.glyph(g.br);
-        r.esc(ansi::kReset, c);
+        r.esc(ansi::kReset);
         line(r);
     }
 
