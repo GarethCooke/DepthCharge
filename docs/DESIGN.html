@@ -360,7 +360,7 @@
   <div class="statusbar">
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
-    <span class="status amber">in progress <b>M3 — live Anvil on the panel · stage A done</b></span>
+    <span class="status amber">in progress <b>M3 — live Anvil on the panel · stages A and B done</b></span>
     <span class="status">first-party C++ <b>~5,000 lines</b></span>
     <span class="status">drawn from source at <b>a56ccd6</b></span>
   </div>
@@ -475,7 +475,11 @@
     header-only, so nothing can be compiled into it with the wrong flags.
     <code>dc_engine_anvil</code> is deliberately its own static library because it is the
     single target that touches <code>nlohmann/json</code>, and therefore the single target
-    that must not reach the microcontroller.
+    that must not reach the microcontroller. Since M3 stage B it has a twin,
+    <code>dc_engine_anvil_streaming</code>, which is the same declaration implemented without
+    a parser library at all — and which pointedly does <em>not</em> link
+    <code>dc_vendor</code>, so the separation is enforced by the linker rather than asserted
+    in a comment.
   </p>
 
   <div class="tablewrap">
@@ -486,10 +490,12 @@
       <tbody>
         <tr><td><code>dc_engine</code></td><td>INTERFACE</td><td>all of <code>engine/include</code></td><td>yes — this is the point</td></tr>
         <tr><td><code>dc_engine_header_check</code></td><td>OBJECT</td><td>one generated TU per header</td><td>no — build-time guard only</td></tr>
-        <tr><td><code>dc_engine_anvil</code></td><td>STATIC</td><td><code>anvil_frame_nlohmann.cpp</code></td><td><strong>no</strong> — replaced at M3</td></tr>
+        <tr><td><code>dc_engine_anvil</code></td><td>STATIC</td><td><code>anvil_frame_nlohmann.cpp</code></td><td><strong>no</strong> — the desk reference</td></tr>
+        <tr><td><code>dc_engine_anvil_streaming</code></td><td>STATIC</td><td><code>anvil_frame_streaming.cpp</code></td><td><strong>yes</strong> — 5,861 B <code>.text</code>, 0 <code>.data</code>, 0 <code>.bss</code> at <code>-Os</code></td></tr>
         <tr><td><code>dc_vendor</code></td><td>INTERFACE</td><td>nlohmann, doctest (SYSTEM)</td><td>no</td></tr>
-        <tr><td><code>dc_harness</code></td><td>STATIC</td><td>trace, replay driver, ladder</td><td>no</td></tr>
-        <tr><td><code>dc_replay</code> · <code>dc_ladder</code> · <code>dc_tests</code></td><td>EXE</td><td>host tooling and goldens</td><td>no</td></tr>
+        <tr><td><code>dc_harness</code></td><td>STATIC</td><td>trace, replay driver, ladder; links <em>neither</em> parser, so each executable picks one</td><td>no</td></tr>
+        <tr><td><code>dc_replay</code> · <code>dc_ladder</code> · <code>dc_tests</code></td><td>EXE</td><td>host tooling and goldens, on the nlohmann reference</td><td>no</td></tr>
+        <tr><td><code>dc_replay_streaming</code> · <code>dc_tests_streaming</code></td><td>EXE</td><td>the same sources, relinked onto the streaming parser</td><td>no</td></tr>
         <tr><td><code>dc_tsan_workload</code></td><td>EXE</td><td>the two-thread channel race; <code>harness/tsan.sh</code> rebuilds this TU with <code>-fsanitize=thread</code></td><td>no</td></tr>
       </tbody>
     </table>
@@ -782,13 +788,22 @@ classDiagram
         +parse_anvil_frame(json, SymbolSpec, AnvilFrame) ParseStatus
     }
 
+    class anvil_scaling {
+        &lt;&lt;header - shared by both parsers&gt;&gt;
+        +kind_from_type(string_view) FrameKind
+        +price_text_to_ticks(string_view, SymbolSpec, PriceTicks&amp;, ParseStatus&amp;) bool
+        +wire_qty_to_steps(int64, SymbolSpec, Qty&amp;, ParseStatus&amp;) bool
+        +aggressor_from_text(string_view, Side&amp;) bool
+    }
+
     AnvilAdapter *-- AnvilFrame : owns one, reused forever
     AnvilAdapter *-- AdapterStats
     AnvilAdapter ..> parse_anvil_frame : calls
     AnvilAdapter ..> FeedEvent : emits into Sink
     parse_anvil_frame ..> ParseStatus : returns
     AnvilFrame *-- FrameKind
-    parse_anvil_frame ..> parse_scaled : prices via exact string conversion
+    parse_anvil_frame ..> anvil_scaling : hands over the token bytes
+    anvil_scaling ..> parse_scaled : prices via exact string conversion
 </pre>
     </div>
     <figcaption>
@@ -803,13 +818,23 @@ classDiagram
     The only genuinely environment-specific work in the adapter is turning JSON bytes into
     fields. That work sits behind a single free-function declaration, and the implementation
     is selected by which static library a binary links. It is the cheapest possible seam —
-    no virtual call, no template, no runtime branch — and it is precisely what M3 stage B
-    swaps.
+    no virtual call, no template, no runtime branch — and M3 stage B is where it earned its
+    keep: the second definition landed with <em>zero</em> changes to the adapter, the book,
+    the contract types or the goldens.
+  </p>
+  <p>
+    What the seam does <em>not</em> cover is the conversion arithmetic. Both parsers include
+    <code>anvil_scaling.hpp</code> and call the same <code>price_text_to_ticks</code>,
+    <code>wire_qty_to_steps</code>, <code>aggressor_from_text</code> and
+    <code>kind_from_type</code>. That split is deliberate and it is where invariant #3 is
+    actually defended: a hand-rolled rewrite fails loudly on JSON structure, but a
+    reimplemented price conversion would fail <em>quietly</em>, one tick at a time, and look
+    like a market difference. Each parser's job stops at finding the token's bytes.
   </p>
 
   <figure>
     <div class="plate">
-      <svg viewBox="0 0 760 310" role="img" aria-label="One declaration of parse_anvil_frame in the engine headers, with two alternative definitions: the nlohmann host implementation shipped today, and a streaming allocation-free parser arriving at M3. Exactly one is linked into any binary.">
+      <svg viewBox="0 0 760 384" role="img" aria-label="One declaration of parse_anvil_frame in the engine headers with two definitions — the nlohmann host reference and the streaming allocation-free parser — exactly one linked into any binary, both calling the same shared conversion header, and both run against the same test sources.">
         <defs>
           <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#4A5B55"/>
@@ -827,24 +852,36 @@ classDiagram
         <text x="380" y="145" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#2E9E68">declared in anvil_frame.hpp · defined nowhere in engine/include</text>
 
         <polyline points="380,160 380,186 210,186 210,212" fill="none" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar3)"/>
-        <polyline points="380,160 380,186 550,186 550,212" fill="none" stroke="#4A5B55" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ar3)"/>
+        <polyline points="380,160 380,186 550,186 550,212" fill="none" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar3)"/>
         <text x="392" y="182" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">exactly one is linked</text>
 
         <rect x="60" y="212" width="300" height="72" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.3"/>
         <text x="210" y="234" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#131A18">anvil_frame_nlohmann.cpp</text>
-        <text x="210" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">target dc_engine_anvil · shipped M1</text>
+        <text x="210" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">dc_engine_anvil · M1 · the reference</text>
         <text x="210" y="268" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#A03428">allocates per parse — host only</text>
 
-        <rect x="400" y="212" width="300" height="72" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.3" stroke-dasharray="4 3"/>
-        <text x="550" y="234" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#4A5B55">streaming parser</text>
-        <text x="550" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#7E918A">M3 stage B · host + target</text>
-        <text x="550" y="268" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#1C5F3F">allocation-free — inv #7</text>
+        <rect x="400" y="212" width="300" height="72" rx="4" fill="#FFFFFF" stroke="#4A5B55" stroke-width="1.3"/>
+        <text x="550" y="234" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#131A18">anvil_frame_streaming.cpp</text>
+        <text x="550" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">dc_engine_anvil_streaming · M3 stage B</text>
+        <text x="550" y="268" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#1C5F3F">0 heap · 5,861 B .text on xtensa</text>
+
+        <polyline points="210,284 210,308 380,308" fill="none" stroke="#2E9E68" stroke-width="1.3"/>
+        <polyline points="550,284 550,308 380,308" fill="none" stroke="#2E9E68" stroke-width="1.3"/>
+        <line x1="380" y1="308" x2="380" y2="322" stroke="#2E9E68" stroke-width="1.3" marker-end="url(#ar3)"/>
+
+        <rect x="150" y="322" width="460" height="46" rx="4" fill="#E4F3EB" stroke="#2E9E68" stroke-width="1.6"/>
+        <text x="380" y="342" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1C5F3F">anvil_scaling.hpp</text>
+        <text x="380" y="358" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#2E9E68">price → ticks, qty → steps, aggr → Side · ONE implementation, inv #3</text>
       </svg>
     </div>
     <figcaption>
-      <b>The acceptance test for the swap already exists.</b> A host binary links the new
-      parser instead of <code>dc_engine_anvil</code> and runs
-      <code>test_replay_goldens.cpp</code> unchanged. If a golden moves, the swap changed
+      <b>The acceptance test for the swap is the M1 suite, relinked.</b>
+      <code>dc_tests_streaming</code> compiles the <em>same</em>
+      <code>test_replay_goldens.cpp</code> and <code>test_anvil_adapter.cpp</code> sources as
+      <code>dc_tests</code> and links the streaming parser instead — same source, two link
+      configurations, no fork and no <code>#ifdef</code>. Both traces render byte-identical
+      through either parser (<code>dc_replay</code> and <code>dc_replay_streaming</code>
+      produce the same stdout, SHA-256 compared). If a golden moves, the swap changed
       behaviour and is out of scope.
     </figcaption>
   </figure>
@@ -1328,7 +1365,9 @@ classDiagram
     <code>cmake --workflow --preset host</code> configures, builds and tests in one step
     (<code>host-mingw</code> is the Windows MinGW-w64 equivalent; the two presets share a
     binary directory, so switching between them needs <code>build/host</code> cleared).
-    Six ctest entries run; the doctest binary carries 70 cases across seven files.
+    Nine ctest entries run; the main doctest binary carries 80 cases across eight files, and
+    a second doctest binary re-runs the parser-facing subset of them against the other
+    implementation of the parse seam.
   </p>
 
   <div class="tablewrap">
@@ -1337,9 +1376,11 @@ classDiagram
         <tr><th>ctest entry</th><th>What a failure would mean</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>dc_tests</code></td><td>70 doctest cases: decimal exactness, adapter behaviour, book semantics, ladder legibility, replay goldens, allocation probe, and the two-thread channel hand-off</td></tr>
+        <tr><td><code>dc_tests</code></td><td>80 doctest cases: decimal exactness, adapter behaviour, book semantics, ladder legibility, replay goldens, parser equivalence, allocation probe, and the two-thread channel hand-off</td></tr>
+        <tr><td><code>dc_tests_streaming</code></td><td>44 of those same cases, relinked onto the streaming parser, plus the allocation proof over both full traces. A failure here and not in <code>dc_tests</code> means the two implementations of one declaration have drifted</td></tr>
         <tr><td><code>dc_replay_baseline</code></td><td>the committed 1,406-frame baseline trace (89.9 s, 15.6 frames/s) stopped being structurally valid</td></tr>
         <tr><td><code>dc_replay_reconnect</code></td><td>ditto for the 1,288-frame reconnect trace, whose 4,468 ms hole is the outage</td></tr>
+        <tr><td><code>dc_replay_streaming_baseline</code> · <code>…_reconnect</code></td><td>the same two replays on the other parser; their stdout is SHA-256 identical to the pair above</td></tr>
         <tr><td><code>dc_ladder_baseline</code></td><td>parse → adapt → adopt → publish → draw broke on some frame of a real capture</td></tr>
         <tr><td><code>dc_ladder_reconnect</code></td><td>ditto, including across the outage</td></tr>
         <tr><td><code>dc_channel_race</code></td><td>one second of a real two-thread race over <code>SnapshotChannel</code>, uninstrumented — a torn frame or a delivered version going backwards. The same TU is what <code>harness/tsan.sh</code> rebuilds with <code>-fsanitize=thread</code>, so this entry keeps the ThreadSanitizer workload compiling and passing between the hand-run Linux captures</td></tr>
@@ -1351,8 +1392,20 @@ classDiagram
     Invariant #7 is not asserted in prose anywhere that matters — it is measured.
     <code>alloc_probe</code> replaces global <code>operator new</code> in the test binary, so
     "allocation-free steady state" becomes: take the counter, run the feed path, take it
-    again, require no change. Two cases do exactly that, one over the book and one over the
-    channel round trip.
+    again, require no change. Two cases do exactly that in <code>dc_tests</code>, one over the
+    book and one over the channel round trip.
+  </p>
+  <p>
+    M3 stage B pointed the same probe at the last piece that was still exempt. In
+    <code>dc_tests_streaming</code> the whole feed path — verbatim wire bytes → streaming
+    parser → adapter → book → <code>SnapshotChannel::publish</code> →
+    <code>consume</code> — runs over every frame of both committed traces, with the counter
+    latched at the instant the first snapshot is published, which is the exact boundary the
+    invariant names. Across 2,694 frames and 2,341 published events it moves by zero. The
+    trace is read and sliced into <code>string_view</code>s before the window opens, because
+    the file I/O and the NDJSON reader allocate freely and would drown the signal — which is
+    also, not coincidentally, the shape the firmware net task will have: a fixed reassembly
+    buffer handed to the parser as <code>(ptr, len)</code>.
   </p>
 </section>
 
@@ -1401,6 +1454,41 @@ classDiagram
     close to a constraint, which is the point of having measured them: the argument for the
     dense window at M4 has to be made on delta-venue correctness, not on this.
   </p>
+
+  <h3>What the parser costs the target</h3>
+  <p>
+    RAM is the wrong axis for the streaming parser: it has none. Compiled with the
+    PlatformIO xtensa GCC 8.4 at <code>-Os -fno-exceptions -fno-rtti</code>, the whole
+    translation unit is <strong>5,861 bytes of <code>.text</code>, 0 of <code>.data</code>,
+    0 of <code>.bss</code></strong> — and no <code>.init_array</code>, so it has no global
+    state and no static constructors to order. Its working state is one stack frame — a
+    cursor, a few scalars and a 64-byte token scratch — writing into the adapter's existing
+    <code>AnvilFrame</code>, so parsing an 8 KB book frame costs no storage that was not
+    already counted in the table above.
+  </p>
+  <p>
+    Stack is the figure that actually matters on a FreeRTOS task, and it is bounded and
+    <em>input-independent</em>. <code>-fstack-usage</code> reports every frame as static — no
+    <code>alloca</code>, no VLA — with the largest at 272 bytes
+    (<code>parse_anvil_frame</code>, which the optimiser inlines the whole top-level walk
+    into, scratch buffer included). The call graph is acyclic because the value skipper is
+    iterative, so the deepest chain is fixed at about 600 bytes: a frame nested 5,000
+    brackets deep costs exactly what a flat one does. That is the property that makes the
+    64-container cap a memory decision rather than a crash-avoidance one.
+  </p>
+  <p>
+    The more useful measurement is the undefined-symbol list of that object, because it is
+    the invariants stated as link errors that did not happen:
+    <code>__ashldi3 __divdi3 __lshrdi3 __moddi3 __udivdi3 memcmp memset strlen</code>.
+    No <code>_Znwm</code>, so nothing allocates. No <code>__cxa_*</code> or
+    <code>_Unwind_*</code>, so nothing throws. Nothing from ESP-IDF. The four
+    <code>*di3</code> helpers are 64-bit integer arithmetic — and one of them is worth
+    watching: <code>wire_qty_to_steps</code> does an <code>int64_t</code> divide and modulo
+    per level, so ~250 levels at 12 frames/s is ~3,000 software 64-bit divisions a second on
+    the LX7. That is inherited from M1's shared scaling and is identical in both parsers, so
+    it is not a stage B regression, but it is the first thing to look at if the feed task
+    ever needs headroom. <code>qty_step</code> is 1 for every venue we consume.
+  </p>
 </section>
 
 <hr>
@@ -1413,7 +1501,7 @@ classDiagram
 
   <p>
     Everything above describes code that works and is green. This section is the honest
-    counterweight: nine places where the current shape is either unenforced, speculative,
+    counterweight: ten places where the current shape is either unenforced, speculative,
     or about to be tested by a milestone that does not exist yet. Each is stated with what
     would break it and what resolves it.
   </p>
@@ -1558,6 +1646,54 @@ classDiagram
     </p>
     <p class="verdict">Resolves: <b>a one-line comment, or an explicit optional; low stakes, worth knowing</b></p>
   </div>
+
+  <div class="strain">
+    <h4>9 · Two parsers now have to stay the same thing</h4>
+    <p>
+      M3 stage B closed the last allocating hole on the feed path — the parser is now
+      allocation-free, measured over both traces with global <code>operator new</code>
+      counted, and it compiles for xtensa GCC 8.4 with no undefined symbol implying a heap,
+      an exception or ESP-IDF. That part is settled. What it bought in exchange is a new
+      obligation: <em>one declaration with two definitions is two chances to be right.</em>
+    </p>
+    <p>
+      The reference is not a spec written down anywhere; it is nlohmann 3.11.3's behaviour,
+      including the parts Anvil never exercises. Duplicate keys resolve last-wins because
+      that is what a <code>std::map</code> filled through <code>operator[]</code> does. An
+      integer too large for <code>uint64_t</code> is a <em>float</em>, so a quantity of
+      <code>99999999999999999999</code> is a shape error rather than a saturated number. A
+      NUL byte ends the document even mid-buffer. None of that is written in
+      <code>anvil_frame.hpp</code>, and all of it is load-bearing, because the adapter files
+      the three failure statuses into three different counters and the counters are goldens.
+    </p>
+    <p>
+      The mitigation is that the equivalence is <em>executed</em>, not reviewed:
+      <code>test_parser_equivalence.cpp</code> is compiled into both binaries and holds both
+      implementations to one table, covering escapes, surrogate pairs, over-range integers,
+      invalid UTF-8, error precedence under reordered keys, and duplicate keys at every
+      level. Three divergences remain, deliberately, and are asserted on
+      <em>both</em> sides of their boundary in <code>test_streaming_parser.cpp</code> — a
+      one-sided test would still pass if the limit silently fell — so that a later session
+      cannot quietly close one, or shrink one, without reading why it was opened. They are:
+      a single skipped value may nest 64 containers and not 65 (the container stack is one
+      <code>uint64_t</code>, which is what keeps the skipper iterative and heap-free); an
+      escaped <em>price</em> whose unescaped form reaches 65 bytes is <code>BadPrice</code>
+      rather than its value; and the open band between <code>DBL_MAX</code> and
+      <code>1e309</code> is treated as finite.
+    </p>
+    <p>
+      How much that mitigation is worth was measured rather than assumed. Three independent
+      agents ran roughly 2.4 million differential inputs through both implementations —
+      byte-mutated real frames, exhaustive truncation at every offset, all 65,536
+      <code>\uXXXX</code> escapes, all 65,536 two-byte raw sequences, every permutation of
+      the top-level member set, integer and double boundary sweeps — and found
+      <strong>no</strong> disagreement outside those three. The sharpest evidence is a
+      corpus built so that none of the three <em>can</em> fire (nesting capped at 20, no
+      literal near <code>1e308</code>, every escaped string under 40 bytes) replayed across
+      24 <code>SymbolSpec</code> configurations: 567,842 records, zero differences.
+    </p>
+    <p class="verdict">Resolves: <b>never fully — it is the standing cost of the seam. Keep the equivalence table growing with every wire surprise; if the two ever have to diverge on something Anvil can actually send, that is a §9 amendment, not a patch</b></p>
+  </div>
 </section>
 
 <hr>
@@ -1593,18 +1729,23 @@ classDiagram
   <h3>Known M3 edits, already queued</h3>
   <ul>
     <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical.</li>
-    <li>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</li>
+    <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
-    <li>§08 — strain point 2 closed at stage A; 7 should close at stage D; 1 and 3 will not.</li>
+    <li>§08 — strain point 2 closed at stage A; strain point 9 <em>opened</em> at stage B (two parsers, one meaning); 7 should close at stage D; 1 and 3 will not.</li>
   </ul>
 </section>
 
 <footer>
-  Drawn from source at <b>a56ccd6</b> · engine 1,197 lines · harness 3,810 (2,285 of it
-  tests) · plus 529 lines of Python capture tooling in <code>tools/</code>.<br>
-  Verified against a green <code>host-mingw</code> workflow run: 6/6 ctest, 70/70 doctest
-  (6,970 assertions), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1.
-  Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64.<br>
+  Drawn from source at <b>42ea18a</b> plus M3 stage B · <code>wc -l</code>: engine 2,398
+  lines (958 of them the streaming parser) · harness 5,283 (3,570 of it tests) · plus 609
+  lines of Python capture tooling in <code>tools/</code>. Earlier revisions of this footer
+  counted with a tool that dropped unterminated final lines, so those figures are not
+  comparable with these.<br>
+  Verified against a green <code>host-mingw</code> workflow run: 9/9 ctest, 80/80 doctest in
+  <code>dc_tests</code> (7,118 assertions) and 44/44 in <code>dc_tests_streaming</code>
+  (677), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1. Every
+  <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the parser's
+  <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.<br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
   current work order: <code>docs/briefs/M3-live-anvil-on-the-panel.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in

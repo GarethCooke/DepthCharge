@@ -240,11 +240,16 @@ addition).
   *(Done 2026-08-07. Built as a three-slot mailbox rather than two slots or a seqlock —
   both of those are a data race on `DisplaySnapshot` and could not have produced a clean
   report; measured and recorded in ARCHITECTURE §9 and the session log.)*
-☐ **Stage B:** streaming allocation-free `parse_anvil_frame` links on host and passes
+☑ **Stage B:** streaming allocation-free `parse_anvil_frame` links on host and passes
   `test_replay_goldens.cpp` **unchanged** on both traces; alloc probe shows zero heap in
-  steady state.
-☐ `cmake --workflow --preset host` green from a clean clone, warnings-as-errors clean, with
-  A and B merged (this is the agentic-half gate).
+  steady state. *(Done 2026-08-08. Also links for the target — `dc_engine_target_check` now
+  compiles the TU with xtensa GCC 8.4: 5,861 B `.text`, 0 `.data`/`.bss`, and no undefined
+  symbol implying a heap, an exception or a float. Scaling was shared via a new
+  `anvil_scaling.hpp` rather than by moving the `AnvilFrame` boundary — see the session log
+  and ARCHITECTURE §9.)*
+☑ `cmake --workflow --preset host` green from a clean clone, warnings-as-errors clean, with
+  A and B merged (this is the agentic-half gate). *(9/9 ctest; verified from a clean
+  out-of-tree configure as well as in place.)*
 ☐ **Stage C:** `firmware/` links `engine/` as-is; connects over TLS WS to Anvil; feed task on
   Core 0; 1000 ms RX watchdog beside socket-close, both → `Gap{Disconnect}`; serial log
   shows connect → snapshot → steady → drop → stale → resync → live.
@@ -412,3 +417,128 @@ which PlatformIO platform M2's first-light sketch used, though this brief says t
 place of `dc_engine_anvil`, passing `test_replay_goldens.cpp` unchanged on both traces, with
 the alloc probe extended over it. Stage A and Stage B are independent; nothing here touched
 the parser seam.
+
+### 2026-08-08 · Opus 5 · Stage B complete — the firmware parser exists, and the goldens did not move
+
+**Done.** A second `parse_anvil_frame` — hand-rolled, streaming, allocation-free — in
+`engine/src/anvil/anvil_frame_streaming.cpp` (958 lines), behind the unchanged seam. New
+shared `engine/include/depthcharge/anvil/anvil_scaling.hpp`; the nlohmann TU refactored onto
+it (207 lines, down from 237 of logic). New CMake targets `dc_engine_anvil_streaming`,
+`dc_tests_streaming`, `dc_replay_streaming`. New tests: `test_parser_equivalence.cpp` (shared
+— compiled into **both** binaries), `test_streaming_parser.cpp` (streaming-only),
+`doctest_main.cpp`. ctest 6/6 → **9/9**; `dc_tests` 70 → 80 cases / 7,118 assertions;
+`dc_tests_streaming` 44 cases / 686 assertions. `dc_replay` and `dc_replay_streaming` produce
+**SHA-256-identical stdout** on both committed traces.
+
+**The goldens passed unchanged, which is the whole claim.** `test_replay_goldens.cpp` and
+`test_anvil_adapter.cpp` are compiled into both binaries from the same source files — two link
+configurations, no fork, no `#ifdef`. `dc_harness` no longer links a parser at all; the symbol
+is left unresolved and each executable chooses. That is what made "same source, two link
+configs" mechanical rather than aspirational.
+
+**The brief asked for scaling to be lifted into the shared adapter. I did something narrower,
+and this is the decision to argue with.** Scaling *was* entangled in the nlohmann TU, as the
+brief suspected. But moving the `AnvilFrame` boundary so the frame carries raw decimal tokens
+would have been the wrong lift: nlohmann's DOM strings die with the parse, so the reference
+would have had to copy ~250 tokens per frame into the frame just to hand one onward, and it
+would have rewritten `AnvilFrame`, the adapter and the postcondition test — which are Stage B's
+own acceptance gate, and which this milestone's constraints say do not change ("Nothing in
+`book.hpp`, `feed_event.hpp`, `display_snapshot.hpp`, the adapter logic, or the
+scaling/seq-synthesis path changes"). The brief contains both instructions and they conflict.
+What the worry actually asked for — one implementation of invariant #3, byte-identical in both
+parsers — is delivered by sharing the *conversion* instead of moving the boundary:
+`kind_from_type`, `price_text_to_ticks`, `wire_qty_to_steps` and `aggressor_from_text` now live
+once, in a header both TUs include. Recorded in ARCHITECTURE §9; **M4/M5 should copy this split,
+not the one the brief described.**
+
+**Scan once, adjudicate at the end — the design decision that made equivalence possible.**
+The reference builds a DOM and *then* asks questions in a fixed order (type → seq → ticker →
+payload; within a side, bids fully then asks; within a level, both keys present then price then
+qty). A left-to-right scanner meets fields in wire order, and the two orders disagree about
+which error to report when a frame is wrong in more than one place. That is not cosmetic: the
+adapter files `BadPrice`, `OtherTicker` and everything-else into three *different* counters, and
+those counters are pinned goldens. So the parser never returns early on a semantic problem — it
+scans the whole document recording one outcome slot per field (last occurrence wins, as a
+`std::map` DOM does), and `adjudicate()` then replays the reference's decision order over those
+slots. A frame with a foreign ticker *and* a bad price reports `OtherTicker` even when the price
+came first on the wire, because that is what the reference does.
+
+**Hand-rolled, not a library — and the reference is the specification, accidents included.**
+The brief recommended hand-rolled and I agree, but the reason turned out to be sharper than
+"small and fixed". Equivalence means reproducing nlohmann 3.11.3's *actual* behaviour, and three
+of its rules are accidents nobody designed: duplicate keys resolve **last-wins** (its object is
+a `std::map` filled through `operator[]` then assigned over); an integer too large for
+`uint64_t` becomes a **float**, so an over-range qty is `BadShape` and not a saturated number,
+while one that fits `uint64_t` but not `int64_t` is accepted and *wraps* negative and is then
+caught by the `raw < 0` guard; and a **NUL byte ends the document** even mid-buffer, so
+`{...}\0junk` parses clean. A parser written to a reasonable reading of JSON would have moved
+goldens on malformed input while looking correct. All three are now pinned in
+`test_parser_equivalence.cpp`. ARCHITECTURE §9.
+
+**Verified adversarially, because "I read it carefully" is not evidence for a hand-rolled
+parser.** Three independent agents, ~2.4 M differential inputs plus 35.5 M sanitised parses:
+
+- **Differential fuzz, 1,421,150 records** through both implementations: real frames from both
+  traces, byte-level mutations, exhaustive truncation at every offset, a structured adversarial
+  grammar, pure random bytes — across 23 `SymbolSpec` configurations. **5,669 differences, 0
+  unexplained.** The decisive corpus is the one engineered so that *no* declared divergence can
+  fire (nesting ≤ 20, nothing near 1e308, escaped strings ≤ 40 B) replayed over 24 spec
+  configurations: **567,842 records, zero differences.**
+- **Exhaustive lexer sweep, ~1,022,000 inputs**: every byte 0–255 raw inside a string in seven
+  contexts, all 65,536 two-byte raw sequences, all 65,536 `\uXXXX`, full surrogate high×low
+  sweeps, every permutation of the top-level member set, int64/uint64/double boundary sweeps.
+  0 diffs outside the three.
+- **Memory safety**: ASan+UBSan under WSL Debian g++ 10.2.1, *and* mmap guard pages either side
+  of the input (so any read at/past `end_` is an instant SIGSEGV) — 35.5 M parses including
+  every frame of both traces truncated at **every byte offset** (17,463,878 parses, ~70 GB).
+  Zero faults, with positive controls proving the harness traps.
+- **Coverage** 99.81% of lines, 100% of branches executed. The one uncovered line is the
+  unreachable defensive `return` after an exhaustive switch.
+
+**Measured on the target toolchain** (xtensa GCC 8.4, `-Os -fno-exceptions -fno-rtti -Werror`):
+`.text` **5,861 B**, `.data` 0, `.bss` 0, no `.init_array`. Undefined symbols are exactly
+`__ashldi3 __divdi3 __lshrdi3 __moddi3 __udivdi3 memcmp memset strlen` — no `operator new`, no
+`__cxa_*`/`_Unwind_*`, nothing from ESP-IDF, and no soft-float helper, so invariants #7,
+#1 and #3 are link-time facts rather than claims. Zero floating-point instructions in the
+disassembly. `dc_engine_target_check` now compiles this TU too, not just the headers.
+Stack via `-fstack-usage`: every frame static, largest 272 B, acyclic call graph, worst chain
+~600 B — **input-independent**, so a 5,000-bracket frame costs what a flat one does.
+
+**Three deliberate divergences, asserted on both sides of each boundary.** Nesting: one skipped
+value may hold 64 containers, not 65 (the container stack is one `uint64_t`, which is what keeps
+the skipper iterative and heap-free). An *escaped* price whose unescaped form reaches 65 bytes is
+`BadPrice` rather than its value — escaped `type`/`aggr`/keys agree at any length, and unescaped
+strings are sliced in place with no limit at all (verified to 500,000 chars). Numbers in the open
+band (`DBL_MAX`, 1e309) are finite here and reject the document there. **The review pass corrected
+my wording on two of these** — the depth budget is per `skip_value()` call, not per document, and
+only a *price* token can diverge on length — so the comment now states the implemented rule, since
+that block is what a future editor will treat as the spec. One-sided tests were replaced with
+both-sided ones: "200 is rejected" would still pass if the cap silently fell to 8.
+
+**The code review found one real DRY defect and I took it.** `price`/`qty` were read by two
+near-identical 14-line blocks — once for a trade's own members, once for a book level's — in a
+file whose entire ongoing risk is drifting from a second implementation. Collapsed into
+`read_price_value`/`read_qty_value`/`read_integer_value`/`read_string_value`. Because this landed
+*after* the verification, it was re-proved rather than assumed: the streaming parser's output over
+820,703 corpus records is **byte-identical before and after** (SHA-256 per corpus), and the full
+differential against the reference reproduces the same counts (corpus1 5,536 diffs; the two
+no-divergence corpora 0 and 0). It also took 378 B off the target `.text`.
+
+**Open, and not a Stage B problem.** `wire_qty_to_steps` does an `int64_t` divide and modulo per
+level — ~3,000 software 64-bit divisions a second on the LX7 at Anvil's depth and rate. It is
+inherited from M1's shared scaling, identical in both parsers, and `qty_step` is 1 for every venue
+we consume. Not touched here (it would be a behaviour change); it is the first place to look if the
+Stage C feed task ever needs headroom.
+
+**Still open for Stage C, unchanged:** `hardware/BRINGUP.md` does not record which PlatformIO
+platform M2's first-light sketch used, though this brief says to reuse it. Note also that
+`dc_engine_target_check` resolves its compiler through the *glob fallback*, not the configured
+default path — the unversioned `toolchain-xtensa-esp32s3` directory exists on this desk but
+contains only `gcc`, no `g++`.
+
+**Exact next step.** Stage C — stand up `firmware/` (PlatformIO, ESP32-S3), link `engine/`
+as-is, TLS WebSocket to `wss://anvil.garethcooke.com/ws?ticker=101`, feed task on Core 0
+using this parser, 1000 ms RX watchdog beside the socket-close callback. Resolve the framework
+known-unknown first: it is also a language-version decision (espressif32 6.5.0 pins xtensa
+GCC 8.4; pioarduino / IDF 5.x give GCC 14–15). Both host stages are done, so the agentic-half
+gate is met.
