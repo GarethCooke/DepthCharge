@@ -160,9 +160,9 @@ this is a portfolio page, not a mirror.
 | From `DESIGN.html` | Page has it? | Recommendation |
 | --- | --- | --- |
 | §03 the parse seam — one declaration, two definitions, chosen by the linker | no | **Take it.** Cheapest possible seam, and it is *why* M3 stage B is a one-target swap |
-| §02 the `LevelSpan` lifetime rule (borrowed spans, valid for one sink call) | no | **Take it.** The sharpest design decision in the codebase |
-| §07 measured `sizeof` — whole engine 18,128 B for one symbol | no | **Take it.** Concrete numbers land well; keep it to two or three figures, not the whole table |
-| §06 how it is proved — 55 doctest cases, replay goldens, `alloc_probe` replacing global `operator new` | partial | **Take the alloc probe.** Turning invariant #7 into a measurement is the memorable bit |
+| §02 the `LevelSpan` lifetime rule (borrowed spans, valid for one sink call) | **yes** | Already carried as "Snapshot levels are borrowed, not owned" — enrich with the measured detail, do not duplicate |
+| §07 measured `sizeof` — whole engine 20,480 B for one symbol | no | **Take it.** Concrete numbers land well; keep it to two or three figures, not the whole table |
+| §06 how it is proved — 70 doctest cases, replay goldens, `alloc_probe` replacing global `operator new` | partial | **Take the alloc probe.** Turning invariant #7 into a measurement is the memorable bit |
 | §08 nine "where the design is under strain" entries | no | **Owner's call — see Known unknowns** |
 | §01/§04/§05 pipeline, book stages, stale semantics | yes | Already covered; correct only if drifted |
 
@@ -207,23 +207,29 @@ npm run build
   rendering it**; if the answer does not arrive, do everything else and leave it out, and say
   so in the log.
 - **Does `PipelineDiagram` still match?** Check its hand-off depiction against the shipped
-  two-slot channel before deciding whether it needs redrawing.
+  three-slot channel before deciding whether it needs redrawing.
 - **Interval size.** Adding a fourth source widens the diff range to commits the checker has
   never reported. Read `git log` over the *new* source separately so design-doc history is
   not lost inside the ARCHITECTURE/ROADMAP diff.
 
 ## Definition of done
 
-☐ `docs/DESIGN.html` present in the `depthcharge-architecture` `sources` array.
-☐ Page corrected: `SnapshotChannel` described as a shipped, TSan-proven wait-free mechanism,
+☑ ~~`docs/DESIGN.html` present in the `depthcharge-architecture` `sources` array.~~
+  **Superseded by the owner's two-page decision:** the doc is tracked by its own
+  `depthcharge-design` manifest entry instead, so the two baselines drift independently.
+☑ Page corrected: `SnapshotChannel` described as a shipped, TSan-proven wait-free mechanism,
   not as planned design intent.
-☐ Selected new material rendered as JSX in the page's own voice; no pasted HTML, no pasted
+☑ Selected new material rendered as JSX in the page's own voice; no pasted HTML, no pasted
   mermaid, no new component primitives.
-☐ Any new path token added to `REPO_FILES` and verified to exist.
-☐ Portfolio-original content (Note blocks, closes, metadata, existing diagrams) intact.
-☐ `refreshedAt` updated to the DepthCharge commit the page now reflects.
-☐ `npm run check:writeups` reads `ok`; `npm run lint` and `npm run build` pass.
-☐ Session log below filled in — including the strain-list decision and its reason.
+☑ Any new path token added to `REPO_FILES` and verified to exist.
+☑ Portfolio-original content (Note blocks, closes, metadata, existing diagrams) intact.
+☑ `refreshedAt` updated to the DepthCharge commit the page now reflects.
+☑ `npm run check:writeups` reads `ok`; `npm run lint` and `npm run build` pass.
+☑ Session log below filled in — including the strain-list decision and its reason.
+
+**Not yet done:** the portfolio-side work is complete but **uncommitted** — 8 modified files
+plus `src/app/depthcharge/design/`. Committing and deploying it is the outstanding step, and
+it belongs to the portfolio repo, not here.
 
 ## Out of scope
 
@@ -238,3 +244,45 @@ not from an artifact URL.
 
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
+
+### 2026-08-08 · Opus 5 (1M context) · Executed in garethcooke-portfolio, uncommitted
+
+Precondition met: the invariant-#4 rewrite is committed at `42ea18a` and the tree was clean,
+so the refresh ran against real history rather than a working tree.
+
+The owner overrode two points of this brief. The design doc became its own page,
+`/depthcharge/design`, with its own manifest entry, rather than a fourth source on the
+architecture entry; and §08's strain list is rendered in full — all nine — rather than
+curated. Rationale: constitution and mechanism are different documents that drift
+independently, and one manifest entry per page keeps their baselines independent, so a
+design-doc edit no longer reports the architecture page as behind.
+
+Shipped: `/depthcharge/design` (nine sections, four hand-built JSX diagrams, all nine strain
+points); `/depthcharge/architecture` refreshed across `fbd6d80..42ea18a` with the
+`SnapshotChannel` correction, invariant #1's target half, invariant #4's retracted overflow
+clause removed, the §4 trailing-silence addendum, and the M2/M3 status change; both manifest
+entries updated; `check:writeups`, lint and build green.
+
+Strain-list decision: rendered in full, at the owner's instruction. Note for whoever
+maintains it — strain point 0 is **not** settled in the source despite reading like a success
+story, so the page takes the flag from the `strain settled` class rather than from the tone.
+
+A six-lens adversarial pass raised 16 findings; 13 survived independent refutation and were
+fixed — including `dc_tsan_workload` described as built under `-fsanitize=thread` when
+`harness/tsan.sh` is what rebuilds it, the `operator new` replacement attributed to
+`alloc_probe.hpp` when it lives in the `.cpp`, four dead `REPO_FILES` entries, and two SVG
+overflow bugs caught only by screenshotting the rendered page.
+
+Two notes on this brief itself, since it was written from a stale read of the repo and its
+errors are now corrected above rather than left to mislead: it originally said 55 doctest
+cases and 18,128 B where `docs/DESIGN.html` at `791c968` says **70** and **20,480 B**; it
+said "two-slot channel" in Known unknowns where the channel has **three** slots; and it
+listed the `LevelSpan` lifetime rule as absent from the page when the page already carried
+it. The source was used throughout, not the brief.
+
+Nothing in the DepthCharge repo was modified by that session.
+
+**Exact next step:** commit and push the portfolio working tree (8 modified files plus
+`src/app/depthcharge/design/`); Amplify deploys. Consider the `predev` drift-check hook —
+`check:writeups` is currently manual, and the drift originates in this repo while the
+detector lives in the other one.
