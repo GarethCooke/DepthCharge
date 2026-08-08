@@ -7,19 +7,37 @@
 //
 //     ParseStatus parse_anvil_frame(json, spec, out);
 //
-// M1 implements it with nlohmann/json, compiled into a host-only target
-// (engine/src/anvil/anvil_frame_nlohmann.cpp). nlohmann allocates per parse,
-// which is fine on the desk and is NOT fine on the feed path of a microcontroller
-// (invariant #7). M3 links a different implementation of this same declaration
-// against a streaming, allocation-free parser; every other line of the adapter,
-// the book, and the goldens is untouched by that swap. That is the whole point
-// of the seam, and it is why the M1 brief says "do not pick the firmware parser
-// here" — the decision is deferrable precisely because it is isolated.
+// There are two definitions, and the linker picks one (CMake: dc_engine_anvil
+// vs dc_engine_anvil_streaming):
 //
-// The decoded frame is already in engine vocabulary: prices are PriceTicks
-// (converted exactly by depthcharge::parse_scaled, never through a double), and
-// levels are BookLevel. Wire-shaped mess — the "type" string, the aggressor
-// letter, order ids, the global seq — stops here.
+//   engine/src/anvil/anvil_frame_nlohmann.cpp   M1, host only. Allocates per
+//       parse, which is fine on the desk and NOT fine on the feed path of a
+//       microcontroller (invariant #7).
+//   engine/src/anvil/anvil_frame_streaming.cpp  M3 stage B. Hand-rolled,
+//       allocation-free, compiles for xtensa; this is what firmware/ links.
+//
+// The swap touched no other line of the adapter, the book, or the goldens —
+// which is the whole point of the seam, and why the M1 brief said "do not pick
+// the firmware parser here".
+//
+// EQUIVALENCE IS PART OF THIS DECLARATION. Two implementations of one function
+// are only useful if they are indistinguishable, and the way that is settled
+// here is: the nlohmann implementation's observable behaviour is the
+// specification, including the parts of it that are accidents of nlohmann 3.11.3
+// rather than decisions anyone made (duplicate keys resolve last-wins; an
+// integer too large for uint64_t is a *float*, so it is a shape error; a NUL
+// byte ends the document). Those are load-bearing, because the adapter files
+// BadPrice, OtherTicker and everything-else into three different counters and
+// the counters are goldens. The equivalence is executed, not asserted:
+// harness/tests/test_parser_equivalence.cpp is compiled into both test binaries
+// and holds both implementations to one table. A third implementation would
+// have to pass it too.
+//
+// The decoded frame is already in engine vocabulary: prices are PriceTicks and
+// levels are BookLevel. The conversion itself is NOT each parser's business —
+// it lives once, in anvil_scaling.hpp, which both include. A parser's job stops
+// at finding the token's bytes. Wire-shaped mess — the "type" string, the
+// aggressor letter, order ids, the global seq — stops here.
 #pragma once
 
 #include <cstddef>
@@ -97,8 +115,15 @@ struct AnvilFrame {
 // `out` on entry, and must leave it well-formed (kind == Unknown, all counts
 // and flags cleared) on any non-Ok status. The parser is the sole owner of that
 // reset — callers do not pre-clear the frame. test_anvil_adapter.cpp asserts
-// this against every failure mode, so a second implementation of this
-// declaration inherits the check rather than the habit.
+// this against every failure mode, and is compiled into both test binaries, so
+// the second implementation inherited the check rather than re-earning it.
+//
+// `json` is a complete frame: the caller owns the bytes and they stay valid for
+// the call. Deliberately (ptr, len) rather than an incremental feed — WebSocket
+// reassembly is the transport's job (M3 stage C, a fixed buffer sized from M0's
+// ~8 KB frames), not the decoder's. It may contain embedded NUL bytes and need
+// not be NUL-terminated; an implementation that reads past `json.size()` is
+// reading a network buffer it does not own.
 ParseStatus parse_anvil_frame(std::string_view json, const SymbolSpec& spec,
                               AnvilFrame& out) noexcept;
 

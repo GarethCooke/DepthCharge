@@ -15,13 +15,21 @@
 //     *string*; depthcharge::parse_scaled converts it exactly (invariant #3).
 //     Never json.get<double>() on a price — that is the bug this whole design
 //     exists to make impossible.
+//
+// Since M3 Stage B the second rule is enforced structurally rather than by
+// habit: the conversions themselves (price text -> ticks, wire qty -> steps,
+// aggressor letter -> Side, type string -> FrameKind) are not in this file at
+// all. They are in anvil_scaling.hpp, which the streaming parser includes too,
+// so the two implementations cannot drift on the one thing that would move a
+// golden invisibly. What is left here is purely "find the token and check its
+// JSON type" — the part that is genuinely nlohmann's.
 #include "depthcharge/anvil/anvil_frame.hpp"
 
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-#include "depthcharge/decimal.hpp"
+#include "depthcharge/anvil/anvil_scaling.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -37,16 +45,9 @@ const std::string* as_string(const json& node) noexcept {
     return node.is_string() ? node.get_ptr<const std::string*>() : nullptr;
 }
 
-FrameKind kind_from_type(std::string_view type) noexcept {
-    if (type == "book") { return FrameKind::Book; }
-    if (type == "snapshot") { return FrameKind::Snapshot; }
-    if (type == "trade") { return FrameKind::Trade; }
-    if (type == "summary") { return FrameKind::Summary; }
-    return FrameKind::Unknown;  // incl. the reserved "error" frame (protocol §3.4)
-}
-
 // Anvil prices are JSON strings ("9.9972", "10"). Anything else — a JSON number,
-// a null — is a shape error, not something to coerce.
+// a null — is a shape error, not something to coerce. Extracting the string is
+// nlohmann's job; converting it is anvil_scaling.hpp's.
 bool price_to_ticks(const json& node, const SymbolSpec& spec, PriceTicks& out,
                     ParseStatus& status) noexcept {
     const std::string* s = as_string(node);
@@ -54,41 +55,18 @@ bool price_to_ticks(const json& node, const SymbolSpec& spec, PriceTicks& out,
         status = ParseStatus::BadShape;
         return false;
     }
-    const DecimalParse p = parse_scaled(*s, spec.price_decimals);
-    if (!p.ok()) {
-        // TooManyDecimals means the declared scale is wrong for this venue —
-        // the loud failure ARCHITECTURE §4 asks for, instead of a silent round.
-        status = (p.error == DecimalError::BadScale) ? ParseStatus::BadShape
-                                                     : ParseStatus::BadPrice;
-        return false;
-    }
-    out = p.value;
-    return true;
+    return price_text_to_ticks(*s, spec, out, status);
 }
 
-// Wire quantities are whole units; SymbolSpec::qty_step says how many wire units
-// make one Qty step (Anvil: 1, so this is an identity with an exactness check).
-// The spec itself is validated once per frame by the caller, not once per level.
+// Likewise: nlohmann says whether the node is an integer, the shared header says
+// what that integer means as a quantity.
 bool qty_to_steps(const json& node, const SymbolSpec& spec, Qty& out,
                   ParseStatus& status) noexcept {
     if (!node.is_number_integer()) {
         status = ParseStatus::BadShape;
         return false;
     }
-    const std::int64_t raw = node.get<std::int64_t>();
-    // A negative resting size or fill size is not a quantity, and the adapter is
-    // the quarantine boundary (invariant #2): reject it here rather than let a
-    // nonsense level reach the book and get drawn.
-    if (raw < 0) {
-        status = ParseStatus::BadShape;
-        return false;
-    }
-    if (raw % spec.qty_step != 0) {
-        status = ParseStatus::BadShape;
-        return false;
-    }
-    out = raw / spec.qty_step;
-    return true;
+    return wire_qty_to_steps(node.get<std::int64_t>(), spec, out, status);
 }
 
 // Decode one side of a book/snapshot frame. Levels arrive best-first and are
@@ -199,15 +177,7 @@ ParseStatus parse_into(std::string_view text, const SymbolSpec& spec,
             }
             const std::string* aggr = as_string(*aggr_it);
             if (aggr == nullptr) { return ParseStatus::BadShape; }
-            // "B"/"S" are the engine's AggrSide (protocol §1): the aggressor is
-            // the incoming order, so B => a buy hit the offer.
-            if (*aggr == "B") {
-                out.aggressor = Side::Bid;
-            } else if (*aggr == "S") {
-                out.aggressor = Side::Ask;
-            } else {
-                return ParseStatus::BadShape;
-            }
+            if (!aggressor_from_text(*aggr, out.aggressor)) { return ParseStatus::BadShape; }
             break;
         }
         case FrameKind::Summary:
