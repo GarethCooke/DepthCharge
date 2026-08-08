@@ -16,5 +16,10 @@ __pycache__/
 Thumbs.db
 *.swp
 
+# Firmware: PlatformIO build output and the Wi-Fi credentials.
+# secrets.h.example IS committed — it is the shape, not the secret.
+/firmware/.pio/
+/firmware/include/secrets.h
+
 # Full local captures are kept untracked; only sliced traces are committed.
 # (harness/replay/.gitignore also covers _local/ and *.full.ndjson explicitly.)
