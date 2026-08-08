@@ -250,14 +250,22 @@ addition).
 ☑ `cmake --workflow --preset host` green from a clean clone, warnings-as-errors clean, with
   A and B merged (this is the agentic-half gate). *(9/9 ctest; verified from a clean
   out-of-tree configure as well as in place.)*
-☐ **Stage C:** `firmware/` links `engine/` as-is; connects over TLS WS to Anvil; feed task on
+◐ **Stage C:** `firmware/` links `engine/` as-is; connects over TLS WS to Anvil; feed task on
   Core 0; 1000 ms RX watchdog beside socket-close, both → `Gap{Disconnect}`; serial log
   shows connect → snapshot → steady → drop → stale → resync → live.
+  *(CC-side done 2026-08-08 — written, building clean, reviewed, host suite still 9/9. The
+  serial log is bench evidence and is the remaining half; nothing here has run on hardware.
+  Two decisions departed from the brief on measured grounds — a pinned ISRG Root X1 instead of
+  `esp_crt_bundle`, which this IDF vintage cannot reach, and a free-heap/low-water/largest-block
+  probe instead of `heap_trace`, which the precompiled framework compiles out. Both in
+  ARCHITECTURE §9 and the session log.)*
 ☐ **Stage D:** render task on Core 1 draws the live ladder on the panel (bids green, asks
   red, spread, prints, last px, sparkline); stale greys the panel.
 ☐ **The pull-the-Wi-Fi acceptance passes** on the bench: live → grey within ~1 s → clean
   resync. Photo/clip committed in `hardware/`.
-☐ `firmware/README.md` documents the PlatformIO build/flash line and the `secrets.h` shape.
+☑ `firmware/README.md` documents the PlatformIO build/flash line and the `secrets.h` shape.
+  *(Plus the board overrides for the N16R8, the bench acceptance procedure, and a table of what
+  the statistics block should read on a healthy run.)*
 ☐ Session log below filled in (per stage — this milestone spans several sessions); ROADMAP
   M3 ticked and M4 marked **Next** only when the acceptance passes.
 
@@ -498,8 +506,8 @@ parser.** Three independent agents, ~2.4 M differential inputs plus 35.5 M sanit
 **Measured on the target toolchain** (xtensa GCC 8.4, `-Os -fno-exceptions -fno-rtti -Werror`):
 `.text` **5,861 B**, `.data` 0, `.bss` 0, no `.init_array`. Undefined symbols are exactly
 `__ashldi3 __divdi3 __lshrdi3 __moddi3 __udivdi3 memcmp memset strlen` — no `operator new`, no
-`__cxa_*`/`_Unwind_*`, nothing from ESP-IDF, and no soft-float helper, so invariants #7,
-#1 and #3 are link-time facts rather than claims. Zero floating-point instructions in the
+`__cxa_*`/`_Unwind_*`, nothing from ESP-IDF, and no soft-float helper, so invariants
+#7, #1 and #3 are link-time facts rather than claims. Zero floating-point instructions in the
 disassembly. `dc_engine_target_check` now compiles this TU too, not just the headers.
 Stack via `-fstack-usage`: every frame static, largest 272 B, acyclic call graph, worst chain
 ~600 B — **input-independent**, so a 5,000-bracket frame costs what a flat one does.
@@ -542,3 +550,139 @@ using this parser, 1000 ms RX watchdog beside the socket-close callback. Resolve
 known-unknown first: it is also a language-version decision (espressif32 6.5.0 pins xtensa
 GCC 8.4; pioarduino / IDF 5.x give GCC 14–15). Both host stages are done, so the agentic-half
 gate is met.
+
+### 2026-08-08 · Opus 5 · Stage C written and building — **not yet flashed**
+
+**Done (CC-side).** `firmware/` exists: PlatformIO + Arduino, links `engine/` as-is, Wi-Fi →
+TLS WebSocket → streaming parser → adapter → phase-1 book → `SnapshotChannel`, feed task
+pinned to Core 0, serial consumer on Core 1, RX watchdog, reconnect supervisor, heap
+instrumentation. `pio run` clean: **RAM 30.7 % (100,656 / 327,680 B), flash 832,201 B**. Host
+loop untouched and still green — ctest **9/9**, doctest 80 → **97 cases / 9,101 assertions**.
+Nothing on the bench yet; **every runtime claim below is static or measured on the desk, never
+observed on the board.**
+
+**The framework known-unknown is closed, with evidence rather than recall.** M2's sketch is not
+in the repo and `hardware/BRINGUP.md` never recorded its platform, but the machine does:
+`~/.platformio/packages` holds `framework-arduinoespressif32` 3.20014.231204 (Arduino-ESP32
+2.0.14) and **no `framework-espidf` at all**, so the bench has only ever built Arduino. Pinned
+`espressif32@6.5.0` + `framework = arduino`, which also keeps stage D's HUB75 library on the
+stack M2 proved. Both stage-C dependencies are present in that framework and were checked, not
+assumed: `libesp_websocket_client.a` for esp32s3 is shipped **and in the default link set**,
+and `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`.
+
+**Task model — not a preference, forced by invariant #8.** The brief offered "process in the
+callback" vs "a dedicated feed task". The callback design is unbuildable here: the RX watchdog
+must fire when data *stops*, so it needs a context awake during silence, and it raises
+`Gap{Disconnect}` — which writes the book. A timer would therefore be a *second book writer*.
+The watchdog and the frames must be serviced by the same context, i.e. a task blocking with a
+timeout, and the timeout **is** the watchdog. Independently: this IDF vintage's
+`esp_websocket_client_config_t` has no `task_core_id`, so "feed on Core 0" is only achievable
+in a task we create. The callback fills a slot and posts it; the feed task owns the engine.
+
+**TLS: a pinned root, because the bundle is unreachable — and the chain was measured.**
+`esp_crt_bundle` is attached via `esp_tls_cfg_t::crt_bundle_attach`, and the IDF 4.4
+`esp_websocket_client_config_t` has no such field (it offers `cert_pem` and
+`use_global_ca_store`, nothing else). Reaching the bundle means pure ESP-IDF and re-running
+first light. So the brief's fallback applies. Measured against the live server:
+`anvil.garethcooke.com` ← `Let's Encrypt YE1` ← `ISRG Root YE` ← `ISRG Root X2` ← **`ISRG Root
+X1`** — four certificates, ending cross-signed by X1. Pinned X1 (SHA-256 `96:BC:EC:06:…:08:C6`,
+expires **2035-06-04**), and verified with a control before committing it:
+`openssl verify -CAfile isrg_x1.pem -untrusted <chain> <leaf>` → **OK**, against an unrelated
+self-signed CA → `error 20 at depth 3`. The committed PEM was **generated from the verified
+file and round-tripped back out of the C++ literal** and compared byte-for-byte, rather than
+transcribed — the first draft was hand-typed and that is exactly the thing not to trust.
+
+**Reassembly buffer sized from measurement.** Largest Anvil message across both captures is
+**8,726 B** (a `book` frame), mean 6,486. Two static 16 KiB slots — 1.9× the largest ever seen.
+Oversize is a *defined, counted drop*, never a realloc. The client's own RX buffer is
+deliberately **smaller** (4 KiB) so reassembly runs ~12 times a second rather than being a rare
+path that rots.
+
+**The reassembler is host-tested, and that was the highest-value thing in the stage.** It is
+the only genuinely new logic here (everything else is engine code or a thin Espressif wrapper)
+and a replay trace cannot exercise it — the capture tool's library reassembles before writing
+the line. So it was extracted into `firmware/src/frame_reassembler.hpp` with **zero ESP-IDF**,
+templated on a slot pool, and `harness/tests/test_frame_reassembler.cpp` runs it in `dc_tests`
+against a fake that models ownership: oversize, no-free-slot, socket-death-mid-message,
+new-message-mid-message, ping/pong, zero-length frames, every chunk size 1–40, and a 5,000-step
+random walk asserting **no sequence of chunks ever leaks a slot**. This is the only `firmware/`
+path the host build knows about, and it is a header — no firmware `.cpp` compiles on the host.
+
+**Adversarial review found six real defects; all six are fixed.** Three independent reviewers
+(FreeRTOS/ownership, Espressif API, host-vs-firmware semantics) over ~1.6 M tokens; three
+further findings were refuted on verification. The two that would have cost a bench evening
+each:
+
+1. **The firmware was mute.** Every `ESP_LOGI`/`ESP_LOGW` in `feed_task.cpp`,
+   `serial_console.cpp` and `heap_probe.cpp` was compiled out — those TUs include `esp_log.h`
+   directly, where `LOG_LOCAL_LEVEL` defaults to `CONFIG_LOG_MAXIMUM_LEVEL`, which the
+   precompiled framework ships as **1 (ERROR)**. `CORE_DEBUG_LEVEL` does not fix it: that only
+   feeds Arduino's `esp32-hal-log.h`, which those TUs never see. Stage C's entire evidence is
+   the serial log, so the board would have come up apparently dead while working perfectly. The
+   fix needs all three of `-D LOG_LOCAL_LEVEL=3`, `-D CORE_DEBUG_LEVEL=3` and
+   `esp_log_level_set("*", ESP_LOG_INFO)`. **Verified by grepping the built `.elf` for the log
+   strings** — absent before, present after — because my first attempt (CORE_DEBUG_LEVEL alone)
+   looked right and did nothing.
+2. **A clean server-side CLOSE killed the feed permanently.** `esp_websocket_client`'s task
+   echoes the close frame, breaks its run loop and `vTaskDelete(NULL)`s; `auto_reconnect` is
+   consulted only on the abort/error path, so nothing restarts it. Invariant #5 survives — the
+   panel greys — but it greys *forever*, reading at a bench as an intermittent hang hours into
+   a healthy run, with `socket_gaps` possibly still 0. Anvil gets redeployed, so this is not
+   hypothetical. Added a supervisor in `loop()` (never the callback — the API forbids
+   `stop()`/`start()` there) that restarts the client after 20 s disconnected, chosen above the
+   client's own 10 s backoff so it backs it up rather than fights it.
+
+3. **A systematic parse failure froze the ladder reading LIVE** — the one output invariant #5
+   forbids. The watchdog was armed by *byte arrival*, so a server sending frames the parser
+   rejects (or nothing but `summary`) kept feeding it while the book never advanced. Fixed by
+   arming on an **event reaching the book**, and the cost of doing so was measured rather than
+   argued: over both captures the worst healthy gap is **640.2 ms whichever way you count** —
+   any frame, event-producing frames, or book frames only — because the book stream is the
+   dense one and 2 Hz summaries never fill a hole it left. The 1.6× margin under 1000 ms
+   survives intact. *This makes the firmware deliberately **stricter** than the host replay
+   driver, which still gaps on `rx_ns` holes between any frames; aligning the host is a
+   candidate for M4 and is not done here because that driver is golden-covered.*
+4. **`worst_gap_us` could never record an outage** — it was gated on the same flag the watchdog
+   clears, so the one number that quantifies a gap was suppressed by the thing that detects it.
+5. **Nothing was published before the first event**, so a connected-but-unproductive feed left
+   the consumer with no snapshot at all — at stage D a dark panel, which says nothing where #5
+   requires "not trusted". The feed task now publishes the book's initial `Stale{Resync}` once
+   at start-up.
+6. **The feed task logged.** Arduino routes `ESP_LOGx` to `log_printfv`, which `malloc`s for
+   lines over 64 chars and takes the UART mutex with `portMAX_DELAY` — so a log line on Core 0
+   would block the feed on a mutex the console holds on Core 1 (invariant #4) through an
+   allocation (#7). All logging removed from `feed_task.cpp`; every event it reported is
+   already a counter, and the Live↔Stale transitions are printed by the console off the
+   published snapshot. Noted in the header so stage D does not reintroduce it.
+
+**Invariant #7 on the target — settled statically, and §9 written from it.** ESP-IDF heap
+tracing is **unavailable**: the precompiled framework ships `CONFIG_HEAP_TRACING_OFF=y`, so
+there is no trace code to link. More importantly the question it was meant to answer is already
+answered — `esp_websocket_client` dispatches every event through `esp_event_post_to`, which
+heap-copies the 28-byte payload and frees it on return (visible as `memset → calloc → memcpy →
+… → free` in the shipped `libesp_event.a`): ~37 balanced pairs a second at three DATA events
+per frame. So #7 on the target reads as **no net allocation and no fragmentation drift**, with
+the engine half still holding in the strong form and proven. Recorded in ARCHITECTURE §9.
+`heap_probe` samples free bytes, low-water and largest-free-block and is documented as
+detecting a *leak or fragmentation* — **not** the churn: an earlier draft claimed the low-water
+mark could see it, which is false (since-boot minimum, no reset, and the baseline is taken
+after the dip). That claim was corrected rather than shipped.
+
+**Also resolved:** `payload_offset` accumulates across chunks of one frame and the opcode is
+repeated with FIN masked off (confirmed by disassembling `libtcp_transport.a`), so the
+reassembly contract holds; `cert_len = 0` is correct for a NUL-terminated PEM; `%lld`/`%llu`
+are safe (`CONFIG_NEWLIB_NANO_FORMAT` is not set); `xTaskCreate`'s stack argument is **bytes**
+on ESP-IDF, not words — the parameter was misnamed and the sizes are now 8 KiB feed / 6 KiB
+console.
+
+**Open / for the owner at the bench.** The board config is the untested part: the stock
+`esp32-s3-devkitc-1` is the N8 variant, so flash size, `default_16MB.csv` and
+`memory_type = qio_opi` are overridden for the N16R8 — if it fails to boot, the two PSRAM lines
+are the first thing to bisect (stage C uses no PSRAM), and the answer should be recorded either
+way because stage D wants it. `firmware/README.md` has the full acceptance procedure and a
+table of what the statistics block should say on a healthy run.
+
+**Exact next step.** Owner: flash, capture the serial log, run the pull-the-Wi-Fi acceptance,
+and commit the log to `hardware/`. Then **Stage D** — the render task on Core 1, HUB75 with the
+M2 pin map and FM6124 init, replacing `serial_console.cpp`'s body while keeping its shape
+(Core 1, `consume()`, redraw only on a new version).

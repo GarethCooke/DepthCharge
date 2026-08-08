@@ -360,7 +360,7 @@
   <div class="statusbar">
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
-    <span class="status amber">in progress <b>M3 — live Anvil on the panel · stages A and B done</b></span>
+    <span class="status amber">in progress <b>M3 — live Anvil on the panel · A and B done, C awaiting the bench</b></span>
     <span class="status">first-party C++ <b>~5,000 lines</b></span>
     <span class="status">drawn from source at <b>a56ccd6</b></span>
   </div>
@@ -500,6 +500,27 @@
       </tbody>
     </table>
   </div>
+
+  <p>
+    <code>firmware/</code> is not in that table because it is not a CMake target: it is a
+    separate PlatformIO project (<code>pio run</code>), and the separation is the point —
+    the host build cannot accidentally depend on ESP-IDF and the firmware cannot accidentally
+    depend on doctest. It reaches into the engine with exactly two lines:
+    <code>-I ../engine/include</code>, and a <code>build_src_filter</code> naming the single
+    translation unit <code>engine/src/anvil/anvil_frame_streaming.cpp</code>. Nothing is
+    copied or vendored, and the firmware names its parser for the same reason every executable
+    above does.
+  </p>
+  <p>
+    There is one deliberate crossing in the other direction: <code>dc_tests</code> puts
+    <code>firmware/src</code> on its include path to compile
+    <code>test_frame_reassembler.cpp</code>. That is a header — the WebSocket reassembly state
+    machine, written free of ESP-IDF precisely so it can be tested here — and no firmware
+    <code>.cpp</code> is ever compiled on the host. It is the only piece of stage C that is
+    new logic rather than engine code or a thin wrapper over an Espressif call, and a replay
+    trace cannot exercise it, because the capture tool's WebSocket library reassembled the
+    chunks before writing the line.
+  </p>
 </section>
 
 <hr>
@@ -1195,6 +1216,43 @@ sequenceDiagram
     </figcaption>
   </figure>
 
+  <h3>The firmware watches something slightly different, on purpose</h3>
+  <p>
+    M3 stage C implements the same 1000 ms rule on the board — and then arms it from a
+    different event, which is the one place the two halves of this project deliberately
+    disagree. The host driver fires on a hole in <code>rx_ns</code> between any two
+    <em>frames</em>, which is exact for a trace file: in a capture every frame parses, so "a
+    frame arrived" and "the book advanced" are the same statement. On a socket they are not.
+    A server can keep sending bytes that decode to nothing — a shape the parser rejects, or
+    nothing but <code>summary</code> frames — and a watchdog armed on arrival would sit
+    happily while the ladder froze, still reading Live. That is the exact output invariant #5
+    exists to forbid, and a trace file cannot contain it.
+  </p>
+  <p>
+    So <code>FeedTask</code> arms its watchdog on an <em>event reaching the book</em>. The
+    cost of doing so had to be measured rather than argued, because a stricter rule that
+    fires on healthy data is worse than the bug it fixes — and over both committed captures
+    the worst healthy gap turns out to be identical whichever way it is counted:
+  </p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Counting…</th><th>Frames</th><th>Worst healthy gap</th></tr></thead>
+      <tbody>
+        <tr><td>any frame (the host's rule)</td><td class="num">1,406</td><td class="num">640.2 ms</td></tr>
+        <tr><td>event-producing (book / snapshot / trade)</td><td class="num">1,225</td><td class="num">640.2 ms</td></tr>
+        <tr><td>book-affecting (book / snapshot)</td><td class="num">1,089</td><td class="num">640.2 ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    They agree because the book stream is the dense one at ~12 Hz and the 2 Hz summaries never
+    fill a hole the book frames left, so the 1.6× margin under 1000 ms survives untouched. The
+    two definitions differ only on inputs the traces do not contain — which is precisely why
+    the divergence is worth writing down rather than quietly having. Aligning the host driver
+    is a candidate for M4; it was not done at stage C because that driver is golden-covered and
+    stage C's scope was firmware.
+  </p>
+
   <h3>The other failure, which deliberately does nothing</h3>
 
   <figure>
@@ -1501,7 +1559,7 @@ classDiagram
 
   <p>
     Everything above describes code that works and is green. This section is the honest
-    counterweight: ten places where the current shape is either unenforced, speculative,
+    counterweight: twelve places where the current shape is either unenforced, speculative,
     or about to be tested by a milestone that does not exist yet. Each is stated with what
     would break it and what resolves it.
   </p>
@@ -1694,6 +1752,50 @@ classDiagram
     </p>
     <p class="verdict">Resolves: <b>never fully — it is the standing cost of the seam. Keep the equivalence table growing with every wire surprise; if the two ever have to diverge on something Anvil can actually send, that is a §9 amendment, not a patch</b></p>
   </div>
+
+  <div class="strain">
+    <h4>10 · There are now two definitions of "the feed has stopped"</h4>
+    <p>
+      The host replay driver greys on a hole between <em>frames</em>; the M3 stage C firmware
+      greys on a hole between <em>events reaching the book</em> (§05). Both use 1000 ms, both
+      are justified by the same 640 ms measurement, and on every input either has ever seen
+      they agree exactly. They differ only where a trace file cannot go: bytes that arrive and
+      decode to nothing.
+    </p>
+    <p>
+      The firmware's rule is the better one — it is the version that cannot leave a frozen
+      ladder reading Live — but having two is a real cost, because the goldens now pin the
+      weaker rule and the panel runs the stronger one, so the harness can no longer be said to
+      preview the firmware exactly. The right end state is one rule in both places.
+    </p>
+    <p class="verdict">Resolves: <b>M4 — move the host driver onto the event-armed rule. Verified in advance to be golden-neutral on both committed traces (the worst gap is 640.2 ms whichever way it is counted), but it is a change to golden-covered code and belongs in a brief, not in a firmware stage</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>11 · Invariant #7 is now two claims, because the transport is not ours</h4>
+    <p>
+      Every earlier statement of "allocation-free steady state" was about code in this repo,
+      and could be proven absolutely: <code>alloc_probe</code> counts zero over both traces,
+      and the streaming parser's xtensa object has no undefined <code>operator new</code> to
+      call. Stage C is the first time the invariant met a library nobody here wrote, and it
+      loses. <code>esp_websocket_client</code> dispatches every event through
+      <code>esp_event_post_to</code>, which heap-copies the 28-byte payload and frees it when
+      the handler returns — about 37 balanced <code>calloc</code>/<code>free</code> pairs a
+      second at three DATA events per book frame.
+    </p>
+    <p>
+      So the invariant now reads differently either side of the boundary: strict for the
+      engine, "no net allocation and no fragmentation drift" for the transport (ARCHITECTURE
+      §9). That is defensible — bounded churn of one fixed-size block threatens neither
+      determinism nor a heap that must survive a week on a desk — but it is a weaker sentence
+      than the one the constitution started with, and weaker sentences drift. The
+      instrumentation is honest about its own limits: ESP-IDF heap tracing is compiled out of
+      the precompiled framework, and the low-water mark is a since-boot minimum that cannot
+      see steady churn at all, so <code>heap_probe</code> detects a <em>leak or
+      fragmentation</em> and says so rather than claiming to test the invariant.
+    </p>
+    <p class="verdict">Resolves: <b>not by tightening the words. Either accept the split permanently, or move to pure ESP-IDF where <code>heap_trace_start</code> exists and the claim can be measured rather than reasoned — which is the same platform decision stage C deferred for the framework, and should be made once, for both reasons together</b></p>
+  </div>
 </section>
 
 <hr>
@@ -1728,24 +1830,29 @@ classDiagram
 
   <h3>Known M3 edits, already queued</h3>
   <ul>
-    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical.</li>
+    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is and builds clean (RAM 30.7%, flash 832 KB), but nothing has run on the board yet, so the boxes stay dashed until the bench log lands. The stage D render task is still entirely hypothetical.</li>
     <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
-    <li>§08 — strain point 2 closed at stage A; strain point 9 <em>opened</em> at stage B (two parsers, one meaning); 7 should close at stage D; 1 and 3 will not.</li>
+    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 7 should close at stage D; 1 and 3 will not.</li>
+    <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule.</li>
   </ul>
 </section>
 
 <footer>
-  Drawn from source at <b>42ea18a</b> plus M3 stage B · <code>wc -l</code>: engine 2,398
-  lines (958 of them the streaming parser) · harness 5,283 (3,570 of it tests) · plus 609
-  lines of Python capture tooling in <code>tools/</code>. Earlier revisions of this footer
-  counted with a tool that dropped unterminated final lines, so those figures are not
+  Drawn from source at <b>bae1c49</b> plus M3 stage C · <code>wc -l</code>: engine 2,449
+  lines (958 of them the streaming parser) · harness 5,668 (3,955 of it tests) · firmware
+  1,615 · plus 609 lines of Python capture tooling in <code>tools/</code>. Revisions before
+  stage B counted with a tool that dropped unterminated final lines, so those figures are not
   comparable with these.<br>
-  Verified against a green <code>host-mingw</code> workflow run: 9/9 ctest, 80/80 doctest in
-  <code>dc_tests</code> (7,118 assertions) and 44/44 in <code>dc_tests_streaming</code>
-  (677), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1. Every
+  Verified against a green <code>host-mingw</code> workflow run: 9/9 ctest, 97/97 doctest in
+  <code>dc_tests</code> (9,101 assertions) and 44/44 in <code>dc_tests_streaming</code>
+  (686), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1, and a clean
+  <code>pio run</code> of <code>firmware/</code> (RAM 30.7%, flash 832,201 B). Every
   <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the parser's
-  <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.<br>
+  <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.
+  <b>Nothing in <code>firmware/</code> has run on hardware yet</b> — where this document
+  describes its behaviour, it is describing code that compiles and has been reviewed, not
+  code that has been observed.<br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
   current work order: <code>docs/briefs/M3-live-anvil-on-the-panel.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in
