@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <ranges>
@@ -43,6 +44,12 @@ std::string baseline_path() {
 }
 std::string reconnect_path() {
     return std::string(DC_REPLAY_DIR) + "/anvil_101_reconnect.ndjson";
+}
+// The 2026-08 re-measurement of Anvil's cadence (M3). See NOTES.md's M3 addendum
+// for why a second healthy trace exists rather than the first one being replaced:
+// the M1 trace is what the goldens above pin, and it is kept exactly as it was.
+std::string baseline_2026_08_path() {
+    return std::string(DC_REPLAY_DIR) + "/anvil_101_baseline_20260809.ndjson";
 }
 
 ReplayResult replay(const std::string& path, std::size_t max_frames = 0) {
@@ -206,6 +213,66 @@ TEST_CASE("baseline trace: the ladder never goes stale on a healthy feed") {
     CHECK(r.episodes.empty());
     CHECK_FALSE(r.saw_stale);
     CHECK(stale_publishes == 0);
+}
+
+// --- the watchdog threshold, re-measured against the live server -------------
+
+// M3 asked whether `disconnect_gap_ms = 1000` had been outlived: the board was
+// greying on a live socket, and the theory was that Anvil had slowed from M0's
+// 15.5 frames/s to ~6, stretching healthy silences past the threshold. A fresh
+// 20-minute capture says otherwise — 17.02 frames/s, worst gap 391 ms — so the
+// premise was wrong and the constant did not move (ARCHITECTURE §9, 2026-08-09).
+//
+// This is that measurement made executable. It is the guard the original
+// derivation never had: if Anvil's cadence ever really does stretch, this goes
+// red on a trace rather than on a panel, which is the whole point of invariant
+// #6. The numbers come from tools/gap_stats.py over the committed slice, not
+// from this code's output.
+TEST_CASE("2026-08 capture: Anvil's cadence still clears the watchdog by 6x") {
+    std::vector<std::int64_t> event_rx;
+    ReplayOptions opts;
+    dc::harness::TraceReader reader(baseline_2026_08_path());
+    const ReplayResult r = dc::harness::run_replay(
+        reader, kAnvilTicker101, opts,
+        [&](const dc::harness::ReplayStep& step,
+            const depthcharge::DisplaySnapshot&) -> bool {
+            event_rx.push_back(step.rx_ns);
+            return true;
+        });
+
+    CHECK(r.frames == 1513);
+    CHECK(r.events == 1332);  // 1211 snapshots + 121 trades, no gaps
+
+    CHECK(r.adapter.snapshot_frames == 1);
+    CHECK(r.adapter.book_frames == 1210);
+    CHECK(r.adapter.trade_frames == 121);
+    CHECK(r.adapter.summary_ignored == 181);
+    CHECK(r.adapter.parse_errors == 0);
+    CHECK(r.adapter.price_errors == 0);   // 10^-4 still holds every price
+    CHECK(r.adapter.truncated_frames == 0);
+
+    // 90.0 s of capture at 16.81 frames/s — Anvil is if anything faster than the
+    // 15.5 M0 measured, not slower.
+    CHECK(r.span_seconds() > 89.9);
+    CHECK(r.span_seconds() < 90.1);
+
+    // THE ASSERTION THAT MATTERS. Not one hole in the stream comes close to the
+    // threshold, so a healthy feed cannot grey the panel.
+    CHECK(r.episodes.empty());
+    CHECK_FALSE(r.saw_stale);
+    CHECK(r.final_snapshot.live());
+
+    // ...and by how much, so a slow erosion is visible rather than only a breach.
+    // 156 ms against a 1000 ms threshold: 6.4x of margin.
+    REQUIRE(event_rx.size() > 2);
+    double worst_gap_ms = 0.0;
+    for (std::size_t i = 1; i < event_rx.size(); ++i) {
+        worst_gap_ms = std::max(
+            worst_gap_ms, static_cast<double>(event_rx[i] - event_rx[i - 1]) / 1e6);
+    }
+    CHECK(worst_gap_ms > 155.0);
+    CHECK(worst_gap_ms < 157.0);
+    CHECK(worst_gap_ms < opts.disconnect_gap_ms / 6.0);
 }
 
 // --- the invariant-5 proof ---------------------------------------------------

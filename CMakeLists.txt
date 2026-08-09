@@ -177,11 +177,17 @@ add_executable(dc_tests
   harness/tests/test_anvil_adapter.cpp
   harness/tests/test_book.cpp
   harness/tests/test_console_ladder.cpp
+  harness/tests/test_frame_reassembler.cpp
   harness/tests/test_parser_equivalence.cpp
   harness/tests/test_replay_goldens.cpp
   harness/tests/test_snapshot_channel.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
+# M3 stage C: the firmware's WebSocket reassembler is deliberately ESP-IDF-free
+# so it can be tested here. This is the ONLY firmware/ path the host build knows
+# about, and it is a header — no firmware .cpp is compiled on the host, so
+# nothing in firmware/ can quietly become a host dependency.
+target_include_directories(dc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
 target_link_libraries(dc_tests PRIVATE
   dc_harness dc_engine_anvil dc_vendor dc_warnings Threads::Threads)
 
@@ -242,9 +248,15 @@ add_test(NAME dc_replay_baseline
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
 add_test(NAME dc_replay_reconnect
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
+add_test(NAME dc_replay_baseline_20260809
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline_20260809.ndjson)
 add_test(NAME dc_replay_streaming_baseline
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
+add_test(NAME dc_replay_streaming_baseline_20260809
+  COMMAND dc_replay_streaming
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline_20260809.ndjson)
 add_test(NAME dc_replay_streaming_reconnect
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
