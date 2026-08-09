@@ -38,7 +38,9 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
   liveness watchdog false-greys a quiet-but-live book, strain 10); feeder realism
   (Hawkes arrivals / mirror mode / FrontierView execution-algo participant); TLS-chain
   rotation is a DepthCharge-firmware-pinned dependency (an Anvil CA/chain change = a
-  lock-step firmware update).
+  lock-step firmware update); per-socket coalescing / even backpressure-shedding (undocumented in PROTOCOL.md —
+lossless for Anvil's idempotent full-replace book, but M4/M5 delta venues cannot shed the
+same way without gap+resync; document Anvil-side, never assume it downstream).
 - DepthCharge: Crucible post — book structures under fire (flat_map vs dense window,
   driven by Anvil's *trend* workload).
 - Optional **live web mirror** of the panel's `DisplaySnapshot` feed (a browser twin of
