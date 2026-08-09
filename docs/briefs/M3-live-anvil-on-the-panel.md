@@ -1043,3 +1043,102 @@ agrees at ~6/s the threshold should be re-derived from the new measurement rathe
 **Exact next step:** the paired capture above, to re-derive `kRxWatchdogMs` against a current
 measurement — this is now the highest-value item in the milestone. Then the `ws_supervisor.hpp`
 host-test extraction still open from two entries back. Then Stage D.
+
+### 2026-08-09 · Opus 5 · the watchdog was measured, the premise was wrong, and nothing moved
+
+**The task was to re-derive `kRxWatchdogMs` from Anvil's current cadence. The measurement
+refused the premise, so the constant stayed at 1000 ms** — owner consulted mid-session and
+agreed. The brief pre-sanctioned a golden move as the one exception to "a moved golden means
+stop"; that sanction rested on "the deployed server now runs ~6 msg/s, healthy silences have
+stretched", and it does not.
+
+**What Anvil actually does, from a 20-minute desk capture (20,418 frames, one connection):**
+**17.02 frames/s, worst inter-frame gap 391 ms.** Faster and steadier than M0's 15.5 /s and
+640 ms. Per-kind: `book` 13.44/s, `summary` 2.00/s, `trade` 1.58/s — the 2 Hz timer and the
+event-driven tape are exactly where M0 left them. Distribution (nearest-rank, `tools/gap_stats.py`),
+all three counting rules agreeing on the worst gap as they did at M0:
+
+| counting rule | n | rate/s | p50 | p90 | p99 | p99.9 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| any frame (host driver) | 20,418 | 17.02 | 63 | 78 | 141 | 172 | **391** |
+| event-producing | 18,017 | 15.02 | 63 | 79 | 141 | 172 | **391** |
+| book-affecting (firmware's rule) | 16,124 | 13.44 | 78 | 79 | 141 | 188 | **391** |
+
+So the brief's own method, applied to the data the brief asked for, moves the threshold
+**down** — p99.9 × margin lands near 500 ms, 1.6× over the max lands at 626 ms — which would
+have made the false greys worse. That is the whole reason this session's output is a
+measurement and not a patch.
+
+**The board's ~6 msg/s is real and is backpressure, not cadence.** `tools/anvil_drain_probe.py`
+opens the same socket and sleeps after each message, run against a *simultaneous* unthrottled
+capture that stayed flat at 16.9 msg/s throughout — one server, one instant, two drain speeds:
+
+| drain delay | rate | throughput | gaps p50 | gaps max |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 ms | 16.95 /s | 106.5 KB/s | 63 ms | 156 ms |
+| 120 ms | **8.32 /s** | 54.4 KB/s | 125 ms | 125 ms |
+| 250 ms | **4.01 /s** | 26.9 KB/s | 250 ms | 266 ms |
+
+**Anvil sheds to a slow consumer, and sheds *evenly*** — 4× fewer messages, gaps unchanged,
+because `book` frames are coalesced per socket so a backed-up socket gets the newest book
+rather than a queue of stale ones. This reconciles the bench numbers exactly: hold `summary`
+at 2.00/s and `trade` at 1.58/s and solve run A's 8.59 msg/s at 42.70 KB/s for `book` → 5.14
+book/s, 8.72 msg/s, mean 5,012 B, against the board's reported 8.59 msg/s and 5,148 B. Inside
+1.5%. New venue behaviour, not in the vendored protocol, and a note for M4/M5: **a thinned
+Anvil stream is not a broken one.**
+
+**The control that settles it.** Throttle the desk to the board's own message rate (8.30 vs
+8.59 msg/s) and measure with the board's own book-event rule, four minutes: worst silence
+**594 ms**, zero watchdog trips. The board shows **2,461 ms** and five trips in 90 s. Anvil
+delivers a thinned stream evenly; the multi-second holes are board-side. **Raising the
+threshold would have hidden a real 1–2.5 s freeze of the feed pipeline, reading Live — the
+exact output invariant #5 exists to forbid.** The watchdog is not crying wolf; it is the only
+instrument that noticed.
+
+**Both costs, recorded as the brief asked** — for the threshold that was kept, not one that
+was chosen. False-grey headroom: 1000 − 391 = **609 ms** against Anvil at full rate, and
+1000 − 594 = **406 ms** (1.68×) against Anvil at the board's rate, which is the binding one.
+Silent half-open detection latency: **1000 ms**, unchanged; every clean drop still surfaces as
+a socket error in under 1 s, so the watchdog only ever owned silent half-opens. The 4,468 ms
+reconnect gap keeps its full 3,468 ms of grey and the invariant-5 proof is untouched.
+
+**Delivered.** Fresh 90 s slice committed (`anvil_101_baseline_20260809.ndjson`, 1,513 frames,
+190 KiB gzipped) *beside* the M0 trace rather than replacing it, since the M1 goldens pin the
+M0 one. Two new tools in `tools/`: `gap_stats.py` (distribution + "what would threshold T do
+to this trace", validated by reproducing the existing reconnect golden's 4,468/3,468 ms and
+frames 382→383 exactly) and `anvil_drain_probe.py`. A new golden pins the finding —
+`test_replay_goldens.cpp`, "2026-08 capture: Anvil's cadence still clears the watchdog by 6x"
+— so a *real* future cadence change goes red on the desk instead of grey on the panel, which
+is the guard the M1 derivation never had. ARCHITECTURE §9 amended; DESIGN.html §05 rewritten,
+strain 10 updated (the two "feed has stopped" rules are golden-neutral on captures but
+separate 4× on a throttled stream, so M4's alignment now owns a throttled trace too), strain
+**12 opened** — the board stalls for seconds and only the panel can see it.
+
+**Measurement caveat, recorded rather than buried.** This capture's `rx_ns` came from a
+Windows `time.monotonic_ns()` at the default 15.625 ms timer resolution — the whole capture
+holds only 35 distinct gap values, all on that grid. Every figure above is ±16 ms, which is
+nothing at 391 vs 1000 ms but does mean p50 = 63 ms is "~60–70 ms, unchanged from M0" and not
+a real shift. M0's capture had sub-ms resolution; capture from WSL next time.
+
+**Two ways the comparison could still be wrong**, both stated in NOTES.md: the desk's default
+route is wired Ethernet where the board is on Wi-Fi (same gateway, same WAN path), and the
+desk capture ran ~1.4 h after the bench run rather than alongside it. Neither produces
+*selective* multi-second silence in a TCP stream a sender is filling evenly — loss is
+retransmitted, not skipped — but the board can close both alone by printing a distribution
+instead of a high-water mark.
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: 11/11 ctest (two new
+replay registrations for the new trace), 99/99 doctest in `dc_tests` (9,126 assertions),
+45/45 in `dc_tests_streaming` (704). No firmware change, so no reflash needed and the bench
+confirm the brief asked for does not apply — `wd_gaps` will not drop to ~0 until the stall is
+found, and that is the point.
+
+**Exact next step: the stall, before Stage D.** Add a bucketed gap histogram plus
+arrival-vs-event counters to `FeedTask::Stats` (`worst_gap` is a high-water mark with no
+distribution behind it, so the board can say it saw 2,461 ms but not how often, nor whether
+the hole was in arrival or in decode), then one bench run. Candidates in the order the
+evidence favours them: the 2.5 s blocking `esp_websocket_client_stop()` already measured on
+loopTask; `esp_event` dispatch backing up behind three DATA events per book frame at a 4 KiB
+RX buffer; feed-task starvation on Core 0, which also hosts the Wi-Fi and lwIP tasks at higher
+priority. The `ws_supervisor.hpp` host-test extraction is still open behind it, and the
+histogram work touches the same file, so they may merge. Then Stage D.

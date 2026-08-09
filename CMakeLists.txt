@@ -248,9 +248,15 @@ add_test(NAME dc_replay_baseline
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
 add_test(NAME dc_replay_reconnect
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
+add_test(NAME dc_replay_baseline_20260809
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline_20260809.ndjson)
 add_test(NAME dc_replay_streaming_baseline
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
+add_test(NAME dc_replay_streaming_baseline_20260809
+  COMMAND dc_replay_streaming
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline_20260809.ndjson)
 add_test(NAME dc_replay_streaming_reconnect
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
