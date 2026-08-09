@@ -39,6 +39,11 @@ bool FramePipe::publish(std::uint8_t slot, std::uint32_t len) noexcept {
         return false;
     }
     ++stats_.frames_published;
+    stats_.bytes_published += len;
+    if (len > stats_.largest_message) { stats_.largest_message = len; }
+    if (stats_.smallest_message == 0 || len < stats_.smallest_message) {
+        stats_.smallest_message = len;
+    }
     return true;
 }
 

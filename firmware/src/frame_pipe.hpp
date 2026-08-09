@@ -62,11 +62,37 @@ namespace depthcharge::fw {
 // do not make it dynamic.
 inline constexpr std::size_t kFrameCapacity = 16 * 1024;
 
-// Two slots: the network task fills one while the feed task parses the other.
-// That is the minimum that lets neither stall the other, and it is ample here —
-// frames arrive ~80 ms apart and a parse is tens of microseconds. Each slot
-// costs kFrameCapacity of internal SRAM, so this is 32 KiB.
-inline constexpr std::size_t kFrameSlots = 2;
+// Four slots — and the first bench run is why it is not two.
+//
+// Two is the minimum that lets the network task and the feed task avoid stalling
+// each other, and the reasoning for it ("frames arrive ~80 ms apart and a parse
+// is tens of microseconds") was right about the averages and wrong about the
+// distribution. Measured on the board over 30 s: 190 messages published, **33
+// dropped for want of a free slot — 16% of everything that arrived**, climbing
+// linearly rather than as a start-up transient.
+//
+// The mechanism is burst arrival against slot residency. An ~8 KB message is
+// held across the three DATA events it takes to reassemble at a 4 KiB RX buffer,
+// while the feed task spends up to 8.5 ms (measured `worst_frame`) on the
+// previous one; Anvil coalesces its book stream, so three messages landing
+// back-to-back is routine, not rare. Two slots have no cushion for that at all.
+//
+// Losing those messages costs nothing in correctness — book frames are
+// idempotent full replaces and `parse_errors` stayed 0 — but it lengthens the
+// observed gap between events, and that gap is what the RX watchdog measures.
+// The first run showed `worst_gap` at 721 ms against a 1000 ms threshold sized
+// for M1's measured 640 ms: a 1.39x margin where the design assumed 1.6x. Every
+// dropped message pushes it further toward a **false STALE**, which is exactly
+// the lie invariant #5 exists to prevent. That, not the wasted bandwidth, is why
+// this constant moved.
+//
+// Cost: 4 x kFrameCapacity = 64 KiB of internal SRAM, against 30.7% used at two
+// slots. The alternative lever is kWsRxBufferBytes — one DATA event per message
+// instead of three would cut slot residency and the esp_event allocation rate
+// together — and it is deliberately NOT pulled here, because chunk reassembly
+// being exercised on every frame is worth keeping now that the wire has proven
+// it works (190 multi-chunk messages, zero parse errors).
+inline constexpr std::size_t kFrameSlots = 4;
 
 // What the feed task receives. Frame data and connection state travel the same
 // queue on purpose: they must be handled in the order they happened, or a Gap
@@ -90,11 +116,24 @@ struct FeedMessage {
 struct FramePipeStats {
     std::uint32_t frames_published = 0;   // complete messages handed to the feed
     std::uint32_t oversize = 0;           // message > kFrameCapacity, dropped
-    std::uint32_t no_slot = 0;            // both slots busy when a message began
+    std::uint32_t no_slot = 0;            // every slot busy when a message began
     std::uint32_t queue_full = 0;         // feed task not draining (should never)
     std::uint32_t abandoned = 0;          // a new message began mid-message
     std::uint32_t continuation = 0;       // WS continuation frames seen (see .cpp)
     std::uint32_t control = 0;            // ping/pong/close opcodes
+
+    // Inbound volume, so the next bench run MEASURES the wire instead of
+    // inferring it. The first run could only be compared against M0's July
+    // figures (15.5 frames/s, 8,726 B max) and came out at ~6.7 messages/s
+    // attempted — but with no way to tell a slower server from a client that is
+    // missing frames upstream of the reassembler. These four make that a
+    // reading rather than an argument: the console prints per-window rates from
+    // them, and a simultaneous host capture gives the other end of the
+    // comparison.
+    std::uint64_t bytes_published = 0;    // total payload bytes handed to the feed
+    std::uint32_t largest_message = 0;    // vs kFrameCapacity — is 16 KiB still enough?
+    std::uint32_t smallest_message = 0;   // 0 until the first message
+    std::uint32_t chunks = 0;             // DATA events accepted; /messages = chunks per frame
 };
 
 class FramePipe {
@@ -129,6 +168,7 @@ public:
     void count_abandoned() noexcept { ++stats_.abandoned; }
     void count_continuation() noexcept { ++stats_.continuation; }
     void count_control() noexcept { ++stats_.control; }
+    void count_chunk() noexcept { ++stats_.chunks; }
 
     // --- feed side ----------------------------------------------------------
 

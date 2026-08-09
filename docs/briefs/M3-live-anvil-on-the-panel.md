@@ -506,8 +506,8 @@ parser.** Three independent agents, ~2.4 M differential inputs plus 35.5 M sanit
 **Measured on the target toolchain** (xtensa GCC 8.4, `-Os -fno-exceptions -fno-rtti -Werror`):
 `.text` **5,861 B**, `.data` 0, `.bss` 0, no `.init_array`. Undefined symbols are exactly
 `__ashldi3 __divdi3 __lshrdi3 __moddi3 __udivdi3 memcmp memset strlen` — no `operator new`, no
-`__cxa_*`/`_Unwind_*`, nothing from ESP-IDF, and no soft-float helper, so invariants
-#7, #1 and #3 are link-time facts rather than claims. Zero floating-point instructions in the
+`__cxa_*`/`_Unwind_*`, nothing from ESP-IDF, and no soft-float helper, so invariants #7, #1
+and #3 are link-time facts rather than claims. Zero floating-point instructions in the
 disassembly. `dc_engine_target_check` now compiles this TU too, not just the headers.
 Stack via `-fstack-usage`: every frame static, largest 272 B, acyclic call graph, worst chain
 ~600 B — **input-independent**, so a 5,000-bracket frame costs what a flat one does.
@@ -686,3 +686,66 @@ table of what the statistics block should say on a healthy run.
 and commit the log to `hardware/`. Then **Stage D** — the render task on Core 1, HUB75 with the
 M2 pin map and FM6124 init, replacing `serial_console.cpp`'s body while keeping its shape
 (Core 1, `consume()`, redraw only on a new version).
+
+### 2026-08-09 · Opus 5 · first bench run read; slot starvation fixed, rate instrumented
+
+**The board ran.** Owner flashed and captured ~40 s of serial log. Everything the stage was
+built to prove worked on the first attempt: Wi-Fi and TLS up in 2.5 s, WS upgrade accepted with
+no `Origin`, first snapshot adopted at v2, `parse_errors=0 price_errors=0 unknown=0 trunc=0`
+across 190 messages, `wd_gaps=0 sock_gaps=0` (no false watchdog trips), and the boot sequence
+showed the honest `STALE (resync)` at v1 before any data — the frame added at review, without
+which the panel would have been dark rather than grey. `backseq=1`: M0's global-counter-runs-
+backwards finding, reproduced on silicon. Heap over the steady window: `free` delta **0**,
+`largest` **+0**, `low` flat — the invariant-#7 reading behaving exactly as written.
+
+**One real defect in the log, and it was nearly read the wrong way round.** `no_slot` climbed
+1 → 33 while `published` went 22 → 190: **16% of inbound messages discarded**, linearly, not a
+transient. It was initially read as the mailbox's superseded-frame count and therefore healthy.
+It is the opposite — `FramePipe::acquire()` failing means a whole WebSocket message never
+reached the parser. The mailbox's drops are deliberately *uncounted* (§9, 2026-08-08) but are
+recoverable as `published_v − drawn`, which was 15 of 166 (9%) and genuinely is healthy
+consumer lag. Two numbers, opposite meanings, and the confusable one now prints as
+`superseded=` on the same line so nobody has to guess again.
+
+**Why it mattered more than the wasted bandwidth.** Correctness was never at risk — book frames
+are idempotent full replaces and nothing failed to parse. But each dropped message lengthens the
+gap between *events*, and that gap is what the RX watchdog measures: `worst_gap` came in at
+**721 ms against the 1000 ms threshold**, a 1.39× margin where M1's 640 ms measurement had
+assumed 1.6×. Left alone it trends toward a **false STALE**, which is the precise lie
+invariant #5 exists to prevent.
+
+**Fix: `kFrameSlots` 2 → 4.** The two-slot reasoning was right about averages and wrong about
+the distribution — an ~8 KB message holds a slot across the three DATA events it takes to
+reassemble at a 4 KiB RX buffer, while the feed task spends up to 8.5 ms on the previous one,
+and Anvil coalesces so three back-to-back is routine. Cost 64 KiB total; RAM 30.7% → **40.7%**.
+`kWsRxBufferBytes` stays at 4096 deliberately: one event per message would cut both slot
+residency and the `esp_event` allocation rate, but it would also stop the wire exercising chunk
+reassembly — and 190 multi-chunk messages with zero parse errors is exactly the evidence worth
+keeping.
+
+**Instrumented so the next run measures instead of infers.** The log showed ~6.7 messages/s
+attempted against M0's 15.5 — but with no way to distinguish a slower server from frames lost
+upstream of us, and those have different fixes. Added `bytes_published`, `largest_message`,
+`smallest_message` and `chunks` to `FramePipeStats`, and a `-- rate` line printing per-window
+messages/s, attempted/s, loss %, events/s, KiB/s, mean message size and **chunks per message**.
+The arithmetic is integer-only and was checked on the host against the real log windows before
+shipping (it reproduces 5.09/s in / 6.29/s attempted / 19% lost for B3→B4, and at M0's 15.5
+frames/s it returns M0's 13.6 events/s) — the first draft of the KiB/s expression folded decimal
+and binary thousands together and was wrong by 2.4%.
+
+**The next hardware run is paired with a fresh capture**, and `firmware/README.md` leads the
+acceptance with it: run `tools/capture_anvil.py` from the desk for the whole session, then
+`dc_replay` the result and compare its frames/s and max gap against the board's `-- rate` and
+`worst_gap`. Both ends of the rate, measured at once. If the host also reads ~6/s the server has
+slowed and the watchdog margin needs re-deriving against a fresh measurement; if the host reads
+~15/s and the board ~6/s, the loss is between the socket and the reassembler and is ours.
+
+**Also worth recording:** `cont=0` — no server-side WebSocket fragmentation, so that path
+remains host-proven only, as expected. But *chunk* reassembly fired on every one of the 190
+messages, which is what the deliberately-undersized RX buffer bought. And `worst_frame=8548 µs`
+for parse → book → publish of one ~8 KB frame: 10% of one core at 12 frames/s, fine now, worth
+watching when stage D puts a render task beside it. The cross-core stats read is unsynchronised
+`uint64_t` — the first block showed `in=21` against 20 classified, a benign mid-classify sample,
+though on a 32-bit target it could in principle tear rather than merely be stale.
+
+**Exact next step unchanged:** the paired bench run above, then Stage D.

@@ -194,6 +194,26 @@ commented in `ws_transport.cpp` if that ever changes.
 
 ## The bench acceptance (owner)
 
+**Run a host capture at the same time.** The first bench run measured ~6.7
+messages/s attempted where M0 measured 15.5, and the log alone could not say
+whether the server had slowed since July or the board was missing frames
+upstream of the reassembler — the two have different fixes. A simultaneous
+capture from the desk gives the other end of the comparison, and the board now
+prints a `-- rate` line to compare it against. Start this *before* flashing, and
+leave it running across the whole acceptance:
+
+```sh
+py tools/capture_anvil.py --out harness/replay/_local/anvil_101_m3c.ndjson --duration 300
+build/host/dc_replay harness/replay/_local/anvil_101_m3c.ndjson   # prints frames/s, gaps
+```
+
+`_local/` is git-ignored (see `harness/replay/.gitignore`). Compare
+`dc_replay`'s frames/s and max gap against the board's `-- rate` and
+`worst_gap`. If the host also reads ~6/s the server has slowed and the 1000 ms
+watchdog margin needs re-deriving; if the host reads ~15/s and the board reads
+~6/s, frames are being lost between the socket and the reassembler and that is
+ours to fix.
+
 1. Flash, open the monitor, and confirm in order: Wi-Fi up with an IP, `ws`
    connecting, `websocket connected`, then `*** LIVE at v… (first frame) ***`.
 2. Watch the steady lines — one a second, version climbing, `bid`/`ask`/`spread`
@@ -212,15 +232,35 @@ What the statistics should say on a healthy run:
 | --- | --- |
 | `errors` | `parse=0 price=0 ticker=0 unknown=0` |
 | `pipe` | `oversize=0 no_slot=0 qfull=0 abandoned=0 cont=0` |
+| `size` | `max` comfortably under the 16,384 B cap |
 | `feed` | `worst_gap` well under 1000 ms except across the pull |
 | `channel` | `published_v` and `consumed_v` tracking each other |
+| `rate` | `0% lost`, and `in` matching what the host capture sees |
 | `heap` | `free` delta **0** and `largest` not falling (see the caveat below) |
+
+Reading the two that are new, and easy to misread:
+
+- **`no_slot` is inbound loss, not consumer lag.** It counts whole WebSocket
+  messages discarded before the parser because every slot was busy. It should be
+  **0**; the first run hit 16% on two slots, which is why there are now four.
+- **`superseded` on the `channel` line is the healthy one.** That is the
+  latest-value mailbox dropping frames the consumer was too slow to take — which
+  it is designed to do, losing nothing, because every `DisplaySnapshot` is a
+  complete book state. A few per cent is normal.
+- **`chunks/msg` near 3.00** confirms multi-chunk reassembly is genuinely
+  running on the wire (an ~8 KB frame through a 4 KiB RX buffer), rather than
+  only in the host test. `1.00` would mean frames have shrunk below 4 KiB and
+  that path has stopped being exercised.
 
 A non-zero `cont` would mean Anvil has started fragmenting at the WebSocket
 layer, which this IDF vintage cannot reassemble correctly (no FIN bit) — see
 `src/frame_reassembler.hpp`. A non-zero `oversize` means a book frame passed
 16 KiB and `kFrameCapacity` should be raised. A climbing `revivals` in the `ws`
 log lines means the supervisor is doing real work and Anvil is closing sockets.
+If `no_slot` is still non-zero at four slots, raise `kFrameSlots` again before
+reaching for `kWsRxBufferBytes` — the buffer is small on purpose (it is what
+keeps `chunks/msg` at 3 and the reassembly path exercised), and trading that
+away should be a decision, not a reflex.
 
 Capture the log to `hardware/` or `docs/` as the stage C evidence.
 

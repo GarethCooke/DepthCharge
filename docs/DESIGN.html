@@ -360,7 +360,7 @@
   <div class="statusbar">
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
-    <span class="status amber">in progress <b>M3 — live Anvil on the panel · A and B done, C awaiting the bench</b></span>
+    <span class="status amber">in progress <b>M3 — live Anvil on the panel · A and B done, C feed proven on the board, acceptance pending</b></span>
     <span class="status">first-party C++ <b>~5,000 lines</b></span>
     <span class="status">drawn from source at <b>a56ccd6</b></span>
   </div>
@@ -1830,7 +1830,7 @@ classDiagram
 
   <h3>Known M3 edits, already queued</h3>
   <ul>
-    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is and builds clean (RAM 30.7%, flash 832 KB), but nothing has run on the board yet, so the boxes stay dashed until the bench log lands. The stage D render task is still entirely hypothetical.</li>
+    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 40.7%, flash 834 KB) and has now <em>run</em> — the first bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. The boxes stay dashed until the pull-the-Wi-Fi acceptance is captured too, and the stage D render task is still entirely hypothetical.</li>
     <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
     <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 7 should close at stage D; 1 and 3 will not.</li>
@@ -1847,12 +1847,13 @@ classDiagram
   Verified against a green <code>host-mingw</code> workflow run: 9/9 ctest, 97/97 doctest in
   <code>dc_tests</code> (9,101 assertions) and 44/44 in <code>dc_tests_streaming</code>
   (686), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1, and a clean
-  <code>pio run</code> of <code>firmware/</code> (RAM 30.7%, flash 832,201 B). Every
+  <code>pio run</code> of <code>firmware/</code> (RAM 40.7%, flash 833,621 B). Every
   <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the parser's
   <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.
-  <b>Nothing in <code>firmware/</code> has run on hardware yet</b> — where this document
-  describes its behaviour, it is describing code that compiles and has been reviewed, not
-  code that has been observed.<br>
+  The firmware's <b>feed half has now run on hardware</b> (2026-08-09: connect → first snapshot
+  → steady publish, 190 messages, zero parse errors); its <b>stale/resync acceptance has not</b>.
+  Where this document describes that half, it is describing code that compiles and has been
+  reviewed, not code that has been observed.<br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
   current work order: <code>docs/briefs/M3-live-anvil-on-the-panel.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in

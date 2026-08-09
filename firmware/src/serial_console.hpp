@@ -55,6 +55,10 @@ private:
     void draw(const DisplaySnapshot& snap) noexcept;
     void print_stats() noexcept;
 
+    // Per-window rates, derived from the running counters. Separate from
+    // print_stats() because it is the only part that carries state across calls.
+    void print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept;
+
     SnapshotChannel& channel_;
     const FeedTask& feed_;
     const FramePipe& pipe_;
@@ -71,6 +75,23 @@ private:
     std::uint32_t frames_at_baseline_ = 0;
     std::int64_t last_line_us_ = 0;
     std::int64_t last_stats_us_ = 0;
+
+    // Previous window's totals, so the stats block can report RATES rather than
+    // running counts. The first bench run could only be compared against M0's
+    // July figures and left "is the server slower, or are we missing frames?"
+    // unanswerable from the log alone. A rate printed beside a simultaneous host
+    // capture answers it.
+    struct Window {
+        std::int64_t at_us = 0;
+        std::uint32_t published = 0;
+        std::uint32_t attempted = 0;   // published + no_slot + oversize
+        std::uint64_t bytes = 0;
+        std::uint32_t chunks = 0;
+        std::uint64_t events = 0;
+        std::uint32_t drawn = 0;
+    };
+    Window prev_{};
+    bool have_prev_ = false;
 };
 
 }  // namespace depthcharge::fw

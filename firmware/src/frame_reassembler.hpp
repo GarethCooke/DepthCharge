@@ -95,6 +95,13 @@ public:
         const bool server_fragment = (c.op_code == kOpContinuation && c.payload_offset == 0);
         if (server_fragment) { slots_.count_continuation(); }
 
+        // Counted whether or not this message ends up stored, so `chunks /
+        // messages` reports how many DATA events the client really needed per
+        // frame. That number is the direct evidence that multi-chunk reassembly
+        // is being exercised on the wire rather than only in the host test: at a
+        // 4 KiB RX buffer an ~8 KB Anvil frame should read close to 3.
+        slots_.count_chunk();
+
         const bool starts_message = (c.op_code != kOpContinuation) && (c.payload_offset == 0);
         if (starts_message) { begin_message(); }
 

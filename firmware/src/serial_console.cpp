@@ -177,12 +177,88 @@ void SerialConsole::print_stats() noexcept {
              static_cast<unsigned>(p.no_slot), static_cast<unsigned>(p.queue_full),
              static_cast<unsigned>(p.abandoned), static_cast<unsigned>(p.continuation),
              static_cast<unsigned>(p.control));
-    ESP_LOGI(kTag, "-- channel: published_v=%u consumed_v=%u drawn=%u",
+    ESP_LOGI(kTag, "-- size   : msg min=%u max=%u B (cap %u), slots %u",
+             static_cast<unsigned>(p.smallest_message),
+             static_cast<unsigned>(p.largest_message),
+             static_cast<unsigned>(kFrameCapacity),
+             static_cast<unsigned>(kFrameSlots));
+    ESP_LOGI(kTag, "-- channel: published_v=%u consumed_v=%u drawn=%u superseded=%u",
              static_cast<unsigned>(channel_.published_version()),
              static_cast<unsigned>(channel_.consumed_version()),
-             static_cast<unsigned>(frames_drawn_));
+             static_cast<unsigned>(frames_drawn_),
+             // The latest-value mailbox drops superseded frames silently by
+             // design (ARCHITECTURE §9), so the count is not stored anywhere —
+             // but it is recoverable, and it is the number people reach for when
+             // they see `no_slot` and guess wrong. Naming it here stops that:
+             // THIS is healthy consumer lag; `no_slot` above is inbound loss.
+             static_cast<unsigned>(channel_.published_version() - frames_drawn_));
 
+    print_rates(p, a.events_out);
     heap_.report("steady", frames_drawn_ - frames_at_baseline_);
+}
+
+void SerialConsole::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {
+    const std::int64_t now = esp_timer_get_time();
+    const std::uint32_t attempted = p.frames_published + p.no_slot + p.oversize;
+
+    Window cur;
+    cur.at_us = now;
+    cur.published = p.frames_published;
+    cur.attempted = attempted;
+    cur.bytes = p.bytes_published;
+    cur.chunks = p.chunks;
+    cur.events = events_out;
+    cur.drawn = frames_drawn_;
+
+    if (have_prev_ && now > prev_.at_us) {
+        // Integer arithmetic throughout — invariant #3's habit, and on this
+        // target a float here would drag in soft-float for a log line. Rates are
+        // printed in hundredths so "5.59 msg/s" stays readable without one.
+        const std::uint64_t dt_ms = static_cast<std::uint64_t>((now - prev_.at_us) / 1000);
+        if (dt_ms == 0) { prev_ = cur; return; }
+
+        const auto per_s_x100 = [dt_ms](std::uint64_t delta) -> std::uint64_t {
+            return (delta * 100000ull) / dt_ms;
+        };
+        const std::uint32_t d_pub = cur.published - prev_.published;
+        const std::uint32_t d_att = cur.attempted - prev_.attempted;
+        const std::uint64_t d_bytes = cur.bytes - prev_.bytes;
+        const std::uint32_t d_chunks = cur.chunks - prev_.chunks;
+        const std::uint64_t d_events = cur.events - prev_.events;
+
+        const std::uint64_t pub_x100 = per_s_x100(d_pub);
+        const std::uint64_t att_x100 = per_s_x100(d_att);
+        const std::uint64_t ev_x100 = per_s_x100(d_events);
+        // bytes/s, then KiB/s in hundredths. Two steps rather than one clever
+        // expression because the first draft folded the decimal and binary
+        // thousands together and printed a number that was wrong by 2.4%.
+        const std::uint64_t bytes_per_s = (d_bytes * 1000ull) / dt_ms;
+        const std::uint64_t kib_x100 = (bytes_per_s * 100ull) / 1024ull;
+        // chunks per message, x100 — ~300 means the 4 KiB RX buffer is really
+        // splitting ~8 KB frames three ways and reassembly is doing work.
+        const std::uint32_t chunks_x100 =
+            (d_pub != 0) ? static_cast<std::uint32_t>((d_chunks * 100ull) / d_pub) : 0;
+        const std::uint32_t loss_pct =
+            (d_att != 0) ? static_cast<std::uint32_t>(((d_att - d_pub) * 100ull) / d_att) : 0;
+        const std::uint32_t mean_bytes =
+            (d_pub != 0) ? static_cast<std::uint32_t>(d_bytes / d_pub) : 0;
+
+        ESP_LOGI(kTag,
+                 "-- rate   : in %u.%02u/s of %u.%02u/s attempted (%u%% lost) | events %u.%02u/s"
+                 " | %u.%02u KB/s | mean %u B | %u.%02u chunks/msg | window %u ms",
+                 static_cast<unsigned>(pub_x100 / 100), static_cast<unsigned>(pub_x100 % 100),
+                 static_cast<unsigned>(att_x100 / 100), static_cast<unsigned>(att_x100 % 100),
+                 static_cast<unsigned>(loss_pct),
+                 static_cast<unsigned>(ev_x100 / 100), static_cast<unsigned>(ev_x100 % 100),
+                 static_cast<unsigned>(kib_x100 / 100), static_cast<unsigned>(kib_x100 % 100),
+                 static_cast<unsigned>(mean_bytes),
+                 static_cast<unsigned>(chunks_x100 / 100),
+                 static_cast<unsigned>(chunks_x100 % 100),
+                 static_cast<unsigned>(dt_ms));
+    }
+
+    prev_ = cur;
+    have_prev_ = true;
 }
 
 }  // namespace depthcharge::fw

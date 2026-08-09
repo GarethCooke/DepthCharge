@@ -56,6 +56,7 @@ struct FakeSlots {
     std::uint32_t abandoned = 0;
     std::uint32_t continuation = 0;
     std::uint32_t control = 0;
+    std::uint32_t chunks = 0;
     std::uint32_t acquire_failures = 0;
 
     bool acquire(std::uint8_t& slot) noexcept {
@@ -87,6 +88,7 @@ struct FakeSlots {
     void count_abandoned() noexcept { ++abandoned; }
     void count_continuation() noexcept { ++continuation; }
     void count_control() noexcept { ++control; }
+    void count_chunk() noexcept { ++chunks; }
 };
 
 struct Fixture {
@@ -131,6 +133,26 @@ TEST_CASE("a message split across chunks is reassembled in order") {
     REQUIRE(f.slots.published.size() == 1);
     CHECK(f.slots.published[0] == msg);
     CHECK(f.slots.free_count == kSlots);
+    // 36 bytes in 7-byte pieces is six DATA events. The firmware divides this
+    // counter by the message count to report chunks-per-frame on the bench, so
+    // it has to count every accepted chunk and not just the ones that started a
+    // message.
+    CHECK(f.slots.chunks == 6);
+}
+
+TEST_CASE("the chunk counter measures DATA events, not messages") {
+    // What the bench reads as "chunks per frame" — the evidence that multi-chunk
+    // reassembly is firing on the wire and not only in this file.
+    Fixture f;
+    f.deliver(std::string(30, 'a'), 10);   // 3 chunks
+    f.deliver(std::string(5, 'b'), 10);    // 1 chunk
+    CHECK(f.slots.published.size() == 2);
+    CHECK(f.slots.chunks == 4);
+
+    // Control frames are not DATA and must not inflate it.
+    f.re.on_chunk(WsChunk{kOpPing, 0, 0, nullptr, 0});
+    CHECK(f.slots.chunks == 4);
+    CHECK(f.slots.control == 1);
 }
 
 TEST_CASE("chunk size does not change the result, at any boundary") {
