@@ -1,0 +1,52 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "DepthCharge: Build Firmware",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+            },
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
+            "label": "DepthCharge: Flash (USB)",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge -t upload",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+            },
+            "group": "build",
+            "presentation": { "reveal": "always", "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
+            "label": "DepthCharge: Flash + Monitor (USB)",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge -t upload -t monitor",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+            },
+            "group": "build",
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "DepthCharge: Monitor",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" device monitor",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+            },
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+            "problemMatcher": []
+        }
+    ]
+}
