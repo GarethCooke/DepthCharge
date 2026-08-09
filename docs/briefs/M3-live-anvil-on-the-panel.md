@@ -250,15 +250,20 @@ addition).
 ☑ `cmake --workflow --preset host` green from a clean clone, warnings-as-errors clean, with
   A and B merged (this is the agentic-half gate). *(9/9 ctest; verified from a clean
   out-of-tree configure as well as in place.)*
-◐ **Stage C:** `firmware/` links `engine/` as-is; connects over TLS WS to Anvil; feed task on
+☑ **Stage C:** `firmware/` links `engine/` as-is; connects over TLS WS to Anvil; feed task on
   Core 0; 1000 ms RX watchdog beside socket-close, both → `Gap{Disconnect}`; serial log
   shows connect → snapshot → steady → drop → stale → resync → live.
-  *(CC-side done 2026-08-08 — written, building clean, reviewed, host suite still 9/9. The
-  serial log is bench evidence and is the remaining half; nothing here has run on hardware.
-  Two decisions departed from the brief on measured grounds — a pinned ISRG Root X1 instead of
-  `esp_crt_bundle`, which this IDF vintage cannot reach, and a free-heap/low-water/largest-block
-  probe instead of `heap_trace`, which the precompiled framework compiles out. Both in
-  ARCHITECTURE §9 and the session log.)*
+  *(Done 2026-08-09 on the bench; captures and analysis in
+  `hardware/bench-2026-08-09-ws-reconnect.md`. The full sequence is in the 18:15–18:22 runs,
+  three stop-the-server outages, `parse_errors=0` throughout. Four decisions departed from the brief
+  on measured grounds: a pinned ISRG Root X1 instead of `esp_crt_bundle` and a
+  free-heap/low-water/largest-block probe instead of `heap_trace`, both because this IDF vintage
+  cannot reach the alternative; four reassembly slots rather than two; and the supervisor driving
+  reconnects from the polled socket state rather than from `esp_websocket_client`'s event stream,
+  which does not raise the events the obvious design needs. All in ARCHITECTURE §9 and the
+  session log. **Caveat carried into D:** the 1000 ms watchdog threshold is honest code against
+  an eroded premise — the server has slowed to ~6 msg/s from M0's 15.5 and it now trips on
+  healthy data. It needs re-deriving from a fresh capture, not nudging.)*
 ☐ **Stage D:** render task on Core 1 draws the live ladder on the panel (bids green, asks
   red, spread, prints, last px, sparkline); stale greys the panel.
 ☐ **The pull-the-Wi-Fi acceptance passes** on the bench: live → grey within ~1 s → clean
@@ -749,3 +754,292 @@ watching when stage D puts a render task beside it. The cross-core stats read is
 though on a 32-bit target it could in principle tear rather than merely be stale.
 
 **Exact next step unchanged:** the paired bench run above, then Stage D.
+
+### 2026-08-09 · Opus 5 · reconnect in 2 s, and the supervisor's margin made a compile error
+
+**The change asked for could not be made the way it was specified, and the reason is worth
+recording.** The plan was to hoist the client reconnect backoff to a shared `constexpr` and feed
+`esp_websocket_client_config_t::reconnect_timeout_ms` from it. **That field does not exist in
+this vintage** — checked member by member in the shipped
+`framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_websocket_client/include/esp_websocket_client.h`;
+it arrives in a later IDF than the one Arduino-ESP32 2.0.14 ships. The library's 10 s
+`WEBSOCKET_RECONNECT_TIMEOUT_MS` is compiled into the precompiled archive with no override. This
+is the **third** time this vintage has decided a design here, after the certificate bundle
+(→ pinned root) and heap tracing (→ `heap_probe`), and the pattern is now explicit enough to
+expect: assume nothing about this config struct without reading it.
+
+**So the supervisor took the cadence over instead of configuring it.** `WEBSOCKET_EVENT_ERROR` or
+`WEBSOCKET_EVENT_CLOSED` sets one lock-free flag; `supervise()` sees it and does the stop/start
+`kReconnectBackoffUs` = **2 s** later, preempting the client's unreachable 10 s wait. The client's
+own auto-reconnect stays enabled underneath and simply never wins the race. Net effect on an
+error-path outage is a retry every 2 s from each reported failure, rather than one every 10 s.
+
+**Why arming on failure — and not on DISCONNECTED — is the whole safety argument.** A retry timer
+that can fire mid-handshake is a feed that never recovers, and `esp_websocket_client` dispatches
+`DISCONNECTED` from `abort_connection()`, which is also what our own `stop()` triggers. Arming on
+it would mean every restart re-armed the timer that caused it, and the retry 2 s later would land
+on the handshake it had just started. `ERROR`/`CLOSED` mean an attempt is definitively over, so
+there is nothing in flight to interrupt; an attempt still handshaking has raised neither and
+leaves the flag clear. The cadence is "2 s since something went **wrong**", not "2 s since
+something happened".
+
+**The stale comment was the actual defect.** `kReviveAfterUs = 20 s` was justified in prose
+against "the client's own reconnect backoff (10 s in this vintage)" — a constant that this change
+moves, in a comment that would have gone on being believed. Replaced with
+`static_assert(kReviveAfterUs > kReconnectBackoffUs + kHandshakeBudgetUs)`, where
+`kHandshakeBudgetUs` = 5 s is the first bench run's cold 2.5 s Wi-Fi-plus-TLS bring-up with room
+for a slow DNS answer. **Verified by breaking it**: set to 6 s the firmware fails to compile with
+exactly that message; at 12 s it builds clean. The margin is now a claim that cannot rot.
+
+**`kReviveAfterUs` retuned 20 s → 12 s**, which the assert permits (12 > 2 + 5) and which halves
+the worst case for the outage that raises no event at all — a clean close leaves no task to report
+anything, a wedged client leaves no event either, and that path is still measured from when the
+socket went down and so is still the one that *can* land mid-handshake.
+
+**`loop()` now polls at 250 ms, not 1000 ms.** The supervisor's shortest deadline is 2 s, and a 1 s
+poll put up to 50% jitter on the single number this change exists to move. loopTask is priority 1
+and reads a flag; four wake-ups a second is not worth a second of grey panel.
+
+**Also:** every retry logs one line with the outage duration and a consecutive-attempt count, so a
+long Anvil outage reads as a visible sequence rather than a silent one — worth knowing because at
+a 2 s cadence a ten-minute outage is ~300 task create/destroy pairs of a 6 KiB stack. They are
+balanced and same-sized so `heap_4` should reuse one region, and `heap_probe`'s largest-free-block
+is already the instrument that would say otherwise. **Unmeasured — check it on the next long
+outage** rather than assuming it.
+
+**State of the tree.** Host suite green (9/9, `--preset host-mingw`; note the plain `host` preset
+picks `Unix Makefiles` and collides with the existing `build/host` cache — use the mingw pair on
+this desk). Firmware builds clean; RAM unchanged at 40.7%, flash 12.7%.
+
+**NOT DONE — the bench re-run is the owner's, and it is the acceptance for this change.** Nothing
+here has run on hardware: it needs the board flashed and Anvil actually stopped, and Anvil is a
+deployed service this repo does not touch. Record two numbers against the pre-change baseline
+(grey within a beat of the stop; LIVE back in **~18 s**):
+
+1. **Time from server stop to grey** — expected *unchanged*. Nothing in this change touches
+   detection; it is still `Gap{Disconnect}` from the socket event or the 1000 ms RX watchdog,
+   whichever is first.
+2. **Time from server return to LIVE** — expected **~2 s + handshake**, so call it 2–5 s. If it
+   still reads ~10 s or more, the outage is producing `DISCONNECTED` with neither `ERROR` nor
+   `CLOSED` and the flag is never being armed; the `reconnecting after N ms down (attempt #k)`
+   line is present exactly when the fast path fired, so its absence is the diagnosis.
+
+Also worth capturing from the same run: whether the stop is seen as `CLOSED` or as `ERROR`, since
+the 18 s baseline suggests the error path rather than the clean close the supervisor was
+originally built for, and the brief has been assuming the latter.
+
+**Exact next step:** the bench re-run above (pair it with the `tools/capture_anvil.py` run the
+previous entry asked for — one board session answers both), then **Stage D**.
+
+### 2026-08-09 · Opus 5 · the bench refuted the fast path; the trigger moved to the socket state
+
+**The previous entry's change did not work, and the log says so in one number: `grey for
+18609 ms`.** Two stop-the-server outages at 17:41 and 17:44, both recovered by the 12 s backstop
+(`websocket down for 12 s and not recovering — restarting client (#7 / #10)`), and the
+`reconnecting after N ms down` line the fast path prints appears **nowhere**. That is proof rather
+than inference: the armed path returns early while it is waiting, so the backstop could not have
+run if the flag had ever been set.
+
+**Why it never armed.** It armed on `WEBSOCKET_EVENT_ERROR` and `WEBSOCKET_EVENT_CLOSED`, and this
+vintage dispatches neither for a socket that dies. A read failure lands in
+`esp_websocket_client_abort_connection()`, which raises **`WEBSOCKET_EVENT_DISCONNECTED`** — the
+one event the previous entry deliberately excluded, and excluded for a reason that was correct in
+itself: `stop()` runs through the same `abort_connection()`, so arming on `DISCONNECTED` would have
+each restart re-arm the timer that caused it. The `E ... Error receive data` lines in the log are
+the library's own `ESP_LOGE` on the way there, **not** an event; everything it would otherwise say
+about reconnecting is an `ESP_LOGI` compiled out of the precompiled archive, which is why the log
+looks silent between the error and the backstop.
+
+**The lesson is bigger than the bug: supervise on observed state, not on reported events.** The
+trigger is now `supervise()`'s own poll of `esp_websocket_client_is_connected()` — which needs no
+theory about the library's internals, and which had been driving the 20 s backstop correctly since
+the day it was written. The event handler now drives nothing at all; it reports to the feed task
+and logs the event id once per outage, so the next run settles on paper what this one cost an
+outage to learn. Recorded in ARCHITECTURE §9 as the general rule.
+
+**One mechanism now, not two.** `kReviveAfterUs` is gone. With a working trigger the retry covers
+every case the backstop did — clean close, wedged client, read error — and a second timer firing
+the identical stop/start would have been two names for one thing. What replaces it is the pair the
+correctness argument actually needs: `disconnected_since_us_` schedules the first attempt a backoff
+after the feed dies, and `attempt_started_us_` buys that attempt `kHandshakeBudgetUs` of immunity,
+inside which `supervise()` does nothing. Without the second clock a 2 s cadence kills every attempt
+a beat before it succeeds, turning a recoverable outage into a permanent one — which is the failure
+this file has been guarding against since the supervisor was added, now enforced by a clock we own
+rather than by a guess about which event will arrive.
+
+**`kHandshakeBudgetUs` 5 s → 7 s, and it is now pinned to a measurement.** The bench gives
+`restart → LIVE` of **6136 ms** (revive at 17:44:52.791, LIVE at 17:44:58.927), so the old 5 s
+budget was *under* the only recovery ever observed — it would have preempted the very attempt that
+worked. That figure is now `kObservedRecoveryUs` with
+`static_assert(kHandshakeBudgetUs >= kObservedRecoveryUs)`, so the budget cannot be tuned back
+under the evidence. The user-requested
+`static_assert(... "supervisor grace must exceed a full client reconnect or it preempts one")`
+survives on `kRetryCycleUs`.
+
+**The 6136 ms covers two things and the split is unknown**, which is the next thing worth knowing:
+it is the socket coming up *plus* Anvil's first snapshot, because LIVE is granted on data and never
+on a socket (invariant #5). The first bench run's 2.5 s cold Wi-Fi-plus-TLS suggests the socket half
+is the smaller one. `supervise()` now prints `socket up N ms into attempt #k` on every recovery, and
+the difference between that and the panel's own `grey for N ms` is Anvil's snapshot latency. If the
+socket half is ~2.5 s, the remaining ~3.6 s is the server's and no backoff here can touch it.
+
+**Simulated before flashing, because the last change was not.** The timer arithmetic was replayed
+on the host against the real outage (scratchpad, not committed — the durable version of this is the
+open item below). Expected results for the re-run:
+
+| scenario | grey |
+| --- | --- |
+| bench outage 2 replayed (server already back, 6136 ms recovery) | **8.5 s** (was 18.6 s) |
+| same, if the socket half turns out to be the 2.5 s of the first run | 8.4 s — unchanged, the snapshot dominates |
+| redeploy that takes 10 s to come back | 17.5 s, two attempts |
+| connect slower than the 7 s budget (9 s) | 11.3 s, recovers — but this is the marginal case the budget exists to keep off |
+
+**So the honest target is ~8.5 s, not the ~2 s the change was asked for.** 2 s was reachable only
+against the assumption that reconnecting is instant; it measures 6.1 s, and that term is the floor
+regardless of what the backoff is set to. The improvement is 18.6 s → ~8.5 s, and the next lever is
+the 6.1 s itself, not the wait in front of it.
+
+**State of the tree.** Firmware builds clean, RAM 40.7%, flash 12.7%. Host suite untouched by this
+change and green as of the previous entry.
+
+**Open — and it is the real remedy.** This bug shipped because the scheduling decision only exists
+on hardware, in a path a bench run reaches twice an evening. It is pure arithmetic over two
+timestamps and has no ESP-IDF in it: lifting it into a `ws_supervisor.hpp` free function beside
+`frame_reassembler.hpp`, with a `dc_tests` case per scenario in the table above, would have caught
+this on the desk in seconds. `frame_reassembler.hpp` is precedent that this works and is the
+highest-value thing the stage produced. **Not done here** — it is a structural change and the
+board is mid-loop.
+
+**Exact next step:** re-flash, re-run the stop-the-server test, and record (a) `grey for N ms`,
+expected ~8.5 s, (b) the new `socket up N ms into attempt #k` line, which splits the 6.1 s for the
+first time, and (c) the `ws down: event N` id, which settles the dispatch question permanently —
+`2` confirms `DISCONNECTED` as diagnosed. Then the host-test extraction above, then Stage D.
+
+### 2026-08-09 · Opus 5 · bench confirms the fix, and the same log catches the boot handshake
+
+**It works, and the prediction was exact.** Bench at 18:15–18:17. The socket outage at
+18:15:58.488 greyed the panel at 18:15:58.507, `websocket down 2 s — restarting client
+(attempt #2)` fired at 18:16:00.947 — **2.44 s**, being the 2 s backoff plus the 250 ms poll
+granularity plus the stamp tick — and `worst_gap` moved **783 ms → 8509 ms** across the outage.
+The previous entry's simulation predicted **8.5 s** for exactly this scenario. Measured 8509 ms,
+against 18609 ms before the change. **2.2× better, and the residual is the reconnect itself, not
+the wait in front of it.**
+
+**`ws down: event 2` — the diagnosis confirmed on silicon.** `WEBSOCKET_EVENT_DISCONNECTED`, the
+event the first attempt deliberately excluded, is the only one this vintage raises for a dead
+socket; it never dispatches `ERROR` (0) or `CLOSED` (4), which is what that version armed on. That
+question is now closed with a number from the board rather than an argument from the headers, and
+the log line stays because it costs one line per outage and it is the thing that would catch an IDF
+bump changing the answer.
+
+**The same log caught a bug the change introduced, in the one place the design forgot.** The first
+outage restart is logged `attempt #2`, and `connects=2` before any outage occurred: `attempts_`
+only ever incremented in `supervise()`, so it had already restarted the client once, during boot.
+The cause is that `attempt_started_us_` was only ever stamped by `supervise()`'s own restarts —
+the `esp_websocket_client_start()` in `WsTransport::start()` got **no handshake immunity at all**,
+so a client that had simply never connected yet was indistinguishable from one that had dropped,
+and the supervisor cut straight through the cold TLS handshake 2 s into boot.
+
+That is precisely the failure the handshake budget exists to prevent, left uncovered on the one
+path that is not a retry. **Fixed**: `start()` now stamps `attempt_started_us_` and counts itself
+as attempt #1. It recovered every time and cost only a wasted connection per boot, which is why it
+read as noise — the counter in the log line is the only reason it was visible at all, and that is
+an argument for printing the attempt number rather than a bare message.
+
+**The second event in the log is not a socket outage and should not be read as one.** At
+18:16:54.996 the panel greyed and was LIVE again 155 ms later. `wd_gaps` 0 → 1, `sock_gaps`
+unchanged at 1, `connects` unchanged at 3: the socket never dropped. That was the **RX watchdog**
+on a 1.9 s hole in book events (18:16:53.075 → 18:16:54.996), greying on data stopping and
+recovering on data resuming — invariant #5 behaving exactly as specified, and the supervisor
+correctly doing nothing, because there was nothing wrong with the transport. Worth noting that
+whatever was done to the server at that moment did not disturb the TCP connection at all.
+
+**Still not split: the 6.1 s recovery.** The `socket up N ms into attempt #k` line lands in the
+window between the two pasted log blocks (the reconnect completed around 18:16:07), so the socket
+half versus Anvil's snapshot latency is still unknown. It is one line in the next capture and it
+is the only remaining lever on the 8.5 s: if the socket half is the ~2.5 s the first bench run
+measured, the other ~3.6 s is the server's and nothing in this file can touch it.
+
+**Also in this run:** `worst_frame` 8064 → **18171 µs** for one frame's parse → book → publish,
+more than double the previous worst and 22% of one core at 12 frames/s. Nothing here changed that
+path, and `max=8886 B` is a larger frame than the previous run's 8636 B, but it is worth watching
+when Stage D puts a render task beside it. Heap flat across both outages (`free` −16 B, `largest`
+never below baseline), so the restart churn this cadence causes is not fragmenting anything at
+these outage lengths.
+
+**State of the tree.** Firmware builds clean, RAM 40.7%, flash 12.7%. Host suite unaffected.
+
+**Exact next step:** flash the boot-immunity fix and confirm two things in one capture — the first
+`attempt #1` now belongs to the boot connect with no restart during it (`connects=1`, not 2,
+before any outage), and the `socket up N ms into attempt #k` line, which finally splits the 6.1 s.
+Then the `ws_supervisor.hpp` host-test extraction still open from the previous entry — this
+session produced two bugs in the same arithmetic and both would have been caught on the desk by it
+— then Stage D.
+
+### 2026-08-09 · Opus 5 · the recovery decomposed; and the RX watchdog is now greying a healthy feed
+
+**Boot immunity confirmed.** `connects=1` and `sock_gaps=0` across the whole pre-outage run, and
+the first real outage restarts as `attempt #2` — so the boot connection is attempt #1 and nothing
+cut through it. The previous entry's bug is closed on evidence.
+
+**The real socket outage at 18:22:27 recovered in 9451 ms**, against the 18609 ms baseline, and
+this time the log carries enough to take it apart. Two independent clocks in the same lines do it:
+the restart printed at Arduino-millis `103561`, the socket-up at `110124` — 6563 ms between them —
+while the message itself reports only **4018 ms** elapsed since `attempt_started_us_`. The stamp is
+taken *after* `esp_websocket_client_stop()` returns, so the missing 2545 ms is the teardown:
+
+| term | ms | whose |
+| --- | --- | --- |
+| backoff + 250 ms poll granularity | 2445 | ours, tunable |
+| `esp_websocket_client_stop()` blocking | ~2545 | the library's, and pure waste on an already-dead socket |
+| DNS + TCP + TLS + upgrade | 4018 | the network's |
+| socket up → snapshot → LIVE | ~435 | Anvil's |
+| **total** | **9451** | matches `grey for 9451 ms` |
+
+**The assumption that framed this whole task was wrong, and in a useful direction.** The working
+theory was that Anvil's snapshot latency dominated the tail — it is **435 ms**. The server is not
+the slow part. The two big terms are a 4 s TLS connect and a **2.5 s blocking `stop()` on
+loopTask**, which was invisible before this run and is worth knowing independently of reconnects:
+`loop()` is stalled for it, and at Stage D that is Core 1 with a panel on it.
+
+**Ranked levers on the remaining 9.45 s**, none taken here — the task was the backoff and it is
+delivered:
+
+1. **4018 ms connect.** The largest single term. Nothing in this file reaches it.
+2. **~2545 ms `stop()`.** Only paid because we stop a client that is already dead. Skipping it
+   needs a way to know the task is gone, which this vintage does not expose; the honest options
+   are to measure whether `start()` alone succeeds after an abort, or to accept it.
+3. **2445 ms backoff.** Cheapest to move and the least worth moving — it is already the smallest
+   of the three, and halving it buys ~1.2 s against a 4 s connect.
+
+`kObservedRecoveryUs` stays at the conservative end-to-end 6136 ms rather than being tuned to the
+4018 ms it now formally bounds: one sample, and being wrong downward gives a supervisor that kills
+connections a beat before they succeed, which is the failure mode that cannot self-correct. Real
+margin on the budget today is 7000/4018 = **1.74×**, recorded in the header.
+
+**RAISED, NOT FIXED — the RX watchdog is now greying a healthy feed, and this outranks the
+reconnect work.** In the first 30 s of this run, with `sock_gaps=0` and `connects=1` and no
+interference of any kind, `wd_gaps` reached **2** and `worst_gap` **1027 ms**. Two of the three
+greys the owner read as server restarts were not socket events at all: 18:21:35 (grey 1470 ms) and
+18:22:13 (grey 144 ms) both left `sock_gaps=0` and `connects=1` — watchdog trips on a live socket.
+
+`kRxWatchdogMs = 1000` is M1's *measured* threshold, not a tuned one: 640 ms worst healthy silence
+across 6,494 frames, a 1.6× margin. That premise no longer holds on the deployed server. This run
+reads **5.8–6.6 msg/s** where M0 measured 15.5, which the previous entry already flagged as the
+open question — this run answers it: the gaps have grown past the threshold, so the panel now
+greys on healthy data. That is invariant #5's lie in the opposite direction, telling the desk the
+book is untrusted when it is not, and at roughly one false grey per 15–20 s it will be the
+dominant visual defect once Stage D puts it on a panel.
+
+**Not changed here, deliberately.** `ReplayOptions::disconnect_gap_ms` is the identical constant on
+the host and the M1 goldens are pinned to it, so moving it moves committed expectations — an
+ARCHITECTURE-weight decision and the owner's call, not a session's. What it needs first is the
+paired capture the 2026-08-09 entry already asked for: run `tools/capture_anvil.py` from the desk
+alongside the board, replay it, and re-derive the worst healthy gap the way M1 did. If the host
+agrees at ~6/s the threshold should be re-derived from the new measurement rather than nudged.
+
+**State of the tree.** Firmware builds clean, RAM 40.7%, flash 12.7%. Host suite unaffected.
+
+**Exact next step:** the paired capture above, to re-derive `kRxWatchdogMs` against a current
+measurement — this is now the highest-value item in the milestone. Then the `ws_supervisor.hpp`
+host-test extraction still open from two entries back. Then Stage D.
