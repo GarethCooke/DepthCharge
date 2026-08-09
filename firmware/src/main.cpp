@@ -39,29 +39,29 @@ using namespace depthcharge::fw;
 
 namespace {
 
-constexpr const char* kTag = "main";
+    constexpr const char* kTag = "main";
 
-// Statically allocated, in this order, and never freed. Between them these
-// objects are the entire steady-state memory footprint of the feed path:
-//
-//   FramePipe        2 x 16 KiB reassembly slots        32,768 B
-//   FeedTask         AnvilAdapter 8,400 + Book 8,552 + staging 1,168
-//   SnapshotChannel  three DisplaySnapshot slots         3,528 B
-//
-// ~54 KiB of the S3's 512 KB internal SRAM, all placed before the first packet
-// arrives. Nothing below this line allocates once the tasks are running, which
-// is what invariant #7 asks of the feed path and what heap_probe measures.
-FramePipe g_pipe;
-SnapshotChannel g_channel;
-FeedTask g_feed(g_pipe, g_channel, anvil::kAnvilTicker101);
-WsTransport g_transport(g_pipe);
-HeapProbe g_heap;
-SerialConsole g_console(g_channel, g_feed, g_pipe, g_heap);
+    // Statically allocated, in this order, and never freed. Between them these
+    // objects are the entire steady-state memory footprint of the feed path:
+    //
+    //   FramePipe        2 x 16 KiB reassembly slots        32,768 B
+    //   FeedTask         AnvilAdapter 8,400 + Book 8,552 + staging 1,168
+    //   SnapshotChannel  three DisplaySnapshot slots         3,528 B
+    //
+    // ~54 KiB of the S3's 512 KB internal SRAM, all placed before the first packet
+    // arrives. Nothing below this line allocates once the tasks are running, which
+    // is what invariant #7 asks of the feed path and what heap_probe measures.
+    FramePipe g_pipe;
+    SnapshotChannel g_channel;
+    FeedTask g_feed(g_pipe, g_channel, anvil::kAnvilTicker101);
+    WsTransport g_transport(g_pipe);
+    HeapProbe g_heap;
+    SerialConsole g_console(g_channel, g_feed, g_pipe, g_heap);
 
-[[noreturn]] void halt(const char* what) {
-    ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);
-    for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
-}
+    [[noreturn]] void halt(const char* what) {
+        ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);
+        for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
 
 }  // namespace
 
@@ -81,14 +81,14 @@ void setup() {
 
     ESP_LOGI(kTag, "DepthCharge M3 stage C — feed task, no panel yet");
     ESP_LOGI(kTag, "engine: ticker %u, price scale 10^-%d, qty step %lld",
-             static_cast<unsigned>(anvil::kAnvilTicker101.id),
-             static_cast<int>(anvil::kAnvilTicker101.price_decimals),
-             static_cast<long long>(anvil::kAnvilTicker101.qty_step));
+        static_cast<unsigned>(anvil::kAnvilTicker101.id),
+        static_cast<int>(anvil::kAnvilTicker101.price_decimals),
+        static_cast<long long>(anvil::kAnvilTicker101.qty_step));
 
     const HeapSample boot = sample_heap();
     ESP_LOGI(kTag, "heap at boot: free=%u largest=%u (internal)",
-             static_cast<unsigned>(boot.free_internal),
-             static_cast<unsigned>(boot.largest_block_internal));
+        static_cast<unsigned>(boot.free_internal),
+        static_cast<unsigned>(boot.largest_block_internal));
 
     if (!g_pipe.begin()) { halt("could not create the frame pipe queues"); }
 
@@ -113,6 +113,12 @@ void loop() {
     // from the event handler, and the supervisor calls them. See
     // WsTransport::supervise() for what it is guarding against (a clean
     // server-side close, which auto-reconnect does not cover).
+    //
+    // 250 ms, not the 1000 ms this used to be. The supervisor now also owns the
+    // reconnect cadence, and its shortest deadline is 2 s — polling at 1 s put up
+    // to 50% jitter on the one number the change is meant to move. loopTask is
+    // priority 1 and this reads a socket flag and two timestamps, so four
+    // wake-ups a second is not a cost worth trading a second of grey panel for.
     g_transport.supervise();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(250));
 }
