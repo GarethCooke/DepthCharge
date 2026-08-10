@@ -1409,3 +1409,161 @@ the read-in-this-order checklist in `firmware/README.md`). It picks the next bri
 
 Then the `ws_supervisor.hpp` host-test extraction, still open from three entries back and untouched
 by this work. Then Stage D.
+
+### 2026-08-10 · Opus 5 · the connect-time reject burst is instrumented; the fix is deliberately not chosen
+
+**The task was "log the first ~10 rejected payloads on connect, then suppress or skip-not-error
+it, and document the burst in the vendored protocol". Only the first of those three is
+delivered, and the other two are gated on it rather than deferred out of laziness** — the
+three things `parse_errors` could be have three different owners, and picking one before the
+payload is read is the trap this milestone has already paid for three times (the watchdog
+constant, the reconnect arming, the arrival-stamp over-claim).
+
+**The finding, restated so the numbers travel.** ~1,281 frames rejected in the first ~60 s of
+each connect, ~85% of the opening burst, then flat, with a smaller batch per reconnect;
+`price=0 ticker=0 unknown=0 trunc=0`, so every one of them is `parse_errors`. Nothing about
+the ladder is at risk — Anvil's book frames are idempotent full replaces and the adapter
+counts-and-drops by design — but under invariant #5 a transport delivering frames the parser
+rejects is *stopped*, so this is the exact shape the event-armed watchdog exists for, and the
+board is doing it to itself for a minute on every connect.
+
+**What the desk already says, and it narrows the search before any bench time is spent.** The
+committed `anvil_101_baseline_20260809.ndjson` **opens at a connect** — first frame line is the
+on-connect `snapshot`, `summary` immediately after — runs 1,513 frames over 90 s, and
+`test_replay_goldens.cpp` pins `parse_errors == 0` across it. That covers the same window the
+board is failing in, so **Anvil sends nothing at connect that this parser rejects** and the
+first suspect moves from the venue to the client. Two corollaries worth having in writing:
+`no_slot` cannot be the mechanism (a message dropped for want of a slot never reaches the
+parser, so it cannot become a parse error), and neither can `summary` (counted separately, and
+zero here).
+
+**The one hypothesis a capture is structurally blind to, which is why this is not closed.**
+`tools/capture_anvil.py` writes one line per *message* and the `websockets` library reassembles
+WebSocket-level fragmentation before handing it over — so a message Anvil split at the WS layer
+is written as one whole line and **cannot appear in a trace at all**. That is not an idle
+worry: `frame_reassembler.hpp` already documents itself as publishing such a message
+*incomplete*, because this IDF vintage does not surface the FIN bit, and it names the parse
+error that follows as the correct failure. Every capture we own is blind to the one candidate
+the firmware has already written down. Recorded in `harness/replay/NOTES.md`, with the
+consequence: **if it is server fragmentation, no trace will ever reproduce it and the honest
+coverage is a synthesised `FrameReassembler` test, not a capture.**
+
+**Delivered: `firmware/src/reject_log.hpp`**, ESP-IDF-free and host-tested like
+`frame_reassembler.hpp` / `gap_histogram.hpp` / `stall_probe.hpp`, capturing the first ten
+rejected payloads **of each connect** (a once-only budget would have hidden the reconnect
+batches, which are the samples that say whether it is the same shape). Every field is there to
+separate the three candidates and nothing is there because it was cheap:
+
+| field | what it decides |
+| --- | --- |
+| `status` | `NotJson` = the bytes, ours · `MissingType` = a frame shape, the venue's · `BadShape` = a payload change, a re-vendor |
+| `len` | the **whole** payload. A multiple of the 4,096 B RX buffer names a chunk-boundary truncation |
+| `head` | `{"type":"..."` — the frame kind, which is the question the bench could not answer |
+| `tail` | ends `}` = whole and rejected on its contents; ends mid-token = cut off |
+| `SPLIT@n` | a second `{"type":` inside one buffer: two messages in one slot |
+
+`SPLIT@` is the one that had to be computed rather than eyeballed — a spliced buffer *begins*
+like a valid frame and *ends* like a valid frame, so head and tail both look right and the
+reject reads as inexplicable. Safe to search for because no Anvil frame contains `{"type":`
+anywhere but at byte 0 (no nested object in this protocol has a `type` member), which the test
+pins against a `summary` frame full of nested objects.
+
+**The engine diff is one read-only accessor**, `AnvilAdapter::last_status()`, exposing the
+`ParseStatus` the adapter already computes on every frame — same shape and same justification
+as `last_wire_seq()` last session. It exists because `parse_errors` is a bucket, not a
+diagnosis, and diffing three counters across the call to recover one enum is worse code than
+one comparison. No behaviour changed and no golden moved. Its coverage is driven off the
+**existing** `kBadFrames` corpus, which already declares the expected status per case, so the
+two cannot drift — and because that file compiles into both test binaries, the accessor is
+proven against both parsers rather than one.
+
+**Two real defects in my own code, both found by tests rather than by reading, and the second
+is the argument for having written the property test at all.**
+
+1. The first draft sized the head and tail constants as *buffer* sizes, so `copy_printable`
+   reserved a byte for the NUL and the tail held 47 characters ending one byte before the
+   payload's end — throwing away exactly the closing `}` that is the whole reason a tail is
+   captured. The constants now mean characters and the storage is one larger.
+2. **A null payload with a non-zero length faulted.** The tail is copied from
+   `payload + (len - want)`, and `copy_printable`'s own null check cannot save that: by the
+   time the pointer arrives it has been offset and is no longer null, so it reads an address
+   computed from nothing. The head and the header search were safe because neither offsets
+   before testing. It cannot come out of the real pipeline (the reassembler never publishes a
+   null slot) and it is guarded anyway, because this reads a network buffer and the failure is
+   a fault rather than a wrong log line. Found by the degenerate-input case added during
+   review, which is precisely the case an example-based test of the happy path never reaches.
+
+Mutation-verified, all four properties that are invisible on inspection: the tail off-by-one,
+the second-header search starting at 0 instead of 1 (which makes it return "none" for every
+payload, because the payload's own header matches first), the null guard, and the retained
+window using the full ring depth instead of depth − 1. Each turns `dc_tests` red.
+
+**The review's one open finding, deferred with the fix sketched rather than dropped.**
+`StallProbe` and `RejectLog` now contain the same ~8 lines twice: a monotonic count over a
+fixed ring, a retained window of depth − 1, and an `at(index)` that returns null once evicted.
+The console likewise drains them with two near-identical twelve-line loops. That is real
+duplication and its failure mode is not cosmetic — handing out a record that is being
+overwritten is the exact bug the stall probe's property test caught on 2026-08-10, and the
+second copy has now inherited the same reasoning by hand. The extraction that fits both is an
+append-only ring whose newest slot may be *uncommitted* (`open()` / `commit()` / `at()` /
+`oldest_retained()` / `completed()`): the stall probe needs the open slot for the record still
+gathering its recovery series, and the reject log commits immediately. **Not done here**
+because it means reworking an instrument that landed yesterday, in a tree a second session is
+writing to, for a defect that is one bench run from being understood — mixing a refactor into a
+diagnostic addition is how the signal from that run gets muddied. It is the right first task
+for whoever adds a *third* log of this shape, and at that point it is not optional.
+
+**Deliberately not done, and each for a reason rather than for time.**
+
+- *No fix.* `MissingType` on a whole payload wants skip-not-error and a protocol note;
+  `NotJson` at a chunk boundary wants the lever bundle strain 12 already names. Opposite
+  changes; one bench line chooses.
+- *No `parse_errors` sub-counters in `AnvilAdapter::Stats`.* The per-status tally lives in the
+  firmware's reject log, where the question actually arises. A trace's frames all parsed once
+  by definition of having been captured, so the host would carry three permanently-zero
+  counters and a wider printed report for nothing.
+- *No `chunks`-per-message on `FeedMessage`.* It would have made "did this arrive in one DATA
+  event or three" certain rather than inferred, but `len` against the 4,096 B buffer already
+  answers it, and the cost was a signature change to `FrameReassembler`'s slot contract — the
+  most carefully tested file in `firmware/`, for a fact its own test already implies.
+- *`docs/vendor/anvil-protocol.md` records the desk control, not the burst.* The file's rule is
+  "do not edit the body", so the note is in the header block with the M0 finding; and writing
+  the burst down as venue behaviour before knowing it is the venue would be inventing a
+  protocol fact. What is recorded is what is measured: the handshake sequence confirmed, the
+  capture showing no unparseable frame at connect, and the fragmentation hypothesis named as
+  the one thing a capture cannot exclude. The 2026-08-09 per-socket shedding finding was also
+  written into that header, where it had been missing.
+
+**Measured, not estimated.** `RejectLog` is **2,168 B** of `.bss` and `RejectRecord` **176 B**,
+read out of the object with `nm` after compiling the header standalone with the target
+toolchain (xtensa GCC 8.4, `-Os -fno-exceptions -fno-rtti -Werror`) — so it clears the same bar
+`dc_engine_target_check` applies to `engine/`. Firmware RAM 134,280 → **136,456 B** (41.0% →
+41.6%), which is the 2,168 plus 8 of alignment and therefore all of it; flash 840,025 →
+842,889 B, and that figure is **not** separable, because a parallel session's in-flight
+`ws_transport` rework is in the same tree. Still allocation-free: fixed storage, and the reject
+path is the only path that touches it.
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: **11/11 ctest**, `dc_tests`
+144 → **169 cases** (66,720 assertions), `dc_tests_streaming` 45 → **46**. Fifteen of those
+cases are this change (fourteen in `test_reject_log.cpp`, one in `test_anvil_adapter.cpp`); the
+rest are the parallel `ws_supervisor` work sharing the same binary, so read the totals with
+that in mind. The assertion count is dominated by the 5,000-step random walk, which follows
+the reassembler's precedent. Firmware builds clean at RAM 41.6% / flash 12.9%. No engine
+behaviour change, no golden moved, no `DisplaySnapshot`/`FeedEvent` change. No ARCHITECTURE §9 amendment:
+nothing has been decided, and the reasoning with reach (a capture cannot see WS-level
+fragmentation, so a trace cannot cover this class of bug) is recorded in `NOTES.md` and
+DESIGN strain 13 where it is implemented — the precedent the last two entries set.
+
+**Caution for whoever picks this up: the working tree is shared.** `ws_transport.{hpp,cpp}`,
+`firmware/src/ws_supervisor.hpp` and `docs/briefs/M3-transport-residual-reconnect-fix.md` are
+another session's uncommitted work and were edited during this one; the firmware build was
+briefly red on `ws_transport.cpp` mid-session through no change of this entry's. Nothing here
+touches those files.
+
+**Exact next step: one bench run, and read the first `-- reject` lines of a connect.** They
+pick the fix outright — `no-type` on a whole payload ending `}` is the venue's (skip-not-error
+plus a protocol note), `not-json` with a 4096-multiple length or a `SPLIT@` offset is ours
+(`buffer_size`, the LWIP window, WS-task priority — the same bundle strain 12 names, which is
+worth noticing: if both turn out board-bound under burst, they are one fix). The reading table
+is in `firmware/README.md`. Behind it, unchanged: the stall verdict run, the `ws_supervisor.hpp`
+host-test extraction, then Stage D.

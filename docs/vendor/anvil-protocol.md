@@ -13,6 +13,34 @@ update, and bump the commit/date above. See ARCHITECTURE.md "Boundaries".
 NOTE (M0 finding): §1/§4's "monotonic seq" is not what the deployed server does
 in practice — the wire seq is a single global counter and is non-monotonic in a
 single ticker's received subsequence. See harness/replay/NOTES.md.
+
+NOTE (M3, 2026-08-09): §3 documents no per-socket shedding, and the deployed
+server does it — `book` frames are coalesced per socket, so a slow consumer
+receives proportionally fewer messages at an unchanged inter-frame cadence
+rather than a queue of stale ones (measured: 16.95/s at full drain, 8.32/s at a
+120 ms drain, 4.01/s at 250 ms, worst gap 156/125/266 ms respectively). Lossless
+for this venue because §3.2 book frames are idempotent full replaces; NOT
+lossless for a delta venue, so M4/M5 must not copy the assumption. On the ROADMAP
+backlog to be documented Anvil-side.
+
+NOTE (M3, 2026-08-10) — ON CONNECT, AND WHAT IS *NOT* YET A PROTOCOL CLAIM.
+What §3's handshake says is confirmed: the server sends exactly one `snapshot`
+first, and the cross-ticker `summary` follows immediately.
+
+The DepthCharge firmware separately rejects ~85% of the frames arriving in the
+first ~60 s of each connect (~1,281 of them), and that is deliberately NOT
+recorded here as venue behaviour, because the evidence points the other way: a
+desk capture opening at a connect (`anvil_101_baseline_20260809.ndjson`, 1,513
+frames / 90 s) contains no frame this client's parser rejects, and the golden
+pins it. Until the board prints the payloads, the burst is unattributed and most
+likely client-side. The single wire-level hypothesis a capture cannot exclude is
+WebSocket-level FRAGMENTATION — §1 says "one complete JSON object each" per
+frame but does not say unfragmented, the capture tool's library reassembles
+fragments before writing a line, and the firmware's reassembler cannot (this IDF
+vintage does not surface the FIN bit). If the bench shows that is what it is,
+this note becomes a real protocol observation and the fix belongs in
+firmware/src/frame_reassembler.hpp, not in Anvil. See harness/replay/NOTES.md
+"M3 addendum — the connect burst".
 -->
 
 # Anvil Demo — Wire Protocol

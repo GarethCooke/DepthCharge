@@ -77,6 +77,7 @@ void SerialConsole::run() noexcept {
         // the grey it caused is still on the screen in front of whoever is at
         // the bench.
         drain_holes(feed_.stats().stall);
+        drain_rejects(feed_.stats().rejects);
 
         const std::int64_t now = esp_timer_get_time();
         if (now - last_stats_us_ >= kStatsPeriodUs) {
@@ -167,6 +168,7 @@ void SerialConsole::print_stats() noexcept {
              static_cast<unsigned long long>(a.unknown_kind),
              static_cast<unsigned long long>(a.truncated_frames),
              static_cast<unsigned long long>(a.wire_seq_backward));
+    print_rejects(f.rejects);
     ESP_LOGI(kTag, "-- book   : adopted=%llu trades=%llu gaps=%llu publishes=%llu",
              static_cast<unsigned long long>(b.snapshots_adopted),
              static_cast<unsigned long long>(b.trades_applied),
@@ -247,6 +249,25 @@ void SerialConsole::print_distributions(const FeedTask::Stats& f,
              static_cast<unsigned>(f.max_ready_backlog),
              static_cast<unsigned>(kReadyQueueDepth),
              static_cast<unsigned>(p.messages_arrived));
+}
+
+void SerialConsole::print_rejects(const RejectLog& rejects) noexcept {
+    // SILENT ON A HEALTHY RUN, AND THAT IS NOT THE USUAL LAZINESS ABOUT ZEROES.
+    // The `-- errors` line above already states "no frame was rejected", in the
+    // `parse=0 price=0 ticker=0` it always prints; this line is the breakdown OF
+    // a non-zero, so printing it empty every ten seconds would say the same
+    // thing twice and bury the line that matters when it finally appears.
+    //
+    // The two lines are checkable against each other, which is the point of
+    // having both: `n=` here must equal `parse + price + ticker` there. A
+    // disagreement is a bug in one of these instruments, not something a reader
+    // at the bench has to reconcile.
+    if (rejects.total() == 0) { return; }
+    // 208 bytes: six labelled counts with the longest label at twelve characters
+    // and the longest count at ten digits, plus the trailer.
+    char line[208];
+    rejects.render_tally(line, sizeof line);
+    ESP_LOGW(kTag, "-- reject : %s", line);
 }
 
 void SerialConsole::print_gap_line(const char* what, const GapHistogram& h) noexcept {
@@ -333,6 +354,29 @@ void SerialConsole::drain_holes(const StallProbe& stall) noexcept {
         char line[208];
         StallProbe::render_hole(*r, line, sizeof line);
         ESP_LOGW(kTag, "-- hole   : %s", line);
+    }
+}
+
+void SerialConsole::drain_rejects(const RejectLog& rejects) noexcept {
+    // Eviction is reported rather than skipped, for the same reason the hole ring
+    // reports it: a payload that was captured and then quietly lost reads at the
+    // bench as "the log only shows nine of them", which is a question about the
+    // instrument in the middle of reading it for an answer about the wire.
+    if (rejects_printed_ < rejects.oldest_retained()) {
+        ESP_LOGW(kTag, "-- reject : %u payloads evicted before printing",
+                 static_cast<unsigned>(rejects.oldest_retained() - rejects_printed_));
+        rejects_printed_ = rejects.oldest_retained();
+    }
+    while (rejects_printed_ < rejects.captured()) {
+        const RejectRecord* r = rejects.at(rejects_printed_);
+        ++rejects_printed_;
+        if (r == nullptr) { continue; }
+        // Sized by the renderer rather than by this call site, so widening the
+        // captured head or tail cannot silently start truncating the line. This
+        // task has 6 KiB of stack against its ~240 bytes.
+        char line[kRejectLineChars];
+        RejectLog::render(*r, line, sizeof line);
+        ESP_LOGW(kTag, "-- reject : %s", line);
     }
 }
 

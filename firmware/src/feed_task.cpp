@@ -51,6 +51,11 @@ void FeedTask::run() noexcept {
             case FeedMessage::Kind::Frame:        on_frame(msg); break;
             case FeedMessage::Kind::Connected:
                 ++stats_.connects;
+                // Each connect gets its own capture budget: the reject burst
+                // recurs per connect and is smaller on a reconnect, so a budget
+                // spent once at boot would hide the half of the phenomenon that
+                // is hardest to reproduce on purpose.
+                stats_.rejects.note_connect(esp_timer_get_time());
                 // Deliberately does NOT clear stale. Only a fresh Snapshot can
                 // (invariant #5), and on reconnect Anvil sends exactly one as
                 // its first frame (protocol §4) — so the panel goes live on
@@ -103,6 +108,25 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
 
     const std::string_view text(pipe_.buffer(msg.slot), msg.len);
     adapter_.on_frame(text, [this](const FeedEvent& ev) { apply_and_publish(ev); });
+
+    // A rejected frame is captured HERE — after the adapter, before the recycle
+    // below — and the order is forced rather than chosen. `text` points into the
+    // slot, so recycling first would hand the network task a buffer this is
+    // still reading; and asking the adapter first is what supplies the status,
+    // which is most of the diagnosis.
+    //
+    // Deliberately every non-Ok status, not only the ones `parse_errors` counts:
+    // BadPrice and OtherTicker have their own counters and read zero today, and
+    // if either ever moves the payload behind it is worth exactly as much as
+    // these. The cost when nothing is wrong is one comparison.
+    //
+    // The work this does lands inside `worst_parse_us` below, which is correct —
+    // it is time this task spent on this frame — and is bounded by the capture
+    // budget, so it cannot grow with the size of a burst.
+    if (adapter_.last_status() != anvil::ParseStatus::Ok) {
+        stats_.rejects.note(adapter_.last_status(), text.data(),
+                            static_cast<std::uint32_t>(text.size()), now);
+    }
 
     // The slot goes back only after the adapter is done with it: a Snapshot's
     // LevelSpan points into the adapter's decoded frame, not into this buffer,

@@ -301,6 +301,38 @@ TEST_CASE("malformed input is counted and dropped, never turned into a Gap") {
     CHECK(adapter.stats().transport_gaps == 0);
 }
 
+TEST_CASE("last_status names WHICH failure, which the three counters cannot") {
+    // `parse_errors` is a bucket holding three unrelated diagnoses — bytes that
+    // are not a JSON document, an object with no `type`, and a known type with a
+    // wrong payload — and on a real socket those indict the transport, the
+    // venue, and the protocol vendoring respectively. The firmware's reject log
+    // reads this to say which; the corpus above already declares the answer for
+    // every case, so the two cannot drift.
+    AnvilAdapter adapter(kAnvilTicker101);
+    Collector sink;
+
+    for (const BadFrame& tc : kBadFrames) {
+        CAPTURE(tc.what);
+        adapter.on_frame(tc.json, sink);
+        CHECK(adapter.last_status() == tc.expected);
+    }
+
+    // It reports success as such, so a caller can gate on it with one comparison
+    // instead of diffing counters across the call.
+    adapter.on_frame(kBook, sink);
+    CHECK(adapter.last_status() == ParseStatus::Ok);
+    adapter.on_frame(kSummary, sink);
+    CHECK(adapter.last_status() == ParseStatus::Ok);  // ignored is not rejected
+
+    // A Gap is not a parse and must not overwrite the verdict on the frame
+    // before it — the firmware reads this immediately after on_frame(), and a
+    // transport gap raised in between would otherwise silence a real reject.
+    adapter.on_frame("not json", sink);
+    REQUIRE(adapter.last_status() == ParseStatus::NotJson);
+    adapter.on_transport_gap(GapReason::Disconnect, sink);
+    CHECK(adapter.last_status() == ParseStatus::NotJson);
+}
+
 TEST_CASE("a price finer than the declared scale fails loudly instead of rounding") {
     AnvilAdapter adapter(kAnvilTicker101);
     Collector sink;

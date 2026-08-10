@@ -276,6 +276,7 @@ What the statistics should say on a healthy run:
 | Line | Healthy |
 | --- | --- |
 | `errors` | `parse=0 price=0 ticker=0 unknown=0` |
+| `reject` | **absent entirely** — the line only prints when something was rejected |
 | `pipe` | `oversize=0 no_slot=0 qfull=0 abandoned=0 cont=0` |
 | `size` | `max` comfortably under the 16,384 B cap |
 | `feed` | `worst_gap` well under 1000 ms except across the pull |
@@ -284,6 +285,32 @@ What the statistics should say on a healthy run:
 | `heap` | `free` delta **0** and `largest` not falling (see the caveat below) |
 
 Reading the two that are new, and easy to misread:
+
+- **`reject` is the breakdown of a non-zero `parse`, and it prints the bytes.**
+  It is silent on a healthy run on purpose: `errors` already says `parse=0`, and a
+  line of zeroes every ten seconds would bury the one that matters. When it does
+  appear there are two shapes of it, and they answer different questions:
+
+  ```text
+  -- reject : n=1281 not-json=1281 no-type=0 bad-shape=0 bad-price=0 other-ticker=0 | logged=10 suppressed=1271 over 1 connects
+  -- reject : #1 c1/#1 +412 ms not-json len=4096 head[{"type":"book","seq":362011,"ticker":101,"bids":[{"price":"10.0352","qty":24,] tail[0349","qty":214,"orders]
+  ```
+
+  The tally is the run; the `#n` lines are the first **ten payloads of each
+  connect**, printed the moment they happen. Read them in this order, because the
+  three statuses have three different owners:
+
+  | What you see | What it means | Who fixes it |
+  | --- | --- | --- |
+  | `no-type` on a whole payload ending `}` | a frame shape this client does not know | the venue — skip-not-error it, and document the frame in `docs/vendor/anvil-protocol.md` |
+  | `not-json`, `len` a multiple of 4096, `tail` ending mid-token | the message was cut at an RX-buffer boundary | ours — the reassembler / `kWsRxBufferBytes` |
+  | `not-json` with a `SPLIT@nnnn` | two messages landed in one buffer | ours — the WebSocket client under burst load |
+  | `bad-shape` on a whole `book`/`trade` payload | Anvil changed a payload | re-vendor the protocol |
+
+  `SPLIT@` is worth knowing about before you need it: a spliced buffer *begins*
+  like a valid frame and *ends* like a valid frame, so head and tail both look
+  right and the reject reads as inexplicable. The offset is computed rather than
+  left to be spotted.
 
 - **`no_slot` is inbound loss, not consumer lag.** It counts whole WebSocket
   messages discarded before the parser because every slot was busy. It should be
@@ -511,6 +538,7 @@ balanced over hours; it does not decide whether it allocates. Full reasoning in
 | `src/frame_reassembler.hpp` | chunks → whole messages. **No ESP-IDF** — host-tested by `harness/tests/test_frame_reassembler.cpp` |
 | `src/gap_histogram.hpp` | fixed-bucket distributions for the stall hunt. **No ESP-IDF** — host-tested by `harness/tests/test_gap_histogram.cpp` |
 | `src/stall_probe.hpp` | classifies a >1 s book-hole board-bound vs link-bound, plus the recovery shape and rssi. **No ESP-IDF** — host-tested by `harness/tests/test_stall_probe.cpp` |
+| `src/reject_log.hpp` | what the parser threw away: the first ten payloads of each connect, with status, whole length, head, tail and any spliced second frame. **No ESP-IDF** — host-tested by `harness/tests/test_reject_log.cpp` |
 | `src/core_idle.*` | the one platform half of that: per-core idle from an idle hook, because this framework has FreeRTOS run-time stats compiled out |
 | `src/frame_pipe.*` | the four-slot pool + queues, transport → feed, and the arrival histogram |
 | `src/feed_task.*` | Core 0: the pipeline, the RX watchdog, the only book writer |

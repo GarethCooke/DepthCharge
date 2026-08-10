@@ -374,3 +374,49 @@ after the bench run rather than literally alongside it. Neither can produce
 loss would be retransmitted, not skipped — but a bench run with the board and a desk
 capture running in the same minute would close both, and the board can settle it
 alone by printing a gap histogram rather than only `worst_gap`.
+
+---
+
+## M3 addendum — the connect burst, and what a capture can and cannot say about it
+
+The 2026-08-10 bench run produced a second finding beside the stall: the board rejects
+**~1,281 frames in the first ~60 s of every connect — about 85 % of the opening burst —
+then goes flat**, with a smaller batch on each reconnect. `price_errors`, `other_ticker`,
+`unknown_kind` and `truncated_frames` are all zero, so all of it is `parse_errors`: the
+frames did not decode at all.
+
+### The desk control, which is already committed
+
+`anvil_101_baseline_20260809.ndjson` **opens at a connect** — its first frame line is the
+on-connect `snapshot`, immediately followed by the cross-ticker `summary` — and runs 1,513
+frames over 90 s. `test_replay_goldens.cpp` pins `parse_errors == 0` across the whole file,
+which covers the same first-60-s window the board is failing in.
+
+So, as far as a capture can see: **Anvil sends nothing at connect that this parser
+rejects.** That is a constraint worth having before a bench evening is spent on it, because
+it moves the first suspect from the venue to the client.
+
+### The one thing the capture cannot exclude
+
+`tools/capture_anvil.py` writes one line per *message*, and the `websockets` library
+reassembles WebSocket-level fragmentation before handing a message over. A message Anvil
+split into a text frame plus continuation frames therefore arrives at the capture whole and
+is written as one line — **it cannot appear in a trace at all**.
+
+That matters here specifically, because `firmware/src/frame_reassembler.hpp` documents
+itself as *publishing such a message incomplete*: this IDF vintage does not surface the FIN
+bit, so a continuation restarts `payload_offset` at zero and the reassembler cannot know
+where the message truly ends. It publishes at the fragment boundary, the parser rejects the
+partial JSON, and the adapter counts a parse error. The header says so in as many words and
+calls the counter's existence the point. Anvil has never sent one across 2,694 captured
+frames — but every one of those captures is blind to it by construction.
+
+Two other candidates, neither excluded and both board-side: a message cut at the 4,096-byte
+RX-buffer boundary, and two messages landing in one buffer. All three are distinguishable
+from a single payload, which is what the reject log added on 2026-08-10 exists to print —
+status, whole length, head, tail, and the offset of any second `{"type":` in the buffer.
+
+**If it turns out to be server-side fragmentation, a trace will never reproduce it and the
+committed goldens never can.** The honest coverage in that case is a synthesised trace plus
+a `FrameReassembler` test, not a capture — the same shape as the reassembler's existing
+host tests, and the same reason they exist.

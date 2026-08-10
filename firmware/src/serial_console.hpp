@@ -62,6 +62,11 @@ private:
     void print_distributions(const FeedTask::Stats& f, const FramePipeStats& p) noexcept;
     void print_gap_line(const char* what, const GapHistogram& h) noexcept;
 
+    // The per-status breakdown of what the parser rejected. Prints nothing at
+    // all on a healthy run — see the note at the definition for why that is
+    // deliberate rather than a missing else.
+    void print_rejects(const RejectLog& rejects) noexcept;
+
     // The stall verdict block: per-core idle, rssi, and the classified tally of
     // >1 s book-holes. Separate from print_stats() for the same reason the
     // distributions are — it is a unit, meant to be grepped out of a bench log
@@ -73,6 +78,12 @@ private:
     // on screen. Called from the run loop, so it must print at most a couple of
     // lines per pass — which it does, holes being a twice-a-minute event.
     void drain_holes(const StallProbe& stall) noexcept;
+
+    // One line per captured rejected payload, printed as it happens for the same
+    // reason the holes are: at a bench the useful moment is while the burst is
+    // still running. Bounded by kRejectsPerConnect, so it cannot flood the log
+    // even when the parser is rejecting everything.
+    void drain_rejects(const RejectLog& rejects) noexcept;
 
     // Per-window rates, derived from the running counters. Separate from
     // print_stats() because it is the only part that carries state across calls.
@@ -93,6 +104,7 @@ private:
     // per-hole figures, since the two are computed from the same counters by
     // different tasks over different windows and must tell the same story.
     std::uint32_t holes_printed_ = 0;
+    std::uint32_t rejects_printed_ = 0;
     std::uint32_t idle0_at_block_ = 0;
     std::uint32_t idle1_at_block_ = 0;
     std::int64_t block_started_us_ = 0;

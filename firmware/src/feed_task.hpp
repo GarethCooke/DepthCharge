@@ -42,6 +42,7 @@
 
 #include "core_idle.hpp"
 #include "frame_pipe.hpp"
+#include "reject_log.hpp"
 #include "stall_probe.hpp"
 
 namespace depthcharge::fw {
@@ -148,6 +149,19 @@ public:
         // that ended it, and the rssi at the time. Board-bound is firmware's to
         // fix; link-bound is not, and guessing costs a milestone round.
         StallProbe stall{};
+
+        // WHAT THE REJECTED FRAMES WERE (the 2026-08-10 connect burst).
+        //
+        // `AnvilAdapter::Stats::parse_errors` says how many frames the parser
+        // threw away; this says what they were. It is not in the adapter because
+        // the adapter is engine code shared with the host replay, where the
+        // question does not arise — a trace file's frames all parsed once
+        // already, by definition of having been captured.
+        //
+        // Written on the reject path only, and only for the first
+        // kRejectsPerConnect of each connect; a healthy run never touches it.
+        RejectLog rejects{};
+
         std::uint32_t worst_queue_wait_us = 0;
         // The most messages ever left queued BEHIND the one being processed —
         // sampled after the dequeue, so it is one below the peak depth and can
