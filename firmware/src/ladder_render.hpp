@@ -329,13 +329,19 @@ constexpr int bar_length(Qty qty, Qty max_qty) noexcept {
     return static_cast<int>(len);
 }
 
-// Short enough for the header at three columns a character: the widest is
-// DISCONNECT at 10, which leaves room for a four-digit symbol beside it.
+// EIGHT CHARACTERS, MAXIMUM. The 4x6 font fits twelve across the header, and
+// three of them plus a gap belong to the symbol id — so DISCONNECT, which fitted
+// at 3x5, does not. NO LINK says the same thing to someone standing in front of
+// a grey panel, and the serial log still prints the full `STALE (disconnect)`
+// for anyone reading the run afterwards.
+//
+// test_ladder_render.cpp asserts every one of these against the real header
+// width, so a longer word cannot be added without the desk saying so.
 constexpr const char* reason_text(GapReason r) noexcept {
     switch (r) {
         case GapReason::SeqGap:       return "SEQ GAP";
         case GapReason::ChecksumFail: return "CHECKSUM";
-        case GapReason::Disconnect:   return "DISCONNECT";
+        case GapReason::Disconnect:   return "NO LINK";
         case GapReason::Overflow:     return "OVERFLOW";
         case GapReason::Resync:       return "RESYNC";
     }

@@ -153,23 +153,30 @@ DisplaySnapshot make_book(int n, FeedStatus status = FeedStatus::Live,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-TEST_CASE("the row budget spends exactly 64 rows and keeps kDisplayLevels a side") {
+TEST_CASE("the row budget spends exactly 64 rows, and the font is what spends it") {
     CHECK(kPanelWidth == 64);
     CHECK(kPanelHeight == 64);
 
-    // 5 header + 1 rule + 27 asks + 1 spread + 27 bids + 1 rule + 2 strip.
+    // 6 header + 1 rule + 26 asks + 1 spread + 26 bids + 1 rule + 3 strip.
     CHECK(kHeaderTop == 0);
     CHECK(kHeaderRows == kGlyphHeight);
-    CHECK(kTopRuleRow == 5);
-    CHECK(kAskTop == 6);
-    CHECK(kLevels == 27);
-    CHECK(kLevels == static_cast<int>(kDisplayLevels));
+    CHECK(kTopRuleRow == 6);
+    CHECK(kAskTop == 7);
+    CHECK(kLevels == 26);
     CHECK(kSpreadRow == 33);
     CHECK(kBidTop == 34);
-    CHECK(kBottomRuleRow == 61);
-    CHECK(kStripTop == 62);
-    CHECK(kStripRows == 2);
+    CHECK(kBottomRuleRow == 60);
+    CHECK(kStripTop == 61);
+    CHECK(kStripRows == 3);
     CHECK(kStripTop + kStripRows == kPanelHeight);
+
+    // THE TRADE THE 4x6 FONT COST, PINNED. One header row more than the 3x5 the
+    // bench could not read, and therefore one level a side fewer than the book
+    // publishes. That is the brief's sanctioned direction — draw fewer levels,
+    // never change kDisplayLevels — and it is a truncation of the drawn window,
+    // not a change to engine/.
+    CHECK(kLevels < static_cast<int>(kDisplayLevels));
+    CHECK(static_cast<int>(kDisplayLevels) - kLevels == 1);
 
     // The two sides plus the spread must not overlap the chrome at either end.
     CHECK(kSpreadRow - 1 - (kLevels - 1) == kAskTop);
@@ -177,24 +184,29 @@ TEST_CASE("the row budget spends exactly 64 rows and keeps kDisplayLevels a side
 }
 
 TEST_CASE("the font's metrics are what the row budget was computed from") {
-    CHECK(kGlyphWidth == 3);
-    CHECK(kGlyphHeight == 5);
-    CHECK(kGlyphAdvance == 4);
+    CHECK(kGlyphWidth == 4);
+    CHECK(kGlyphHeight == 6);
+    CHECK(kGlyphAdvance == 5);
 
-    // 4n-1: the trailing column of air belongs to the gap, not the glyph, so a
+    // 5n-1: the trailing column of air belongs to the gap, not the glyph, so a
     // right-aligned string lands flush with the last lit column.
     CHECK(text_width("") == 0);
     CHECK(text_width(nullptr) == 0);
-    CHECK(text_width("1") == 3);
-    CHECK(text_width("101") == 11);
-    CHECK(text_width("10.0001") == 27);
-    CHECK(text_width("DISCONNECT") == 39);
+    CHECK(text_width("1") == 4);
+    CHECK(text_width("101") == 14);
+    CHECK(text_width("10.0001") == 34);
 
-    // Sixteen characters is the whole header line, and the widest thing it is
-    // ever asked to hold is a symbol plus DISCONNECT.
-    CHECK(text_width("0123456789ABCDEF") == 63);
-    CHECK(text_width("0123456789ABCDEF") <= kPanelWidth);
-    CHECK(text_width("101") + kGlyphAdvance + text_width("DISCONNECT") <= kPanelWidth);
+    // Thirteen characters is the whole header line at this cell width, and it
+    // lands on 64 exactly — the last glyph's fourth column IS column 63, with
+    // the gap it would otherwise have trailed falling off the panel. Fourteen
+    // does not fit at all.
+    CHECK(text_width("0123456789ABC") == kPanelWidth);
+    CHECK(text_width("0123456789ABCD") > kPanelWidth);
+
+    // The two things the header is actually asked to hold, both with a symbol
+    // beside them and a column of air between.
+    CHECK(text_width("101") + kGlyphAdvance + text_width("10.0001") <= kPanelWidth);
+    CHECK(text_width("9999") + kGlyphAdvance + text_width("CHECKSUM") <= kPanelWidth);
 }
 
 TEST_CASE("every glyph fits three columns, and unknown characters are visible") {
@@ -203,7 +215,7 @@ TEST_CASE("every glyph fits three columns, and unknown characters are visible") 
 
     for (int c = 0; c < 128; ++c) {
         for (int r = 0; r < kGlyphHeight; ++r) {
-            CHECK(glyph_row(static_cast<char>(c), r) <= 0b111);
+            CHECK(glyph_row(static_cast<char>(c), r) <= 0b1111);
         }
     }
     // Rows outside the glyph are empty rather than undefined — the drawing loop
@@ -476,7 +488,11 @@ TEST_CASE("the header shows the last price when live and the reason when not") {
     CHECK(header_pixels(disc) != header_pixels(resync));
     CHECK(header_pixels(live) != header_pixels(disc));
 
-    // Every reason has text, and all of it fits beside a symbol id.
+    // EVERY reason has text and ALL of it fits beside a four-digit symbol. This
+    // is the assertion that made DISCONNECT become NO LINK when the font went
+    // 3x5 -> 4x6: at twelve characters across, a ten-letter word plus an id does
+    // not fit, and the failure mode without this check is a header that silently
+    // clips or drops the symbol on exactly the frame the bench needs to read.
     using depthcharge::fw::reason_text;
     const GapReason all[] = {GapReason::SeqGap, GapReason::ChecksumFail, GapReason::Disconnect,
                              GapReason::Overflow, GapReason::Resync};
