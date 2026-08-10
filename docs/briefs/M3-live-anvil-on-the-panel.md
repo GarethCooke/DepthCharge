@@ -1,6 +1,6 @@
 # M3 — Live Anvil on the panel
 
-**Track:** Mixed [A+B] · **Status:** Not started
+**Track:** Mixed [A+B] · **Status:** Stages A–D written; the bench acceptance is all that remains
 **Executor:** Mixed. Stages A–B are agentic, host-only, and provable under `ctest` (Claude
 Code, no hardware). Stages C–D are firmware on the bench — the owner flashes, pulls the
 Wi-Fi, and reads the panel; Claude Code assists (writes the firmware, reviews) but does not
@@ -264,10 +264,17 @@ addition).
   session log. **Caveat carried into D:** the 1000 ms watchdog threshold is honest code against
   an eroded premise — the server has slowed to ~6 msg/s from M0's 15.5 and it now trips on
   healthy data. It needs re-deriving from a fresh capture, not nudging.)*
-☐ **Stage D:** render task on Core 1 draws the live ladder on the panel (bids green, asks
+◐ **Stage D:** render task on Core 1 draws the live ladder on the panel (bids green, asks
   red, spread, prints, last px, sparkline); stale greys the panel.
+  *(Written and host-proven 2026-08-10, **not yet flashed**. Expanded work order:
+  `docs/briefs/M3-stage-D-the-panel.md`. All six deliverables are in the tree including both
+  stretch items; the row budget, the geometry, the boot frame, the heartbeat and the
+  allocation-freedom of the render path are `dc_tests` cases, and "a stale panel carries no
+  hue" is a `static_assert` rather than a test — the renderer emits `Ink` and cannot name a
+  colour. What is untested is everything downstream of `PanelCanvas`: the DMA, the pins, and
+  whether it looks right.)*
 ☐ **The pull-the-Wi-Fi acceptance passes** on the bench: live → grey within ~1 s → clean
-  resync. Photo/clip committed in `hardware/`.
+  resync. Photo/clip committed in `hardware/`. **— the one thing left in M3.**
 ☑ `firmware/README.md` documents the PlatformIO build/flash line and the `secrets.h` shape.
   *(Plus the board overrides for the N16R8, the bench acceptance procedure, and a table of what
   the statistics block should read on a healthy run.)*
@@ -1567,3 +1574,231 @@ plus a protocol note), `not-json` with a 4096-multiple length or a `SPLIT@` offs
 worth noticing: if both turn out board-bound under burst, they are one fix). The reading table
 is in `firmware/README.md`. Behind it, unchanged: the stall verdict run, the `ws_supervisor.hpp`
 host-test extraction, then Stage D.
+
+### 2026-08-10 · owner at the desk, written up by Opus 5 · the stall was the mesh; strain 12 closes
+
+**This entry records three things settled at the bench after the previous entry was written,
+and it is deliberately the first move of the Stage D sitting** (`docs/briefs/M3-stage-D-the-panel.md`
+§0). Two of them close findings this repo still shows as open, and one of them would otherwise
+send the next session after a bug that no longer exists. No code changed for this entry.
+
+**1. The steady-state stall is SOLVED, and it was never the watchdog's fault — nor the
+firmware's.** Root cause: **Deco mesh mis-association.** The board had attached to a far node at
+**−75 dBm**; moving it to the near node put it at **−34 dBm** and the mid-connection stalls
+stopped. An 11-minute run on the near node shows **two ~130 ms cadence blips and nothing else** —
+against 17 book-holes over 11 minutes on the far node. Band-steering and fast-roaming were
+already off on that mesh, so steering was never the mechanism; it was simply a bad link the
+board had no reason to leave.
+
+That is the **link-bound** arm of the fork the previous entry set up, and it is the arm with no
+lever in this repo. It also retires the whole candidate list the last three entries kept in
+priority order — `esp_websocket_client buffer_size`, the 5,744-byte `CONFIG_LWIP_TCP_WND_DEFAULT`,
+WS-task priority and core — **none of which should now be pulled**, because none of them was ever
+the mechanism and each would have been a change measured against a moving link. Strain 12 is
+closed. The instruments that decided it (`gap_histogram.hpp`, `stall_probe.hpp`, `core_idle.*`)
+stay: they are what made a two-arm question answerable at all, and Stage D re-reads the same
+lines with a panel beside them.
+
+**Therefore the RX watchdog's open finding is closed, and `kRxWatchdogMs` stays at 1000 ms.**
+ARCHITECTURE §9's 2026-08-09 entry had already ruled the correct half — Anvil's cadence is
+17.02 frames/s with a 391 ms worst gap, the board's multi-second holes were board-side, and
+raising the threshold would have hidden a real freeze. The mesh fix names the board-side cause,
+so the constant's premise is intact and the honest instrument was right. **Do not re-derive it,
+do not nudge it, and do not touch `ReplayOptions::disconnect_gap_ms`** — the goldens are pinned
+to it. A grey on a healthy feed from here on is a finding to report, not a constant to change.
+Recorded against `hardware/bench-2026-08-09-ws-reconnect.md`'s "Open finding: the RX watchdog
+trips on healthy data", which now points here.
+
+**2. The transport residual is decided and shipping.** What remains on a strong, stable
+association is occasional socket-drop reconnects — roughly **four per eleven minutes, arriving in
+pairs, then minutes of clean running.** The two-handle reconnect fix (`a32ff59`, ARCHITECTURE §9
+2026-08-10) takes a drop from **~9.5 s to ~4.7 s of grey**. **That is the whole treatment.** No
+further reconnect work is scheduled, and none is wanted: a reconnect grey is invariant #5 telling
+the truth, and Stage D's job is to *render* it, not to prevent it. The acceptance run should see
+a reconnect grey read ~4.7 s and look identical to any other grey.
+
+**3. Parked — real, low priority, and not to be reopened at Stage D.**
+
+- The **parse-burst reassembler fix**: client-side reassembly truncating large book frames under
+  the connect flood (the ~1,281 rejected frames in the first ~60 s of each connect, previous
+  entry). The reject log built for it stays in and will print if it recurs.
+- The optional **`WIFI_EVENT_STA_DISCONNECTED.reason` logging**. Worth having; not worth an
+  evening, and with the mesh cause named it has lost its best customer.
+
+**Exact next step: Stage D**, per `docs/briefs/M3-stage-D-the-panel.md` — the render task on
+Core 1, HUB75 with the M2 pin map and FM6124 init, `serial_console.cpp`'s body becoming the
+renderer while its three proven properties stay (Core 1, `consume()`-gated redraw, reads nothing
+but the `DisplaySnapshot`). The `ws_supervisor.hpp` host-test extraction asked for four entries
+back **is done** — it landed with the two-handle fix (`a32ff59`, `harness/tests/test_ws_supervisor.cpp`).
+
+### 2026-08-10 · Opus 5 · Stage D written and host-proven — **not yet flashed**
+
+**Done (CC-side).** The panel exists in the tree. `serial_console.{hpp,cpp}` →
+`render_task.{hpp,cpp}` (`git mv`, so the diff reads as a rename), body replaced with the
+HUB75 renderer, serial evidence kept intact. New: `ladder_font.hpp`, `ladder_render.hpp`,
+`panel.{hpp,cpp}`, and `harness/tests/test_ladder_render.cpp`. `platformio.ini` pins
+`mrfaptastic/ESP32 HUB75 LED MATRIX PANEL DMA Display@3.0.15` and adds `-D NO_GFX`. Host loop
+green: **11/11 ctest**, `dc_tests` 169 → **188 cases** (66,720 → **558,780 assertions**),
+`dc_tests_streaming` 46/46 unchanged. Both firmware environments build clean: RAM 136,456 →
+**137,244 B** (41.6% → 41.9%, +788), flash 842,889 → **865,745 B** (12.9% → 13.2%, +22,856).
+**Nothing here has run on hardware. Every claim below is static, host-measured, or read out of
+the library's source — never observed on a panel.**
+
+**The decision to argue with: the renderer cannot name a colour.** The brief asked for "one
+palette selection, taken from `snap.status`, at the top of the draw — and no other code path
+picks a colour", and for that to be structural rather than remembered. The obvious
+implementation is a rule, and a rule fails the first time someone adds a widget and forgets.
+So `ladder_render.hpp` emits `Ink` — a *role* — and `PanelCanvas` holds the `Palette`, chosen
+once where it is constructed. Two `static_assert`s do the rest:
+
+```cpp
+static_assert(all_grey(kStalePalette), ...);                       // no hue anywhere
+static_assert(none_black_except(kStalePalette, Ink::Count), ...);  // grey, never blank
+```
+
+A new `Ink` without a stale entry fails the build; a stale entry with a hue fails the build.
+`-D NO_GFX` removes Adafruit GFX's `print()`/`setTextColor()`, which closes the last route to a
+pixel that did not come through an `Ink`. **There is no path from a stale snapshot to a
+coloured pixel that this build accepts**, which is a stronger statement than any test, and it
+is why ARCHITECTURE §9 has an entry rather than this log alone: M7's board mode and the
+backlog's web mirror inherit the obligation.
+
+**The row budget is derived, asserted, and it fits exactly.** 5 header + 1 rule + 27 asks + 1
+spread + 27 bids + 1 rule + 2 strip = **64**. `kLevels` falls *out* of the leftover rows and is
+clamped to `kDisplayLevels`, so a header that ever needs a second line costs levels on the panel
+and the build stays green — which is what turns "draw fewer levels, never change
+`kDisplayLevels`" from an instruction into a compile-time consequence. It cannot overrun:
+`kStripRows` would go negative and the assert fires.
+
+**The font is ours, and that is the reason the budget is checkable at all.** Adafruit GFX's
+built-in font is 5×7 in a 6×8 cell — ten characters across 64 px and eight rows for one line —
+and its custom fonts position the cursor on the *baseline*, so the rows a header occupies depend
+on the glyphs in it. Either way the budget could only be verified by looking at the panel.
+`ladder_font.hpp` is 41 glyphs of five bytes (**205 B** of `.rodata`), 3×5 in a 4×5 cell, which
+gives **sixteen** characters across the header and is what makes 27 levels a side fit with two
+rows to spare. `ctest` now answers the question a bench used to.
+
+**The `i2s_pins` trap the brief flagged: confirmed present in the vendored 3.0.15, and made
+unreachable.** The struct really is
+`r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk`, so a brace list ends `12, 13, 11`. Rather
+than write that and comment it, every pin is assigned **by field name**, so a future version can
+reorder them and nothing here has to notice. Worth knowing separately: the library's own S3
+defaults are *different* from BRINGUP's map (A=18, B=8, C=3, D=42, E=−1, LAT=40, OE=2, CLK=41),
+so an omitted pin is a silently wrong panel rather than a build error.
+
+**Framebuffer fit: a calculation, not a retry loop, and the reason is in the library's source.**
+Cost is `32 × 64 × depth × 2 B × buffers`, so **65,536 B** at depth 8 double buffered, in
+internal DMA-capable RAM. `Panel::begin()` measures the free DMA-capable heap, holds back
+`kReserveInternalBytes` (96 KiB), and picks the deepest rung that fits — 8→3 double buffered
+**before** considering single buffering, per the brief. It calls `begin()` **once**, because
+when a row buffer fails `setupDMA()` returns false leaving everything it already took attached,
+above its own `// TODO: should we release all previous rowBitStructs here???` — a second
+`begin()` appends *more* rows to the same vector, so a failed attempt costs most of a
+framebuffer permanently and the rung beneath it then fails for the wrong reason. Sixth time this
+vintage has decided a design.
+
+**The boot order is the other half of that, and it is the one judgement call.** The panel and
+the network want the same pool, so whoever allocates first wins. Wi-Fi associates → `Panel::begin()`
+sizes against what is left → the WebSocket client starts. A panel that drops a colour bit is
+cosmetic; a TLS handshake that cannot allocate is a dead object. `begin()` is never fatal, and it
+runs *before* the Wi-Fi halt, so a board with a bad `secrets.h` shows an honest grey `RESYNC`
+frame rather than a dark panel. **The reserve is deliberately conservative and is the one number
+here with no measurement behind it** — the board prints free-before, free-after, our prediction,
+the measured delta and every rung's cost, so the next session can lower it against a figure.
+
+**Strain 7 closed, and closing it found a real defect in the closing.** DESIGN.html queued
+"M3 stage D — extend the alloc probe across the render side too". Done: 200 frames of
+`LadderView::draw` — every depth, both statuses, a trade print every frame — inside the probe's
+window, counter must not move. **Then the mutation check failed to fail.** A `new int` in
+`draw()` passed; a `std::string(64,'x')` passed. Both were *silently deleted by GCC's allocation
+DCE* while visibly executing (a side effect in the same block failed a different test case,
+which is the only reason they were caught at all). Only an allocation whose **pointer** escapes
+through a volatile store survives the optimiser — that mutant moves the counter by exactly 200.
+A positive control of that shape is now committed beside the assertion, because an allocation
+counter that is not wired reports zero for every possible renderer, and this one would have
+shipped reading green over a renderer built out of `std::string`.
+
+**Strain 15 opened, and it is the honest cost of double buffering here.**
+`Bus_Parallel16::flip_dma_output_buffer()` on the S3 re-points the descriptor chain and returns;
+the wait for the previous buffer to drain is in the source and **commented out**
+(`gdma_lcd_parallel16.cpp:444`). So the flip is asynchronous and nothing stops the render task
+writing into a buffer the DMA has not finished with. What makes it safe is arithmetic in two
+files and stated in neither: ~100 Hz scan against a 33 ms period. Raising the draw rate, lowering
+`min_refresh_rate`, or landing on a shallower colour depth narrows it, and what comes back is
+tearing that reads as a ribbon-cable fault. The guard is cheap (compare
+`calculated_refresh_rate` against `kFramePeriodMs` at boot) and is deliberately not written here.
+
+**Both stretch items shipped.** Trade-print flash — three drawn frames of `Ink::Flash` at the
+touched level, keyed on the trade ring's own event seq so "new print" is a comparison and not a
+heuristic, and a boot with a populated ring does not flash. Sparkline — a 62-sample ring in
+`LadderView`, two rows, integer-scaled against the window's own min/max. **Both are render-side
+sampled state and neither is a `DisplaySnapshot` field**, which is the decision the brief said
+must be recorded whether or not the code was written. `last_px` advancing while Stale needs no
+special case: the grey wash covers it.
+
+**Measured on the target toolchain**, not estimated: `LadderView` **536 B**, palettes **72 B**,
+font **205 B**; `render_task.cpp.o` has **zero floating-point instructions** and no
+`operator new` (the `operator delete` in its undefined list is the driver's never-called virtual
+destructor). `ladder_render.hpp` also compiles clean standalone under xtensa GCC 8.4 at
+`-Os -fno-exceptions -fno-rtti`, the same bar `dc_engine_target_check` applies to `engine/`.
+The render path does add `__divdi3`/`__udivdi3` — one 64-bit divide per drawn level, ~700/s at
+Anvil's publish rate against the ~3,000/s the parser's qty scaling already does. Recorded rather
+than optimised, following `wire_qty_to_steps`' precedent.
+
+**The review found a real bug in my own arithmetic, and a property test found it rather than a
+reader.** `bar_length` was the obvious `kPanelWidth * qty / max_qty` in `int64`, which is
+**undefined behaviour** once `qty` passes `INT64_MAX / 64` (~1.4e17). No venue we consume quotes
+anything near that — but `Qty` is the full 64-bit type by deliberate design (§4: "crypto tick
+sizes and price ranges vary wildly"), the adapter's only quantity guard is `raw < 0`, and a
+renderer is a bad place to discover it. The fix shifts both operands down together until the
+product is safe; both stay ≥ 1 and the precision lost is far under one pixel of a 64-pixel bar.
+It was found by the 3,000-step random walk added during review — the example-based cases all
+used quantities a human would think to write down.
+
+**Three DRY findings from the same pass, all taken.** `draw_asks`/`draw_bids` were the same
+fourteen lines differing in array, direction and ink pair — now one `draw_side` over a
+designated-initialised `SidePlan`, so the ask/bid asymmetry exists in one place (this is the
+console ladder's `level_row` lesson, one level up). `render_task.cpp` carried its own
+`PriceText` — the same eight lines as `ladder_render.hpp`'s `TextField`, same buffer, same
+`format_scaled`, same `'?'` fallback — two implementations of the display edge's one rule in a
+firmware whose panel and whose log must agree about what a price is; the copy is gone. And the
+paint-a-band-flat idiom appeared twice, now `fill_rows`.
+
+**Deliberately not done.** No `ESP_LOGx` went into `dc_feed`. No `engine/` change of any kind —
+not one line, as the brief required. No golden moved. `kRxWatchdogMs` untouched. The idle probe
+still ships (the brief left that a stage D decision): it costs an idle core its `waiti`, and with
+the stall now diagnosed it is no longer load-bearing — but it is the instrument that would catch
+a regression once a panel is beside the feed, and turning it off is `-D DC_IDLE_PROBE=0` on a run
+that looks suspicious. Revisit at M4 when the render side has a baseline.
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: 11/11 ctest, 188/188 in
+`dc_tests` (558,780 assertions), 46/46 in `dc_tests_streaming`. Both firmware environments build
+clean at RAM 41.9% / flash 13.2%. `docs/DESIGN.html` updated: status strip, §01's HUB75 box and
+caption, a new §07 "what the panel costs", strain 7 closed, strain 12 closed, strain 15 opened,
+the §09 queue and the footer figures. ARCHITECTURE §9 has two new entries.
+
+**NOT DONE — the acceptance, which is the point.** No bench run, so no pull-the-Wi-Fi result, no
+soak, no photo, and **ROADMAP M3 stays `Next`**. Nothing on the panel has been seen by anyone.
+
+**Exact next step: the owner flashes and runs the stage D acceptance in
+`firmware/README.md`.** In reading order:
+
+1. The three `panel-hw` boot lines. Record the colour depth, whether it is double buffered, and
+   the three allocation figures — ours, the measured heap delta, and the library's own
+   `Allocating N bytes`. They should agree to within allocator overhead; if they do not, this
+   arithmetic has drifted from the library's. `SINGLE-BUFFERED` is a finding, not a pass.
+2. First light: an honest grey `101 RESYNC` frame within a second of Wi-Fi, **not black**.
+3. **Pull the Wi-Fi.** Colour drains within ~1 s, geometry stays, header reads `101 DISCONNECT`.
+   No torn frame, no frozen intermediate, no flash of a coloured stale book. **This is the M3
+   DoD line.** Restore; expect `grey for ~4700 ms` and a reconnect grey indistinguishable from
+   any other.
+4. Ten minutes on the **near** mesh node — the first time the 2026-08-10 mesh fix is checked on a
+   panel rather than in a log. `wd_gaps` 0, `sock_gaps` low, colour held throughout.
+5. The `-- panel` line: `drew … /s` should track the `-- rate` line's events/s, and `worst paint`
+   should be a small fraction of 33,000 µs and should **not** move with book depth.
+6. Feed side unregressed (`arrive`/`event`/`a→e`, Core 0 ~90% idle, `a→e` ≤ 22 ms) and heap flat.
+7. Photo/clip to `hardware/` — it also unblocks **MP stage 2**, so shoot it like it will be
+   published.
+
+Then tick Stage D here and in `docs/briefs/M3-stage-D-the-panel.md`, and only then tick **M3** in
+`ROADMAP.md` and mark **M4 Next**.

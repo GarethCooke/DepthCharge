@@ -1,10 +1,10 @@
-// firmware/src/main.cpp — DepthCharge on the ESP32-S3. M3 stage C: the feed half.
+// firmware/src/main.cpp — DepthCharge on the ESP32-S3. M3 stage D: the whole object.
 //
-// The whole object, at this stage:
+// The whole object:
 //
 //   Wi-Fi + TLS WebSocket        FramePipe        Core 0 feed task        SnapshotChannel        Core 1
-//   (esp_websocket_client task) ----------->  parse -> adapt -> book  ----------------->  serial console
-//        firmware/                              engine/, linked as-is                     (stage D: HUB75)
+//   (esp_websocket_client task) ----------->  parse -> adapt -> book  ----------------->  render task
+//        firmware/                              engine/, linked as-is                  (HUB75 DMA + the log)
 //
 // Two things are worth noticing about that diagram, because they are the point
 // of the milestone rather than incidental:
@@ -31,8 +31,9 @@
 #include "feed_task.hpp"
 #include "frame_pipe.hpp"
 #include "heap_probe.hpp"
+#include "panel.hpp"
+#include "render_task.hpp"
 #include "secrets.h"
-#include "serial_console.hpp"
 #include "ws_transport.hpp"
 
 using namespace depthcharge;
@@ -43,18 +44,23 @@ namespace {
     constexpr const char* kTag = "main";
 
     // Statically allocated, in this order, and never freed. Between them these
-    // objects are the entire steady-state memory footprint of the feed path:
+    // objects are the entire steady-state static footprint of the pipeline:
     //
-    //   FramePipe        2 x 16 KiB reassembly slots        32,768 B
+    //   FramePipe        4 x 16 KiB reassembly slots        65,536 B
     //   FeedTask         AnvilAdapter 8,400 + Book 8,552 + staging 1,168
     //   SnapshotChannel  three DisplaySnapshot slots         3,528 B
+    //   RenderTask       received_ 1,168 + LadderView ~510
     //
-    // ~54 KiB of the S3's 512 KB internal SRAM, all placed before the first packet
-    // arrives. Nothing below this line allocates once the tasks are running, which
-    // is what invariant #7 asks of the feed path and what heap_probe measures.
+    // All placed before the first packet arrives. Nothing below this line
+    // allocates once the tasks are running, which is what invariant #7 asks of
+    // the feed path and what heap_probe measures. The panel is the one exception
+    // and a deliberate one: its DMA framebuffers are heap, taken once inside
+    // Panel::begin() — before the boundary the invariant names ("after connect
+    // and first snapshot"), never per frame.
+    //
     // The two instruments the stall characterisation added. Neither is in the
     // feed path: `g_idle` is written by the two idle tasks and `g_link` by
-    // loopTask, and the feed task and console only read them.
+    // loopTask, and the feed task and render task only read them.
     CoreIdleProbe g_idle;
     LinkQuality g_link;
 
@@ -63,7 +69,8 @@ namespace {
     FeedTask g_feed(g_pipe, g_channel, anvil::kAnvilTicker101, g_idle, g_link);
     WsTransport g_transport(g_pipe, g_link);
     HeapProbe g_heap;
-    SerialConsole g_console(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link);
+    Panel g_panel;
+    RenderTask g_render(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link, g_panel);
 
     [[noreturn]] void halt(const char* what) {
         ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);
@@ -109,19 +116,44 @@ void setup() {
     (void)g_idle.begin(getCpuFrequencyMhz());
 
     if (!g_pipe.begin()) { halt("could not create the frame pipe queues"); }
-
-    // The consumer starts first, so that the very first published frame — the
-    // on-connect snapshot — is already being drained when it lands, and the log
-    // shows the Stale->Live transition rather than joining after it.
-    if (!g_console.start()) { halt("could not start the console task on core 1"); }
     if (!g_feed.start()) { halt("could not start the feed task on core 0"); }
 
-    if (!g_transport.connect_wifi(kWifiSsid, kWifiPassword)) {
-        halt("wifi did not associate — check firmware/include/secrets.h");
-    }
+    // THE BOOT ORDER IS A MEMORY DECISION, AND IT IS THE ONE JUDGEMENT CALL IN
+    // THIS FILE.
+    //
+    // The HUB75 framebuffers are internal DMA-capable RAM — 64 KiB of it at
+    // eight-bit colour double buffered — and that is the same pool Wi-Fi, lwIP
+    // and mbedTLS draw from. Whoever goes first wins, so the order chooses which
+    // half degrades when the pool is tight, and the two failures are not
+    // comparable: a panel that has to drop a colour bit is cosmetic, and a TLS
+    // handshake that cannot allocate is a dead object.
+    //
+    // So Wi-Fi associates first and the panel sizes itself against what is
+    // actually left (panel.cpp measures rather than assumes), while the
+    // WebSocket client — the part that allocates a TLS context per handshake for
+    // the rest of the run — comes up last, behind Panel::begin()'s deliberately
+    // generous reserve.
+    //
+    // Panel::begin() runs whether or not Wi-Fi came up, and BEFORE the halt
+    // below, so a board with a bad secrets.h shows an honest grey RESYNC frame
+    // rather than a dark panel that reads as "powered off" (invariant #5).
+    const bool wifi_up = g_transport.connect_wifi(kWifiSsid, kWifiPassword);
+
+    // Not fatal. A board that cannot light a panel still runs the feed and still
+    // prints the whole acceptance log — the same honest degradation the idle
+    // probe takes.
+    (void)g_panel.begin();
+
+    // The consumer starts once the panel exists, so its first act is to paint
+    // the boot frame; it starts before the socket so the very first published
+    // frame — the on-connect snapshot — is already being drained when it lands,
+    // and the log shows the Stale->Live transition rather than joining after it.
+    if (!g_render.start()) { halt("could not start the render task on core 1"); }
+
+    if (!wifi_up) { halt("wifi did not associate — check firmware/include/secrets.h"); }
     if (!g_transport.start()) { halt("websocket client would not start"); }
 
-    ESP_LOGI(kTag, "setup complete; feed on core 0, console on core 1");
+    ESP_LOGI(kTag, "setup complete; feed on core 0, render + panel on core 1");
 }
 
 void loop() {
