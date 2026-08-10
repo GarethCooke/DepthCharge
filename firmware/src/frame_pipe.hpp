@@ -45,6 +45,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
+#include "gap_histogram.hpp"
+
 namespace depthcharge::fw {
 
 // The largest WebSocket message we will reassemble.
@@ -94,6 +96,18 @@ inline constexpr std::size_t kFrameCapacity = 16 * 1024;
 // it works (190 multi-chunk messages, zero parse errors).
 inline constexpr std::size_t kFrameSlots = 4;
 
+// How deep the ready queue is: one entry per slot, plus two.
+//
+// The two are headroom for status events. A Connected/Disconnected that failed
+// to enqueue would be an outage the book never hears about, which is the one
+// failure invariant #5 does not tolerate, so it must always be possible to post
+// one even with every slot in flight.
+//
+// Named because the console prints the backlog against it, and a queue depth
+// that is `kFrameSlots + 2` in one file and `kFrameSlots + 2` in another is one
+// edit away from a log line that reports a fraction of the wrong denominator.
+inline constexpr std::size_t kReadyQueueDepth = kFrameSlots + 2;
+
 // What the feed task receives. Frame data and connection state travel the same
 // queue on purpose: they must be handled in the order they happened, or a Gap
 // could overtake the last frame before it and the book would go stale over data
@@ -108,6 +122,12 @@ struct FeedMessage {
     Kind kind = Kind::Frame;
     std::uint8_t slot = 0;
     std::uint32_t len = 0;
+    // When this message finished arriving off the socket, stamped on the
+    // client's task. It rides the queue rather than being looked up because the
+    // gap this firmware is hunting is precisely the interval between here and
+    // the feed task reading it, and a timestamp taken on the reading side
+    // cannot measure the wait it is inside.
+    std::int64_t arrival_us = 0;
 };
 
 // Counters for things that can only go wrong on the transport side. All of them
@@ -134,6 +154,21 @@ struct FramePipeStats {
     std::uint32_t largest_message = 0;    // vs kFrameCapacity — is 16 KiB still enough?
     std::uint32_t smallest_message = 0;   // 0 until the first message
     std::uint32_t chunks = 0;             // DATA events accepted; /messages = chunks per frame
+
+    // THE ARRIVAL HALF OF THE ARRIVAL-VS-EVENT SPLIT.
+    //
+    // Inter-arrival gaps between whole messages, measured where the bytes land
+    // rather than where they are consumed. This is the histogram that decides
+    // which half of the board the 2026-08 stall lives in, and the reading is
+    // blunt: a >1 s bucket that fills HERE means the bytes stopped coming —
+    // Wi-Fi, TLS, the socket, the server's egress to this client. A >1 s bucket
+    // that fills only in FeedTask::Stats::event_gaps, with this one clean, means
+    // the bytes arrived and something on the board sat on them.
+    //
+    // `messages_arrived` counts every whole message including those dropped for
+    // want of a slot, so it is deliberately >= frames_published.
+    std::uint32_t messages_arrived = 0;
+    GapHistogram arrival_gaps{};
 };
 
 class FramePipe {
@@ -154,7 +189,14 @@ public:
 
     // Hand a completed message to the feed task. Ownership passes on success; on
     // failure the slot is returned to the free list and `queue_full` counted.
-    bool publish(std::uint8_t slot, std::uint32_t len) noexcept;
+    // `arrival_us` travels with it so the feed task can price its own lateness.
+    bool publish(std::uint8_t slot, std::uint32_t len, std::int64_t arrival_us) noexcept;
+
+    // A whole message finished arriving, whether or not a slot could be found
+    // for it. This is the only writer of the arrival histogram and it runs on
+    // the WebSocket client's task — the same single writer that owns every other
+    // counter in FramePipeStats.
+    void note_arrival(std::int64_t at_us) noexcept;
 
     // Give a slot back without publishing (message abandoned or oversize).
     void release(std::uint8_t slot) noexcept;
@@ -180,6 +222,18 @@ public:
     // Return a parsed slot to the free list.
     void recycle(std::uint8_t slot) noexcept;
 
+    // How many complete messages are queued for the feed task right now.
+    //
+    // A direct instrument for one of the three candidates: if the feed task is
+    // being starved on Core 0, work piles up HERE first and the slot pool empties
+    // second. A backlog that never exceeds 1 while the event histogram shows
+    // seconds of silence rules Core-0 starvation out, which is worth as much as
+    // ruling it in.
+    std::uint32_t ready_waiting() const noexcept {
+        return (ready_q_ == nullptr) ? 0u
+                                     : static_cast<std::uint32_t>(uxQueueMessagesWaiting(ready_q_));
+    }
+
     // --- diagnostics --------------------------------------------------------
     const FramePipeStats& stats() const noexcept { return stats_; }
 
@@ -196,6 +250,11 @@ private:
     // it; the counters are diagnostics and a torn read of one costs a wrong log
     // line, not a wrong ladder.
     FramePipeStats stats_{};
+
+    // The previous message's arrival instant, so note_arrival() can difference
+    // it. Zero until the first message, which is why the first arrival records
+    // no gap rather than a gap measured from boot.
+    std::int64_t last_arrival_us_ = 0;
 };
 
 }  // namespace depthcharge::fw

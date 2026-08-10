@@ -35,6 +35,28 @@ namespace depthcharge::fw {
 // brief's "one panel, one ticker, one venue"). Multi-ticker is M7.
 inline constexpr char kAnvilUri[] = "wss://anvil.garethcooke.com/ws?ticker=101";
 
+// Wi-Fi modem sleep: OFF here, ON in the `depthcharge-ps` build environment.
+//
+// This is a knob rather than a constant because it is the first experiment run
+// through the arrival-vs-event instrument (strain 12), and an experiment needs
+// both arms buildable without editing a line. `pio run -e depthcharge` is the
+// baseline; `pio run -e depthcharge-ps` is the same firmware with modem sleep
+// left at the Arduino default.
+//
+// The default is 0 — power save OFF — and has been since the stage C draft,
+// which matters for how the result must be read: the M3 characterisation brief
+// expected power save to be default-on under Arduino, and it IS (Arduino-ESP32
+// 2.0.14 initialises `_sleepEnabled` to `WIFI_PS_MIN_MODEM` on every target but
+// the S2), but this firmware has always turned it off in connect_wifi(). So the
+// experiment is not "does turning it off help" — it is "was turning it off ever
+// taking effect, and does turning it back ON reproduce the stall", which is the
+// same fork answered from the other side and needs no assumption about which
+// call wins. The readback in connect_wifi() removes the assumption entirely.
+#ifndef DC_WIFI_POWER_SAVE
+#define DC_WIFI_POWER_SAVE 0
+#endif
+inline constexpr bool kWifiPowerSave = (DC_WIFI_POWER_SAVE != 0);
+
 // The client's own RX buffer, deliberately smaller than an Anvil book frame.
 //
 // It could be set past 8,726 bytes so that most messages arrive in a single

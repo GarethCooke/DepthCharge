@@ -361,8 +361,8 @@
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status amber">in progress <b>M3 — live Anvil on the panel · A and B done, C feed proven on the board, acceptance pending</b></span>
-    <span class="status">first-party C++ <b>~5,000 lines</b></span>
-    <span class="status">drawn from source at <b>a56ccd6</b></span>
+    <span class="status">first-party C++ <b>~10,900 lines</b></span>
+    <span class="status">drawn from source at <b>a0e8e31</b></span>
   </div>
 </header>
 
@@ -1286,6 +1286,50 @@ sequenceDiagram
     stage C's scope was firmware.
   </p>
 
+  <h3>What the board can now say about its own silence</h3>
+  <p>
+    The re-measurement above ends with the board holding a number the desk cannot reproduce —
+    a 2,461 ms silence with the socket up — and no way to say anything more about it.
+    <code>worst_gap</code> is a single high-water mark, and a maximum is the one sample
+    guaranteed to be an outlier: it cannot distinguish one reconnect artefact from a
+    population of 1.2 s stalls, and it cannot say whether the hole is in the bytes arriving
+    or in the pipeline that consumes them. Those have different causes and different fixes,
+    so the next firmware session's output is an instrument rather than a patch.
+  </p>
+  <p>
+    Two clocks, two histograms, one reading. Every whole WebSocket message is stamped inside
+    the client's callback as it finishes arriving, and again when the event it carries
+    reaches the book. <code>FramePipeStats::arrival_gaps</code> buckets the first series and
+    <code>FeedTask::Stats::event_gaps</code> the second, on shared edges whose 1000 ms
+    boundary <em>is</em> the watchdog threshold — so the count above that edge is literally
+    the number of occasions the panel had grounds to grey.
+    <code>arrival_to_event</code> bridges them for a single message, with
+    <code>worst_queue_wait_us</code> splitting off the part spent waiting for the feed task
+    to be scheduled at all.
+  </p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th><code>arrival_gaps</code> &gt;1 s</th><th><code>event_gaps</code> &gt;1 s</th><th>Implicates</th></tr></thead>
+      <tbody>
+        <tr><td>fills</td><td>fills</td><td>the transport — the bytes stopped</td></tr>
+        <tr><td>clean</td><td>fills</td><td>the board — the bytes arrived and the pipeline sat on them</td></tr>
+        <tr><td>clean</td><td>fills, with seconds of queue wait</td><td>scheduling: Core-0 starvation or a blocking call</td></tr>
+        <tr><td>clean</td><td>fills, with a small queue wait</td><td>the work itself — parser or book</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The load-bearing detail is on the arrival side and it is one line of ordering: a message
+    dropped for want of a free slot is counted as an arrival <em>anyway</em>. Slot exhaustion
+    is caused by the feed task being slow, so an arrival series that recorded only the
+    messages the board managed to keep would print feed-side starvation as a hole in the
+    <em>network</em> — the exact misreading the split exists to prevent. That rule lives in
+    <code>FrameReassembler::finish()</code>, which is ESP-IDF-free and therefore host-tested
+    beside the bucketing arithmetic; the bucket boundaries are pinned by a test rather than
+    by a comment, because an instrument that is wrong by one column does not fail, it sends a
+    bench session after the wrong candidate.
+  </p>
+
   <h3>The other failure, which deliberately does nothing</h3>
 
   <figure>
@@ -1866,13 +1910,32 @@ classDiagram
       place to look.
     </p>
     <p>
-      The instrumentation is the real gap. <code>worst_gap</code> is a single high-water mark
-      with no distribution behind it, so the board can report that it saw 2,461 ms but not
-      how often, nor whether the hole is in arrival or in decode, nor whether the feed task
-      was starved or the socket was quiet. Every question the desk answers in one command is
-      currently unanswerable on the device that has the problem.
+      The instrumentation was the real gap, and it is now closed. <code>worst_gap</code> is a
+      single high-water mark with no distribution behind it, so the board could report that
+      it saw 2,461 ms but not how often, nor whether the hole was in arrival or in decode,
+      nor whether the feed task was starved or the socket was quiet. Every question the desk
+      answers in one command was unanswerable on the device that has the problem. As of
+      2026-08-09 the board carries the arrival and event gap histograms, the
+      arrival→event latency and the queue-wait split described in
+      <a href="#outage">§05</a> — 128 bytes of static storage, allocation-free, and the
+      bucketing host-tested. <b>The measurement itself is still owed: it takes a ≥10-minute
+      bench run with no deliberate disconnects, which is the owner's, and until then this
+      strain point is instrumented but not diagnosed.</b>
     </p>
-    <p class="verdict">Resolves: <b>next firmware session, before Stage D — a bucketed gap histogram plus arrival-vs-event counters in <code>FeedTask::Stats</code>, then one bench run. Candidates to discriminate between, in the order the evidence favours them: the 2.5 s blocking <code>esp_websocket_client_stop()</code> already measured on loopTask; <code>esp_event</code> dispatch backing up behind three DATA events per book frame at a 4 KiB RX buffer; and feed-task starvation on Core 0, which also hosts the Wi-Fi and lwIP tasks at higher priority. Stage D adds a render task to that core's neighbour and will only make it harder to see</b></p>
+    <p>
+      One candidate can already be narrowed without the board, and it is the one the
+      characterisation brief expected to be cheapest: Wi-Fi modem sleep. Arduino-ESP32 2.0.14
+      does default it on for the S3 (<code>_sleepEnabled = WIFI_PS_MIN_MODEM</code>), but
+      this firmware has called <code>WiFi.setSleep(false)</code> since the stage C draft, and
+      after <code>WiFi.mode()</code>, which the shipped source says is the order that makes
+      it take effect. So the experiment is not "does turning it off help" — it is whether
+      turning it off was ever taking effect, and whether turning it back <em>on</em>
+      reproduces the stall. Both arms are buildable (<code>pio run -e depthcharge</code> /
+      <code>-e depthcharge-ps</code>) and the mode is read back out of the driver with
+      <code>esp_wifi_get_ps()</code> rather than echoed from what was asked for, so the answer
+      cannot agree with the code by construction.
+    </p>
+    <p class="verdict">Resolves: <b>instrument landed 2026-08-09, verdict pending one ≥10-minute bench run with <code>sock_gaps=0</code> — the arrival-vs-event split then ranks the candidates rather than the prior order doing it. Those candidates, unchanged until data moves them: the 2.5 s blocking <code>esp_websocket_client_stop()</code> already measured on loopTask; <code>esp_event</code> dispatch backing up behind three DATA events per book frame at a 4 KiB RX buffer; feed-task starvation on Core 0, which also hosts the Wi-Fi and lwIP tasks at higher priority; and modem sleep, which shows up arrival-side. Stage D adds a render task to that core's neighbour and will only make it harder to see</b></p>
   </div>
 </section>
 
@@ -1908,24 +1971,25 @@ classDiagram
 
   <h3>Known M3 edits, already queued</h3>
   <ul>
-    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 40.7%, flash 834 KB) and has now <em>run</em> — the first bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. The boxes stay dashed until the pull-the-Wi-Fi acceptance is captured too, and the stage D render task is still entirely hypothetical.</li>
+    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 40.8%, flash 836 KB) and has now <em>run</em> — the first bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. The boxes stay dashed until the pull-the-Wi-Fi acceptance is captured too, and the stage D render task is still entirely hypothetical.</li>
     <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
-    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement (the board stalls for seconds and only the panel can see it); 7 should close at stage D; 1 and 3 will not.</li>
-    <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12).</li>
+    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement (the board stalls for seconds and only the panel can see it) and <em>half-closed</em> the same day — instrumented, not yet diagnosed, because the diagnosis needs a bench run; 7 should close at stage D; 1 and 3 will not.</li>
+    <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12). It has since gained the arrival-vs-event split as well; when the stall is found and fixed, the histograms stay (they are how the next one gets found) but the verdict table becomes history.</li>
   </ul>
 </section>
 
 <footer>
-  Drawn from source at <b>bae1c49</b> plus M3 stage C · <code>wc -l</code>: engine 2,449
-  lines (958 of them the streaming parser) · harness 5,668 (3,955 of it tests) · firmware
-  1,615 · plus 961 lines of Python capture and analysis tooling in <code>tools/</code>.
+  Drawn from source at <b>a0e8e31</b> plus the M3 stall instrument · <code>wc -l</code>:
+  engine 2,449 lines (958 of them the streaming parser) · harness 6,098 (4,385 of it tests) ·
+  firmware 2,379 · plus 962 lines of Python capture and analysis tooling in
+  <code>tools/</code>.
   Revisions before stage B counted with a tool that dropped unterminated final lines, so those
   figures are not comparable with these.<br>
-  Verified against a green <code>host-mingw</code> workflow run: 11/11 ctest, 99/99 doctest in
-  <code>dc_tests</code> (9,126 assertions) and 45/45 in <code>dc_tests_streaming</code>
+  Verified against a green <code>host-mingw</code> workflow run: 11/11 ctest, 117/117 doctest
+  in <code>dc_tests</code> (9,780 assertions) and 45/45 in <code>dc_tests_streaming</code>
   (704), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1, and a clean
-  <code>pio run</code> of <code>firmware/</code> (RAM 40.7%, flash 833,621 B). Every
+  <code>pio run</code> of both firmware environments (RAM 40.8%, flash 835,793 B). Every
   <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the parser's
   <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.
   The firmware's <b>feed half has now run on hardware</b> (2026-08-09: connect → first snapshot

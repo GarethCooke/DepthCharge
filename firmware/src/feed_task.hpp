@@ -94,6 +94,41 @@ public:
         std::uint32_t connects = 0;
         std::uint64_t worst_gap_us = 0;     // largest observed inter-frame silence
         std::uint32_t worst_parse_us = 0;   // slowest frame -> publish, whole chain
+
+        // THE EVENT HALF OF THE ARRIVAL-VS-EVENT SPLIT (strain 12).
+        //
+        // `event_gaps` is the distribution behind `worst_gap_us`: the same
+        // quantity the RX watchdog measures — silence between events reaching
+        // the book — bucketed, so the bench can finally say how OFTEN a hole
+        // long enough to grey the panel happens, and how big the typical one is.
+        // Its >1 s buckets against FramePipeStats::arrival_gaps' >1 s buckets
+        // is the reading the whole instrument exists for.
+        //
+        // Its >1 s count is `watchdog_gaps + socket_gaps` and not `watchdog_gaps`
+        // alone: a hole is recorded when the next event lands, whatever ended
+        // it, so an outage the socket reported (which raises no watchdog gap)
+        // still leaves its silence here. On the steady-state run this instrument
+        // was built for — `sock_gaps=0`, `connects=1` — the two agree, minus any
+        // hole still open when the block is printed.
+        //
+        // `arrival_to_event` closes the loop for a single message: the interval
+        // from the bytes being complete on the socket to the event they carry
+        // reaching the book. Arrival smooth + this large = the stall is ours.
+        //
+        // The two scalars beside it split that latency where the causes differ.
+        // `worst_queue_wait_us` is time the message sat in the pipe before this
+        // task looked at it, which is scheduling — Core 0 starvation, or a
+        // higher-priority Wi-Fi/lwIP task holding the CPU. `worst_parse_us`
+        // above is the work itself. A second of the first and microseconds of
+        // the second name a different candidate than the reverse.
+        GapHistogram event_gaps{};
+        LatencyHistogram arrival_to_event{};
+        std::uint32_t worst_queue_wait_us = 0;
+        // The most messages ever left queued BEHIND the one being processed —
+        // sampled after the dequeue, so it is one below the peak depth and can
+        // never reach kReadyQueueDepth. Zero throughout means the feed task was
+        // always ahead of the wire.
+        std::uint32_t max_ready_backlog = 0;
     };
 
     FeedTask(FramePipe& pipe, SnapshotChannel& channel, const SymbolSpec& symbol) noexcept

@@ -1133,7 +1133,7 @@ replay registrations for the new trace), 99/99 doctest in `dc_tests` (9,126 asse
 confirm the brief asked for does not apply — `wd_gaps` will not drop to ~0 until the stall is
 found, and that is the point.
 
-**Exact next step: the stall, before Stage D.** Add a bucketed gap histogram plus
+**Exact next step (superseded by the next entry): the stall, before Stage D.** Add a bucketed gap histogram plus
 arrival-vs-event counters to `FeedTask::Stats` (`worst_gap` is a high-water mark with no
 distribution behind it, so the board can say it saw 2,461 ms but not how often, nor whether
 the hole was in arrival or in decode), then one bench run. Candidates in the order the
@@ -1142,3 +1142,126 @@ loopTask; `esp_event` dispatch backing up behind three DATA events per book fram
 RX buffer; feed-task starvation on Core 0, which also hosts the Wi-Fi and lwIP tasks at higher
 priority. The `ws_supervisor.hpp` host-test extraction is still open behind it, and the
 histogram work touches the same file, so they may merge. Then Stage D.
+
+### 2026-08-09 · Opus 5 · the stall is instrumented; the verdict is one bench run away
+
+**Delivered: the instrument, not the diagnosis, and the split between those two is the honest
+state of this entry.** Everything that can be built and proven on the desk is done and green;
+the measurement it exists to take needs the board flashed for ten minutes and is the owner's.
+Nothing below has run on hardware.
+
+**What the board now prints, every 10 s.** Three lines beside the existing block (illustrative
+shape, not measured):
+
+```text
+-- arrive : <100:1180 100-250:88 250-500:9 500-1k:1 1-1.5k:0 1.5-2.5k:0 >2.5k:0 | n=1278 worst=612 ms >1s=0 mode=-
+-- event  : <100:1100 100-250:96 250-500:12 500-1k:3 1-1.5k:5 1.5-2.5k:2 >2.5k:0 | n=1218 worst=2461 ms >1s=7 mode=1-1.5k
+-- a->e   : <1:900 1-5:210 5-25:104 25-100:3 100-500:1 0.5-1k:0 >1k:0 | n=1218 worst=88 ms | qwait=41230 us behind=2/6 msgs_in=1279
+```
+
+`arrive` is inter-arrival gaps between whole messages, stamped inside the WebSocket client's
+callback; `event` is the identical quantity the RX watchdog greys on, bucketed; `a->e` is one
+message's arrival to the book having moved, with `qwait` splitting off the part spent waiting
+to be scheduled at all. The 1000 ms bucket edge **is** `kRxWatchdogMs`, so `>1s` is literally a
+count of the occasions the panel had grounds to grey — the number `worst_gap` could never give.
+
+**The one design decision worth arguing with: a message dropped for want of a slot is counted
+as an arrival anyway.** It is one line of ordering in `FrameReassembler::finish()` and it is
+the difference between an instrument and a misleading one. Slot exhaustion is *caused* by the
+feed task being slow, so an arrival series recording only the messages the board managed to
+keep would print feed-side starvation as a hole in the *network* — the exact misreading the
+split exists to prevent. Pinned by a host test ("a message dropped for want of a slot still
+counts as an arrival"), because it is invisible on inspection and reads as a bug.
+
+**Both histograms have exactly one writer**, which is what lets them be lock-free 32-bit
+counters read from Core 1 with no synchronisation. `arrival_gaps` lives in `FramePipeStats`
+and is written only on the WebSocket client's task, which already owns every other counter in
+that struct; `event_gaps`, `arrival_to_event`, `worst_queue_wait_us` and `max_ready_backlog`
+live in `FeedTask::Stats` and are written only on Core 0. A stale read costs one wrong log
+line; nothing branches on them and no test gates on them, as the brief required.
+
+**Host-first, and it earned its keep immediately.** `gap_histogram.hpp` is ESP-IDF-free like
+`frame_reassembler.hpp`, so the bucketing is `dc_tests`' problem rather than the bench's — the
+failure mode here is not a crash but a plausible distribution with a label one column out of
+step, which would send an evening after the wrong candidate and could otherwise only be caught
+by measuring the same thing twice. 18 new test cases; `dc_tests` 99 → **117 cases**, 9,126 →
+**9,780 assertions**, ctest **11/11**. The first draft of the truncation test asserted a
+property `render` never promised — that the last byte of the buffer is untouched, when
+`snprintf` is entitled to put the NUL there — and it went red rather than being reasoned
+about; it is now a guard-region test that checks the real property.
+
+**Wi-Fi power save: the brief's expectation was right about Arduino and wrong about this
+firmware, so the experiment changes shape.** Arduino-ESP32 2.0.14 does default modem sleep on
+for the S3 (`_sleepEnabled = WIFI_PS_MIN_MODEM`; only the S2 is exempt) — but
+`WsTransport::connect_wifi()` has called `WiFi.setSleep(false)` since the stage C draft, and
+calls it *after* `WiFi.mode()`, which the shipped `WiFiGeneric.cpp` says is the order that
+makes it take effect (`setSleep` forwards to `esp_wifi_set_ps` only when the mode already has
+`WIFI_MODE_STA`, and the Arduino event handler re-applies the cached value on `STA_START`, so
+association cannot undo it either). The arms are therefore not "off vs default" but **"off vs
+deliberately on"**, which answers the same fork from the other side and needs no assumption
+about which call wins. Both are buildable — `pio run -e depthcharge` and `-e depthcharge-ps`
+(`-D DC_WIFI_POWER_SAVE=1`) — and the mode is read back out of the driver with
+`esp_wifi_get_ps()` rather than echoed from what we asked for, so the log line cannot agree
+with the code by construction. **Verified the two arms really are two builds** (the `.bin`
+hashes differ) rather than trusting the `${env.build_flags}` interpolation.
+
+**Cost, measured by building the tree with and without the change rather than estimated.**
+RAM 133,512 → **133,640 B** (+128, 40.7% → 40.8%); flash 834,033 → **835,793 B** (+1,760,
+12.7% → 12.8%). The 128 bytes are exactly what the structs say: 40 in `FramePipeStats` (one
+histogram plus `messages_arrived`), 80 in `FeedTask::Stats` (two histograms plus two scalars),
+8 for `last_arrival_us_`. `FeedMessage` grew 8 bytes for the arrival stamp, which is 48 bytes
+more *heap* in the ready queue, allocated once in `begin()` — not steady state, so invariant
+#7 is untouched. Per sample the instrument costs six comparisons and two increments.
+
+**Review found five things and all five are fixed.** A saturating-clamp idiom written twice
+(now `clamp_us_to_u32`, shared and tested — what it guards against is a 71-minute gap reported
+as a few milliseconds, the one direction a stall instrument must never be wrong in); the ready
+queue depth spelled `kFrameSlots + 2` in two files (now `kReadyQueueDepth`, so the console
+cannot print a fraction of the wrong denominator); two near-identical histogram print blocks
+(now one helper, and both gap lines gained `mode=` as a result, which is the better output
+anyway — reading them is a comparison, and a comparison between differently-shaped lines is
+one someone gets wrong at 2 a.m.); a claim that `>1s` should equal `wd_gaps`, when it is
+`wd_gaps + sock_gaps` because a hole is recorded when the next event lands whatever ended it
+(they agree only on the `sock_gaps=0` run this instrument was built for, now stated in both
+the header and the README); and `backlog` described as the queue depth when it is sampled
+*after* the dequeue and so tops out one below it (renamed `behind`). The random-walk property
+test also gained the two arrival invariants: every published message has a matching arrival
+(`arrivals` is a superset, never the reverse), and the arrival timeline never runs backwards.
+
+**NOT DONE — the three deliverables that need the board, and they are the point.** No bench
+run, so no >1 s bucket count for either power-save arm, no steady-state distribution, and
+**no verdict**. Strain 12 is updated to say *instrumented, not diagnosed*, and the candidate
+list is deliberately left in its prior order: re-ranking it without data is precisely the
+thing this task exists to stop. `firmware/README.md` carries the procedure, the verdict table,
+and the warning that `pio run -t upload` with no `-e` uploads **both** environments and the
+second one wins.
+
+**What the run must record**, so the next session ranks candidates rather than argues:
+
+1. **Baseline**, `-e depthcharge`, at least 10 minutes, no deliberate disconnects. Confirm
+   `power-save requested=OFF driver ps=0` at association, and `sock_gaps=0 connects=1` at the
+   end — the second is what makes the distribution steady-state rather than a mixture.
+2. **Contrast**, `-e depthcharge-ps`, same duration and conditions, `driver ps=1` confirmed.
+3. For each arm: the `>1s` count from **both** `arrive` and `event`, with `n` and the window
+   length so they are rates and not raw counts; `mode=`; `qwait`; `behind`; `worst_frame`.
+4. **The absence of a >2.5 s sample on a `connects=1` run is itself a result** — it says the
+   2,461 ms outlier was the reconnect's blocking `stop()` and the steady population is the
+   1–1.5 s one, which is a different bug with a different fix.
+5. Commit the log as `hardware/bench-YYYY-MM-DD-feed-stall.md`, paired with a simultaneous
+   `tools/capture_anvil.py` run from the desk as the control for "was the wire quiet".
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: **11/11 ctest**, 117/117
+doctest in `dc_tests` (9,780 assertions), 45/45 in `dc_tests_streaming` (704). Both firmware
+environments build clean, RAM 40.8%, flash 12.8%. No engine, book, `DisplaySnapshot` or golden
+change, as the brief required. DESIGN §05 gained the arrival-vs-event split and its verdict
+table; strain 12 is half-closed. No ARCHITECTURE §9 amendment: this is instrumentation behind
+existing boundaries, and the only rule in it with any reach — count the arrival before
+resolving ownership — is recorded where it is implemented and tested rather than in the
+constitution.
+
+**Exact next step: the two bench runs above, then the fix the data chooses** — and the fix is
+genuinely not chosen yet, which is the whole reason this session stopped here. The
+`ws_supervisor.hpp` host-test extraction is still open behind it, unchanged by this work
+(which touched `ws_transport.cpp` only for the arrival stamp and the power-save readback); if
+the data indicts the blocking `stop()`, that extraction and the fix become the same task. Then
+Stage D.

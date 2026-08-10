@@ -172,6 +172,7 @@ void SerialConsole::print_stats() noexcept {
              static_cast<unsigned>(f.socket_gaps), static_cast<unsigned>(f.connects),
              static_cast<unsigned>(f.worst_gap_us / 1000),
              static_cast<unsigned>(f.worst_parse_us));
+    print_distributions(f, p);
     ESP_LOGI(kTag, "-- pipe   : published=%u oversize=%u no_slot=%u qfull=%u abandoned=%u cont=%u ctrl=%u",
              static_cast<unsigned>(p.frames_published), static_cast<unsigned>(p.oversize),
              static_cast<unsigned>(p.no_slot), static_cast<unsigned>(p.queue_full),
@@ -195,6 +196,58 @@ void SerialConsole::print_stats() noexcept {
 
     print_rates(p, a.events_out);
     heap_.report("steady", frames_drawn_ - frames_at_baseline_);
+}
+
+void SerialConsole::print_distributions(const FeedTask::Stats& f,
+                                        const FramePipeStats& p) noexcept {
+    // THE THREE LINES THIS WHOLE SESSION EXISTS TO PRINT (strain 12).
+    //
+    // Read them together and in this order. `arrive` is the wire: whole
+    // messages coming off the socket, counted where they land. `event` is the
+    // ladder: the same silence the RX watchdog greys on. `a->e` is the bridge
+    // between one message's arrival and the book having moved.
+    //
+    //   >1s filling on `arrive` and on `event` together  -> transport. The bytes
+    //       stopped; Wi-Fi, TLS, the socket, or the server's egress to us.
+    //   >1s filling on `event` with `arrive` clean       -> ours. The bytes came
+    //       and the pipeline sat on them; then `a->e`, `qwait` and `backlog`
+    //       say whether it was scheduling or work.
+    //   `qwait` in seconds with `worst_frame` in millis  -> the feed task was
+    //       not running: Core-0 starvation or a blocking call on this side.
+    //
+    // Cumulative since boot, not per window — the question is "how often across
+    // the whole run", and a distribution that resets every 10 s cannot answer it
+    // for an event that happens twice a minute. The last block of a run is the
+    // total.
+    //
+    print_gap_line("arrive", p.arrival_gaps);
+    print_gap_line("event ", f.event_gaps);
+
+    // 208 bytes: seven labelled counts, the longest of which is
+    // "1.5-2.5k:4294967295". Truncation is defined and harmless, and this task
+    // has 6 KiB of stack.
+    char line[208];
+    f.arrival_to_event.render(line, sizeof line);
+    ESP_LOGI(kTag, "-- a->e   : %s | n=%u worst=%u ms | qwait=%u us behind=%u/%u msgs_in=%u",
+             line, static_cast<unsigned>(f.arrival_to_event.total()),
+             static_cast<unsigned>(f.arrival_to_event.worst_us() / 1000),
+             static_cast<unsigned>(f.worst_queue_wait_us),
+             static_cast<unsigned>(f.max_ready_backlog),
+             static_cast<unsigned>(kReadyQueueDepth),
+             static_cast<unsigned>(p.messages_arrived));
+}
+
+void SerialConsole::print_gap_line(const char* what, const GapHistogram& h) noexcept {
+    // Both gap distributions print in exactly the same shape, deliberately:
+    // reading them is a comparison, and a comparison between two lines with
+    // different columns is a comparison someone gets wrong at 2 a.m.
+    char line[208];
+    h.render(line, sizeof line);
+    ESP_LOGI(kTag, "-- %s : %s | n=%u worst=%u ms >1s=%u mode=%s",
+             what, line, static_cast<unsigned>(h.total()),
+             static_cast<unsigned>(h.worst_us() / 1000),
+             static_cast<unsigned>(h.count_from(GapScale::kFirstLong)),
+             GapHistogram::label(h.mode_from(GapScale::kFirstLong)));
 }
 
 void SerialConsole::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {

@@ -5,6 +5,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 
 #include "anvil_root_ca.hpp"
 
@@ -16,13 +17,21 @@ constexpr const char* kTag = "ws";
 bool WsTransport::connect_wifi(const char* ssid, const char* password,
                                std::uint32_t timeout_ms) noexcept {
     WiFi.mode(WIFI_STA);
-    // Modem sleep off. The default power-save mode parks the radio between DTIM
-    // beacons and can add hundreds of milliseconds of RX latency — which on a
-    // feed whose worst healthy inter-frame gap is 640 ms against a 1000 ms
+    // Modem sleep off by default. The power-save mode parks the radio between
+    // DTIM beacons and can add hundreds of milliseconds of RX latency — which on
+    // a feed whose worst healthy inter-frame gap is 391-594 ms against a 1000 ms
     // watchdog would manufacture outages that never happened. This is a
     // mains-powered desk object; the power cost is irrelevant and the latency is
     // not.
-    WiFi.setSleep(false);
+    //
+    // Called AFTER WiFi.mode() and BEFORE WiFi.begin(), which is the order that
+    // makes it stick, and that is a claim from the shipped source rather than
+    // from habit: `WiFiGenericClass::setSleep` only forwards to
+    // `esp_wifi_set_ps` when `getMode() & WIFI_MODE_STA` is already set, so
+    // calling it first would cache the preference and never apply it; and the
+    // Arduino event handler re-applies the cached value on
+    // ARDUINO_EVENT_WIFI_STA_START, so association cannot undo it either.
+    WiFi.setSleep(kWifiPowerSave);
     WiFi.begin(ssid, password);
 
     const std::uint32_t started = millis();
@@ -35,8 +44,19 @@ bool WsTransport::connect_wifi(const char* ssid, const char* password,
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    ESP_LOGI(kTag, "wifi up: ip=%s rssi=%d dBm", WiFi.localIP().toString().c_str(),
-             static_cast<int>(WiFi.RSSI()));
+    // Read the mode back OUT OF THE DRIVER rather than reporting what we asked
+    // for. `WiFi.getSleep()` would only return Arduino's cached preference, and
+    // the whole value of this line is that it cannot agree with us by
+    // construction: if a bench run shows arrival-side holes with `ps=0` printed
+    // here, power save is excluded as a candidate on evidence rather than on the
+    // presence of a `setSleep` call three lines up.
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    const esp_err_t ps_err = esp_wifi_get_ps(&ps);
+    ESP_LOGI(kTag, "wifi up: ip=%s rssi=%d dBm | power-save requested=%s driver ps=%d%s"
+                   " (0=NONE 1=MIN_MODEM 2=MAX_MODEM)",
+             WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()),
+             kWifiPowerSave ? "ON" : "OFF", static_cast<int>(ps),
+             (ps_err == ESP_OK) ? "" : " (read failed)");
     return true;
 }
 
@@ -247,6 +267,12 @@ void WsTransport::on_event(std::int32_t id, esp_websocket_event_data_t* data) no
                 (data->payload_len > 0) ? static_cast<std::uint32_t>(data->payload_len) : 0u;
             chunk.data = data->data_ptr;
             chunk.data_len = (data->data_len > 0) ? static_cast<std::uint32_t>(data->data_len) : 0u;
+            // The arrival stamp, taken as far upstream as this firmware can
+            // reach: inside the client's own callback, before anything of ours
+            // has had a chance to be late. Everything after this point is on our
+            // side of the line, which is what makes the arrival-vs-event split a
+            // real split rather than two views of the same delay.
+            chunk.arrival_us = esp_timer_get_time();
             reassembler_.on_chunk(chunk);
             break;
         }

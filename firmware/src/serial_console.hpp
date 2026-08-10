@@ -55,6 +55,13 @@ private:
     void draw(const DisplaySnapshot& snap) noexcept;
     void print_stats() noexcept;
 
+    // The arrival / event / latency distributions — M3's stall instrument.
+    // Separate from print_stats() because it is three lines with a shared
+    // buffer and a shared reading, and because the block is meant to be
+    // greppable out of a bench log as a unit.
+    void print_distributions(const FeedTask::Stats& f, const FramePipeStats& p) noexcept;
+    void print_gap_line(const char* what, const GapHistogram& h) noexcept;
+
     // Per-window rates, derived from the running counters. Separate from
     // print_stats() because it is the only part that carries state across calls.
     void print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept;

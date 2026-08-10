@@ -65,6 +65,19 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     const std::int64_t now = esp_timer_get_time();
     ++stats_.frames_in;
 
+    // How long this message waited between being complete on the socket and
+    // this task looking at it, and how much else was still queued behind it.
+    // Both are sampled before any work, because both are measurements OF the
+    // wait — taken afterwards they would include the parse and stop meaning
+    // "scheduling".
+    if (msg.arrival_us != 0 && now > msg.arrival_us) {
+        const std::uint32_t waited =
+            clamp_us_to_u32(static_cast<std::uint64_t>(now - msg.arrival_us));
+        if (waited > stats_.worst_queue_wait_us) { stats_.worst_queue_wait_us = waited; }
+    }
+    const std::uint32_t backlog = pipe_.ready_waiting();
+    if (backlog > stats_.max_ready_backlog) { stats_.max_ready_backlog = backlog; }
+
     // Whether this frame reaches the book is the question the watchdog cares
     // about, so ask the adapter rather than assuming. Bytes arriving is not the
     // same as the ladder advancing — see the note on kRxWatchdogMs.
@@ -80,6 +93,8 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // use-after-free the ladder would render.
     pipe_.recycle(msg.slot);
 
+    const std::int64_t done = esp_timer_get_time();
+
     if (adapter_.stats().events_out != events_before) {
         // Measured from the previous EVENT and not gated on `watching_`, so the
         // first event after an outage records the whole hole. Gating it was a
@@ -88,13 +103,26 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
         if (last_event_us_ != 0) {
             const std::uint64_t gap = static_cast<std::uint64_t>(now - last_event_us_);
             if (gap > stats_.worst_gap_us) { stats_.worst_gap_us = gap; }
+            // The distribution behind that maximum. Same sample, same instant,
+            // same rule as the watchdog — so the >1 s buckets are literally a
+            // count of the occasions the panel had grounds to grey, and they
+            // must agree with `watchdog_gaps` up to the one hole that is still
+            // open when the log is read.
+            stats_.event_gaps.add(gap);
+        }
+        // Arrival -> event for this message: everything between the bytes being
+        // complete on the socket and the book having moved. Recorded only when
+        // an event actually came out, so it prices the path the panel depends
+        // on rather than the cost of discarding a `summary`.
+        if (msg.arrival_us != 0 && done > msg.arrival_us) {
+            stats_.arrival_to_event.add(static_cast<std::uint64_t>(done - msg.arrival_us));
         }
         last_event_us_ = now;
         watching_ = true;
         gap_raised_ = false;
     }
 
-    const std::uint32_t elapsed = static_cast<std::uint32_t>(esp_timer_get_time() - now);
+    const std::uint32_t elapsed = static_cast<std::uint32_t>(done - now);
     if (elapsed > stats_.worst_parse_us) { stats_.worst_parse_us = elapsed; }
 }
 

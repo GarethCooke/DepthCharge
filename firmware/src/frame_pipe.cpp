@@ -5,11 +5,7 @@ namespace depthcharge::fw {
 
 bool FramePipe::begin() noexcept {
     free_q_ = xQueueCreate(kFrameSlots, sizeof(std::uint8_t));
-    // Deep enough that a Connected/Disconnected can always be posted even with
-    // every slot in flight: a status event that failed to enqueue would be an
-    // outage the book never hears about, which is the one failure invariant #5
-    // does not tolerate.
-    ready_q_ = xQueueCreate(kFrameSlots + 2, sizeof(FeedMessage));
+    ready_q_ = xQueueCreate(kReadyQueueDepth, sizeof(FeedMessage));
     if (free_q_ == nullptr || ready_q_ == nullptr) { return false; }
 
     for (std::uint8_t i = 0; i < kFrameSlots; ++i) {
@@ -28,11 +24,20 @@ bool FramePipe::acquire(std::uint8_t& slot) noexcept {
     return true;
 }
 
-bool FramePipe::publish(std::uint8_t slot, std::uint32_t len) noexcept {
+void FramePipe::note_arrival(std::int64_t at_us) noexcept {
+    ++stats_.messages_arrived;
+    if (last_arrival_us_ != 0 && at_us > last_arrival_us_) {
+        stats_.arrival_gaps.add(static_cast<std::uint64_t>(at_us - last_arrival_us_));
+    }
+    last_arrival_us_ = at_us;
+}
+
+bool FramePipe::publish(std::uint8_t slot, std::uint32_t len, std::int64_t arrival_us) noexcept {
     FeedMessage msg;
     msg.kind = FeedMessage::Kind::Frame;
     msg.slot = slot;
     msg.len = len;
+    msg.arrival_us = arrival_us;
     if (xQueueSend(ready_q_, &msg, 0) != pdTRUE) {
         ++stats_.queue_full;
         release(slot);
