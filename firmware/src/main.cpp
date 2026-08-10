@@ -27,6 +27,7 @@
 
 #include "esp_log.h"
 
+#include "core_idle.hpp"
 #include "feed_task.hpp"
 #include "frame_pipe.hpp"
 #include "heap_probe.hpp"
@@ -51,12 +52,18 @@ namespace {
     // ~54 KiB of the S3's 512 KB internal SRAM, all placed before the first packet
     // arrives. Nothing below this line allocates once the tasks are running, which
     // is what invariant #7 asks of the feed path and what heap_probe measures.
+    // The two instruments the stall characterisation added. Neither is in the
+    // feed path: `g_idle` is written by the two idle tasks and `g_link` by
+    // loopTask, and the feed task and console only read them.
+    CoreIdleProbe g_idle;
+    LinkQuality g_link;
+
     FramePipe g_pipe;
     SnapshotChannel g_channel;
-    FeedTask g_feed(g_pipe, g_channel, anvil::kAnvilTicker101);
-    WsTransport g_transport(g_pipe);
+    FeedTask g_feed(g_pipe, g_channel, anvil::kAnvilTicker101, g_idle, g_link);
+    WsTransport g_transport(g_pipe, g_link);
     HeapProbe g_heap;
-    SerialConsole g_console(g_channel, g_feed, g_pipe, g_heap);
+    SerialConsole g_console(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link);
 
     [[noreturn]] void halt(const char* what) {
         ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);
@@ -89,6 +96,17 @@ void setup() {
     ESP_LOGI(kTag, "heap at boot: free=%u largest=%u (internal)",
         static_cast<unsigned>(boot.free_internal),
         static_cast<unsigned>(boot.largest_block_internal));
+
+    // Before the tasks, so the idle counters are already running when the first
+    // event lands and the first inter-event window is measured like every other
+    // one. The frequency is read from the running system rather than assumed:
+    // it scales every idle percentage, and a wrong constant would change none of
+    // their shape — the least detectable kind of wrong.
+    //
+    // Not fatal if it fails. A board that cannot register an idle hook can still
+    // do everything stage C proves; it just reports every hole verdict as
+    // unknown, which is the honest degradation.
+    (void)g_idle.begin(getCpuFrequencyMhz());
 
     if (!g_pipe.begin()) { halt("could not create the frame pipe queues"); }
 

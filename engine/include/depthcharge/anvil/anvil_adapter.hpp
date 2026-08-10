@@ -70,6 +70,39 @@ public:
     const Stats& stats() const noexcept { return stats_; }
     Seq next_seq() const noexcept { return next_seq_; }
 
+    // The last wire `seq` seen, for DIAGNOSTICS ONLY — it is already tracked for
+    // `wire_seq_backward` and this exposes it rather than adding state.
+    //
+    // Read the warning in the header comment before using it for anything: this
+    // is Anvil's global counter, shared across every ticker and frame type, so
+    // it is not this stream's sequence and nothing may order, dedupe or gap-test
+    // on it. What it is good for is a CLOCK — its rate is Anvil's whole-engine
+    // publish rate, so comparing the step across a silence against that rate
+    // says whether the frame that ended the silence is fresh (the middle was
+    // never sent to us) or stale (it was sent and arrived late). That is the M3
+    // stall characterisation's shed-versus-delayed discriminator, and it is the
+    // only reason this accessor exists.
+    std::int64_t last_wire_seq() const noexcept { return last_wire_seq_; }
+    bool have_wire_seq() const noexcept { return have_wire_seq_; }
+
+    // The status the last on_frame() got back from the parse seam, for
+    // DIAGNOSTICS ONLY — it is already computed on every frame and this exposes
+    // it rather than adding state.
+    //
+    // It exists because `parse_errors` is a bucket, not a diagnosis. NotJson,
+    // MissingType and BadShape all land in it, and they name three unrelated
+    // problems: a buffer that is not a JSON document at all (which on a real
+    // socket means truncated or spliced bytes, i.e. the transport), an object
+    // that is JSON but carries no `type` (a frame shape this client does not
+    // know), and a known type whose payload is wrong (a wire change). A caller
+    // that wants to say WHICH — the firmware's reject log does, so a bench run
+    // can name the cause instead of counting occurrences — needs this and
+    // nothing else.
+    //
+    // Valid only immediately after on_frame(); on_transport_gap() does not touch
+    // it, because a Gap is not a parse.
+    ParseStatus last_status() const noexcept { return last_status_; }
+
     // One received WebSocket text frame, verbatim. Emits 0 or 1 FeedEvents.
     //
     // A frame that will not parse is counted and dropped, NOT turned into a Gap:
@@ -84,6 +117,7 @@ public:
         // every non-Ok exit (anvil_frame.hpp). Two owners meant two places for a
         // future implementation of the seam to get it wrong.
         const ParseStatus st = parse_anvil_frame(json, symbol_, frame_);
+        last_status_ = st;
         if (st != ParseStatus::Ok) {
             switch (st) {
                 case ParseStatus::BadPrice:    ++stats_.price_errors; break;
@@ -180,6 +214,7 @@ private:
     Seq next_seq_ = 1;         // 0 is left free to mean "no event yet"
     std::int64_t last_wire_seq_ = 0;
     bool have_wire_seq_ = false;
+    ParseStatus last_status_ = ParseStatus::Ok;  // "no frame yet" reads as Ok
     Stats stats_{};
 };
 

@@ -73,6 +73,12 @@ void SerialConsole::run() noexcept {
             draw(received_);
         }
 
+        // Before the timed block, because a hole's verdict is most useful while
+        // the grey it caused is still on the screen in front of whoever is at
+        // the bench.
+        drain_holes(feed_.stats().stall);
+        drain_rejects(feed_.stats().rejects);
+
         const std::int64_t now = esp_timer_get_time();
         if (now - last_stats_us_ >= kStatsPeriodUs) {
             last_stats_us_ = now;
@@ -162,6 +168,7 @@ void SerialConsole::print_stats() noexcept {
              static_cast<unsigned long long>(a.unknown_kind),
              static_cast<unsigned long long>(a.truncated_frames),
              static_cast<unsigned long long>(a.wire_seq_backward));
+    print_rejects(f.rejects);
     ESP_LOGI(kTag, "-- book   : adopted=%llu trades=%llu gaps=%llu publishes=%llu",
              static_cast<unsigned long long>(b.snapshots_adopted),
              static_cast<unsigned long long>(b.trades_applied),
@@ -172,6 +179,8 @@ void SerialConsole::print_stats() noexcept {
              static_cast<unsigned>(f.socket_gaps), static_cast<unsigned>(f.connects),
              static_cast<unsigned>(f.worst_gap_us / 1000),
              static_cast<unsigned>(f.worst_parse_us));
+    print_distributions(f, p);
+    print_stall(f);
     ESP_LOGI(kTag, "-- pipe   : published=%u oversize=%u no_slot=%u qfull=%u abandoned=%u cont=%u ctrl=%u",
              static_cast<unsigned>(p.frames_published), static_cast<unsigned>(p.oversize),
              static_cast<unsigned>(p.no_slot), static_cast<unsigned>(p.queue_full),
@@ -195,6 +204,180 @@ void SerialConsole::print_stats() noexcept {
 
     print_rates(p, a.events_out);
     heap_.report("steady", frames_drawn_ - frames_at_baseline_);
+}
+
+void SerialConsole::print_distributions(const FeedTask::Stats& f,
+                                        const FramePipeStats& p) noexcept {
+    // THE THREE LINES THIS WHOLE SESSION EXISTS TO PRINT (strain 12).
+    //
+    // Read them together and in this order. `arrive` is the wire: whole
+    // messages coming off the socket, counted where they land. `event` is the
+    // ladder: the same silence the RX watchdog greys on. `a->e` is the bridge
+    // between one message's arrival and the book having moved.
+    //
+    //   >1s filling on `event` with `arrive` clean       -> ours. The bytes came
+    //       and the pipeline sat on them; then `a->e`, `qwait` and `backlog`
+    //       say whether it was scheduling or work.
+    //   `qwait` in seconds with `worst_frame` in millis  -> the feed task was
+    //       not running: Core-0 starvation or a blocking call on this side.
+    //   >1s filling on `arrive` and on `event` together  -> UNDECIDED, and the
+    //       first draft of this comment said "transport", which is the reading
+    //       the 2026-08-10 bench had to withdraw. `arrive` is stamped on the
+    //       WebSocket client's task, downstream of the Wi-Fi driver, lwIP and
+    //       the TLS decrypt, so it fills for a busy Core 0 too; and Anvil sheds
+    //       to a slow consumer, so the server going quiet to us is a symptom of
+    //       the same thing. Read the `cpu` and `holes` lines below for that
+    //       fork; these three cannot settle it.
+    //
+    // Cumulative since boot, not per window — the question is "how often across
+    // the whole run", and a distribution that resets every 10 s cannot answer it
+    // for an event that happens twice a minute. The last block of a run is the
+    // total.
+    //
+    print_gap_line("arrive", p.arrival_gaps);
+    print_gap_line("event ", f.event_gaps);
+
+    // 208 bytes: seven labelled counts, the longest of which is
+    // "1.5-2.5k:4294967295". Truncation is defined and harmless, and this task
+    // has 6 KiB of stack.
+    char line[208];
+    f.arrival_to_event.render(line, sizeof line);
+    ESP_LOGI(kTag, "-- a->e   : %s | n=%u worst=%u ms | qwait=%u us behind=%u/%u msgs_in=%u",
+             line, static_cast<unsigned>(f.arrival_to_event.total()),
+             static_cast<unsigned>(f.arrival_to_event.worst_us() / 1000),
+             static_cast<unsigned>(f.worst_queue_wait_us),
+             static_cast<unsigned>(f.max_ready_backlog),
+             static_cast<unsigned>(kReadyQueueDepth),
+             static_cast<unsigned>(p.messages_arrived));
+}
+
+void SerialConsole::print_rejects(const RejectLog& rejects) noexcept {
+    // SILENT ON A HEALTHY RUN, AND THAT IS NOT THE USUAL LAZINESS ABOUT ZEROES.
+    // The `-- errors` line above already states "no frame was rejected", in the
+    // `parse=0 price=0 ticker=0` it always prints; this line is the breakdown OF
+    // a non-zero, so printing it empty every ten seconds would say the same
+    // thing twice and bury the line that matters when it finally appears.
+    //
+    // The two lines are checkable against each other, which is the point of
+    // having both: `n=` here must equal `parse + price + ticker` there. A
+    // disagreement is a bug in one of these instruments, not something a reader
+    // at the bench has to reconcile.
+    if (rejects.total() == 0) { return; }
+    // 208 bytes: six labelled counts with the longest label at twelve characters
+    // and the longest count at ten digits, plus the trailer.
+    char line[208];
+    rejects.render_tally(line, sizeof line);
+    ESP_LOGW(kTag, "-- reject : %s", line);
+}
+
+void SerialConsole::print_gap_line(const char* what, const GapHistogram& h) noexcept {
+    // Both gap distributions print in exactly the same shape, deliberately:
+    // reading them is a comparison, and a comparison between two lines with
+    // different columns is a comparison someone gets wrong at 2 a.m.
+    char line[208];
+    h.render(line, sizeof line);
+    ESP_LOGI(kTag, "-- %s : %s | n=%u worst=%u ms >1s=%u mode=%s",
+             what, line, static_cast<unsigned>(h.total()),
+             static_cast<unsigned>(h.worst_us() / 1000),
+             static_cast<unsigned>(h.count_from(GapScale::kFirstLong)),
+             GapHistogram::label(h.mode_from(GapScale::kFirstLong)));
+}
+
+void SerialConsole::print_stall(const FeedTask::Stats& f) noexcept {
+    // THE THREE LINES THAT PICK THE NEXT BRIEF.
+    //
+    // Read `cpu` first and only then `holes`. The tally's board-bound /
+    // link-bound split is derived from the per-hole idle against the healthy
+    // baseline on the `cpu` line, so a baseline that looks wrong — Core 0 at 30%
+    // idle in steady state, say — invalidates the tally above it rather than
+    // being a separate observation.
+    //
+    // `window` is this task's own reading over the last statistics period, from
+    // the same counters by a different task. It is not redundant: the per-hole
+    // figures are a handful of one-second windows on Core 0 and this is ten
+    // seconds of wall clock on Core 1, so the two disagreeing is the instrument
+    // reporting a problem with itself.
+    const std::int64_t now = esp_timer_get_time();
+    const std::uint32_t idle0 = idle_.idle_us(0);
+    const std::uint32_t idle1 = idle_.idle_us(1);
+    if (block_started_us_ != 0 && now > block_started_us_) {
+        const std::uint32_t window_us =
+            clamp_us_to_u32(static_cast<std::uint64_t>(now - block_started_us_));
+        const std::uint32_t d0 = wrapping_delta_u32(idle0, idle0_at_block_);
+        const std::uint32_t d1 = wrapping_delta_u32(idle1, idle1_at_block_);
+        if (idle_.valid()) {
+            ESP_LOGI(kTag,
+                     "-- cpu    : window c0=%u%% c1=%u%% over %u ms | healthy c0=%u%% c1=%u%% n=%u"
+                     " | probe %u passes worst %u cyc of %u",
+                     static_cast<unsigned>(idle_percent(d0, window_us)),
+                     static_cast<unsigned>(idle_percent(d1, window_us)),
+                     static_cast<unsigned>(window_us / 1000u),
+                     static_cast<unsigned>(f.stall.baseline0_pct()),
+                     static_cast<unsigned>(f.stall.baseline1_pct()),
+                     static_cast<unsigned>(f.stall.baseline_windows()),
+                     static_cast<unsigned>(idle_.accumulator(0).passes()),
+                     static_cast<unsigned>(idle_.accumulator(0).worst_pass_cycles()),
+                     static_cast<unsigned>(idle_.accumulator(0).continuity_cycles()));
+        } else {
+            ESP_LOGW(kTag, "-- cpu    : idle probe NOT RUNNING — every hole verdict is unknown");
+        }
+    }
+    block_started_us_ = now;
+    idle0_at_block_ = idle0;
+    idle1_at_block_ = idle1;
+
+    ESP_LOGI(kTag, "-- rssi   : now %d min %d max %d dBm n=%u",
+             static_cast<int>(link_.last_dbm()), static_cast<int>(link_.min_dbm()),
+             static_cast<int>(link_.max_dbm()), static_cast<unsigned>(link_.samples()));
+
+    // 160 bytes: the tally is seven counts and a rate, the longest of which is
+    // ten digits. Truncation is defined and harmless.
+    char line[160];
+    f.stall.render_tally(line, sizeof line);
+    ESP_LOGI(kTag, "-- holes  : %s", line);
+}
+
+void SerialConsole::drain_holes(const StallProbe& stall) noexcept {
+    // A record can be evicted from the ring before this task reaches it — it
+    // cannot happen at two holes a minute against a 20 ms poll, but a silently
+    // skipped verdict is exactly the sort of thing that gets noticed as "the
+    // counts do not add up" three sessions later, so it is reported.
+    if (holes_printed_ < stall.oldest_retained()) {
+        ESP_LOGW(kTag, "-- hole   : %u verdicts evicted before printing",
+                 static_cast<unsigned>(stall.oldest_retained() - holes_printed_));
+        holes_printed_ = stall.oldest_retained();
+    }
+    while (holes_printed_ < stall.completed()) {
+        const HoleRecord* r = stall.completed_at(holes_printed_);
+        ++holes_printed_;
+        if (r == nullptr) { continue; }
+        char line[208];
+        StallProbe::render_hole(*r, line, sizeof line);
+        ESP_LOGW(kTag, "-- hole   : %s", line);
+    }
+}
+
+void SerialConsole::drain_rejects(const RejectLog& rejects) noexcept {
+    // Eviction is reported rather than skipped, for the same reason the hole ring
+    // reports it: a payload that was captured and then quietly lost reads at the
+    // bench as "the log only shows nine of them", which is a question about the
+    // instrument in the middle of reading it for an answer about the wire.
+    if (rejects_printed_ < rejects.oldest_retained()) {
+        ESP_LOGW(kTag, "-- reject : %u payloads evicted before printing",
+                 static_cast<unsigned>(rejects.oldest_retained() - rejects_printed_));
+        rejects_printed_ = rejects.oldest_retained();
+    }
+    while (rejects_printed_ < rejects.captured()) {
+        const RejectRecord* r = rejects.at(rejects_printed_);
+        ++rejects_printed_;
+        if (r == nullptr) { continue; }
+        // Sized by the renderer rather than by this call site, so widening the
+        // captured head or tail cannot silently start truncating the line. This
+        // task has 6 KiB of stack against its ~240 bytes.
+        char line[kRejectLineChars];
+        RejectLog::render(*r, line, sizeof line);
+        ESP_LOGW(kTag, "-- reject : %s", line);
+    }
 }
 
 void SerialConsole::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {

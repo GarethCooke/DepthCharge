@@ -12,11 +12,17 @@ deliberately shaped like it (Core 1, `consume()`, redraw only on a new version).
 ```sh
 cp firmware/include/secrets.h.example firmware/include/secrets.h   # then edit it
 cd firmware
-pio run                       # build
-pio run -t upload             # flash over USB
+pio run                       # build (both environments)
+pio run -e depthcharge -t upload -t monitor   # the usual loop
 pio device monitor            # 115200, esp32_exception_decoder
-pio run -t upload -t monitor  # the usual loop
 ```
+
+**Two environments, identical but for one symbol.** `depthcharge` is the
+baseline (Wi-Fi modem sleep **off**); `depthcharge-ps` builds the same firmware
+with `-D DC_WIFI_POWER_SAVE=1`, leaving modem sleep at the Arduino default
+(`WIFI_PS_MIN_MODEM`). They are the two arms of the stall experiment below —
+always name the environment on the command line, because `pio run -t upload`
+with no `-e` builds *and uploads both*, and the second one wins.
 
 `pio` is PlatformIO Core; on this desk it lives at
 `%USERPROFILE%\.platformio\penv\Scripts\pio.exe`.
@@ -94,7 +100,8 @@ leaving it commented.
 | `esp_websocket_client` (its own) | unpinned | TLS, socket reads, hands chunks to the reassembler |
 | `dc_feed` | **0** | reassembled frame → parse → adapter → book → `publish`. **Never logs** — see below |
 | `dc_panel` | **1** | `consume()` → serial log (stage D: HUB75) |
-| Arduino `loopTask` | 1 | the WebSocket supervisor, once a second, and nothing else |
+| Arduino `loopTask` | 1 | the WebSocket supervisor every 250 ms, and an rssi sample every 500 ms |
+| FreeRTOS idle | 0 and 1 | the per-core idle probe's hook — a register read and an add, and the reason an idle core spins rather than sleeping (see below) |
 
 **`dc_feed` deliberately contains no `ESP_LOGx`, and stage D must not add one.**
 Arduino routes `ESP_LOGx` to `log_printfv`, which `malloc`s for any line over 64
@@ -111,11 +118,35 @@ breaks out of its run loop and calls `vTaskDelete(NULL)`; `auto_reconnect` is
 only consulted on the abort/error path, so nothing restarts it. Invariant #5
 still holds — the panel greys, via `CLOSED` or the RX watchdog — but it would
 grey *forever*, which at a bench reads as an intermittent hang hours into a
-healthy run. `loopTask` therefore watches for "disconnected and not recovering
-for 20 s" and does `stop()` + `start()`. It has to be `loopTask`: those two calls
-are documented as unsafe from the event handler, and 20 s is chosen to sit above
-the client's own 10 s reconnect backoff so the supervisor backs it up rather
-than fighting it.
+healthy run. It has since taken over the retry cadence as well, because this
+vintage's `esp_websocket_client_config_t` has no `reconnect_timeout_ms` and the
+library's own 10 s wait is unreachable from the config.
+
+**It recovers onto a SPARE HANDLE, and never waits for the dead one.** There are
+two `esp_websocket_client` handles, both built at boot; `loopTask` polls
+`esp_websocket_client_is_connected()` at 250 ms and, one poll after the socket
+goes down, starts the idle handle and publishes it as live. The handle that
+dropped is left to expire on its own clock. `esp_websocket_client_stop()` is not
+called anywhere, and `disable_auto_reconnect` is set — without it the retired
+handle would wake 10 s later and open a *second* live socket to Anvil.
+
+The reason is worth knowing before touching any of it: a socket that aborts puts
+the library's own task into `vTaskDelay(wait_timeout_ms / 2)` — **5 seconds** —
+and `stop()` sets `run = false` and then blocks until that task wakes. So the
+old design's 2 s backoff and its 2.5 s blocking `stop()` were two halves of one
+5 s sleep (2445 + 2545 = 4990 on the 2026-08-09 bench), and shortening the
+backoff would have moved time between them without moving the grey by a
+millisecond. All five facts were read out of the precompiled archive with
+`objdump`; the offsets are cited in `ws_supervisor.hpp` and the consequences in
+DESIGN §08 strain 14.
+
+The *policy* — when an attempt is due, how long it is immune, and the Wi-Fi
+association gate that holds an attempt rather than deferring it — is
+`firmware/src/ws_supervisor.hpp`, which is ESP-IDF-free and host-tested in
+`test_ws_supervisor.cpp`. `WsTransport` keeps the platform half. It still has to
+be `loopTask` — `start()` is documented as unsafe from the event handler — and
+the one call there that can still block is the DNS warm, which runs only when the
+station is associated and prints what it cost as `dns=N ms`.
 
 The WebSocket client's task cannot be pinned — this vintage of
 `esp_websocket_client_config_t` has no `task_core_id` — which is fine, because
@@ -124,7 +155,7 @@ it only memcpys into a slot and posts it. Everything that touches the book is on
 
 Two hand-offs cross tasks and there are no others:
 
-- `FramePipe` — two 16 KiB slots plus two FreeRTOS queues, transport → feed;
+- `FramePipe` — four 16 KiB slots plus two FreeRTOS queues, transport → feed;
 - `SnapshotChannel` — the engine's wait-free three-slot mailbox, feed → console.
 
 ### Why the feed is a task and not the WebSocket callback
@@ -221,9 +252,23 @@ ours to fix.
 3. **Pull the Wi-Fi** (unplug the AP, or take the board out of range).
    - Within ~1 s: `RX watchdog: no frame for 1000 ms -> Gap{Disconnect}` and
      `*** STALE (disconnect) at v… — panel greys here ***`.
-4. **Restore it.** The client reconnects on its own; Anvil sends a fresh
-   snapshot; expect `*** LIVE at v… ***` followed by `grey for NNNN ms before
-   resync`, and the version advancing again.
+4. **Restore it.** The supervisor opens the spare handle; Anvil sends a fresh
+   snapshot. Expect, in order: `feed down N ms — opening handle B (attempt #2,
+   dns N ms)`, then `socket up on handle B, N ms into attempt #2`, then
+   `*** LIVE at v… ***` followed by `grey for NNNN ms before resync`, and the
+   version advancing again.
+   - While the station is still down you should see **one** line —
+     `reconnect due but the station is not associated — holding` — and not one
+     every 250 ms. The attempt then goes out on the first poll after the station
+     is back, not a retry cycle later.
+   - The handle letter must **alternate** across drops (A → B → A). If two
+     consecutive recoveries name the same handle, or `handle X would not start`
+     appears, the assumption DESIGN §08 strain 14 rests on has moved and the
+     archive needs re-reading before anything else is believed.
+   - `grey for NNNN ms` is the number this change exists to move: 9,451 ms on
+     2026-08-09, predicted ~4,700 ms now, of which ~4,000 is the connect. The
+     `dns=` figure says how much of that 4 s is the resolver — the first split of
+     that term anyone has taken.
 5. Let it run ten minutes and read the `--` statistics block (every 10 s).
 
 What the statistics should say on a healthy run:
@@ -231,6 +276,7 @@ What the statistics should say on a healthy run:
 | Line | Healthy |
 | --- | --- |
 | `errors` | `parse=0 price=0 ticker=0 unknown=0` |
+| `reject` | **absent entirely** — the line only prints when something was rejected |
 | `pipe` | `oversize=0 no_slot=0 qfull=0 abandoned=0 cont=0` |
 | `size` | `max` comfortably under the 16,384 B cap |
 | `feed` | `worst_gap` well under 1000 ms except across the pull |
@@ -239,6 +285,32 @@ What the statistics should say on a healthy run:
 | `heap` | `free` delta **0** and `largest` not falling (see the caveat below) |
 
 Reading the two that are new, and easy to misread:
+
+- **`reject` is the breakdown of a non-zero `parse`, and it prints the bytes.**
+  It is silent on a healthy run on purpose: `errors` already says `parse=0`, and a
+  line of zeroes every ten seconds would bury the one that matters. When it does
+  appear there are two shapes of it, and they answer different questions:
+
+  ```text
+  -- reject : n=1281 not-json=1281 no-type=0 bad-shape=0 bad-price=0 other-ticker=0 | logged=10 suppressed=1271 over 1 connects
+  -- reject : #1 c1/#1 +412 ms not-json len=4096 head[{"type":"book","seq":362011,"ticker":101,"bids":[{"price":"10.0352","qty":24,] tail[0349","qty":214,"orders]
+  ```
+
+  The tally is the run; the `#n` lines are the first **ten payloads of each
+  connect**, printed the moment they happen. Read them in this order, because the
+  three statuses have three different owners:
+
+  | What you see | What it means | Who fixes it |
+  | --- | --- | --- |
+  | `no-type` on a whole payload ending `}` | a frame shape this client does not know | the venue — skip-not-error it, and document the frame in `docs/vendor/anvil-protocol.md` |
+  | `not-json`, `len` a multiple of 4096, `tail` ending mid-token | the message was cut at an RX-buffer boundary | ours — the reassembler / `kWsRxBufferBytes` |
+  | `not-json` with a `SPLIT@nnnn` | two messages landed in one buffer | ours — the WebSocket client under burst load |
+  | `bad-shape` on a whole `book`/`trade` payload | Anvil changed a payload | re-vendor the protocol |
+
+  `SPLIT@` is worth knowing about before you need it: a spliced buffer *begins*
+  like a valid frame and *ends* like a valid frame, so head and tail both look
+  right and the reject reads as inexplicable. The offset is computed rather than
+  left to be spotted.
 
 - **`no_slot` is inbound loss, not consumer lag.** It counts whole WebSocket
   messages discarded before the parser because every slot was busy. It should be
@@ -263,6 +335,166 @@ keeps `chunks/msg` at 3 and the reassembly path exercised), and trading that
 away should be a decision, not a reflex.
 
 Capture the log to `hardware/` or `docs/` as the stage C evidence.
+
+---
+
+## The stall characterisation run (owner) — do this *before* stage D
+
+The open defect: on the bench the panel greys every 15–20 s with the socket up
+(`wd_gaps=5` in 90 s, `sock_gaps=0`, `connects=1`, worst silence 2,461 ms) and
+nothing at the desk end of the same LAN reproduces it — a socket deliberately
+throttled to the board's own message rate has a worst book-event silence of
+594 ms and trips the watchdog zero times in four minutes. So the seconds are
+spent on the board (DESIGN.html strain 12). This run finds out **where**.
+
+### The three lines to read
+
+The statistics block now carries a distribution rather than a high-water mark:
+
+```text
+-- arrive : <100:1180 100-250:88 250-500:9 500-1k:1 1-1.5k:0 1.5-2.5k:0 >2.5k:0 | n=1278 worst=612 ms >1s=0 mode=-
+-- event  : <100:1100 100-250:96 250-500:12 500-1k:3 1-1.5k:5 1.5-2.5k:2 >2.5k:0 | n=1218 worst=2461 ms >1s=7 mode=1-1.5k
+-- a->e   : <1:900 1-5:210 5-25:104 25-100:3 100-500:1 0.5-1k:0 >1k:0 | n=1218 worst=88 ms | qwait=41230 us behind=2/6 msgs_in=1279
+```
+
+- **`arrive`** — inter-arrival gaps between whole messages, counted on the
+  WebSocket client's task, *including* messages dropped for want of a slot. That
+  inclusion is deliberate: slot exhaustion is caused by the feed being slow, so
+  an arrival series that skipped them would blame the network for our own
+  lateness.
+- **`event`** — the same silence the RX watchdog greys on: gaps between events
+  reaching the book. `>1s` is a count of the occasions the panel had grounds to
+  grey, and on a run with `sock_gaps=0` it should equal `wd_gaps` on the `feed`
+  line (a hole is recorded when the next event lands, so a socket outage leaves
+  a sample here too, and one still-open hole is missing until it ends).
+  `mode=` names the fullest bucket at or above 1 s — the shape of the population,
+  which a maximum cannot give.
+- **`a->e`** — for one message, arrival → the book having moved. `qwait` is the
+  worst slice of that spent waiting for the feed task to run at all, and
+  `behind` is the most messages ever left queued behind the one being processed
+  (sampled after the dequeue, so it tops out one below the queue depth).
+
+Cumulative since boot, so the **last block of the run is the answer**; the
+histograms are diagnostics read across cores without synchronisation, so treat
+them as human-readable and never gate anything on them.
+
+### Where that split stops, and why it needed a third signal
+
+The 2026-08-09 runs answered "how often" and then refused to answer "which
+half": both arms held `connects=1` and `sock_gaps=0` while `arrive` and `event`
+filled their >1 s buckets **together** — 17 holes over 11 minutes with power save
+off, 25 over 10.5 minutes with it on, worst 2,461 ms and 1,893 ms. That reads as
+"transport" on the old table, and it is an over-claim on two counts:
+
+- **The arrival stamp is not the wire.** It is taken in `WsTransport::on_event`,
+  on `esp_websocket_client`'s own task, already downstream of the Wi-Fi driver,
+  lwIP, the socket read, the TLS record decrypt and the `esp_event` hop. A hole
+  in `arrive` means *no complete message reached our callback for a second*,
+  which a busy Core 0 produces just as well as a quiet socket. The split's real
+  boundary is the FramePipe queue hop, not the antenna.
+- **Anvil sheds to a slow consumer, evenly** (measured: a client throttled to a
+  quarter rate gets 4× fewer messages and is never silent for more than one drain
+  interval). So "the server went quiet to us" is a *symptom* of this socket
+  backing up, not an independent cause. "Anvil shed it" and "Wi-Fi delayed it"
+  look identical from inside the data path.
+
+So the fork — **board-bound** (Core 0 cannot drain the stream) versus
+**link-bound** (the frames are not arriving) — needs a signal from outside that
+path. Three more lines carry it:
+
+```text
+-- cpu    : window c0=88% c1=96% over 10001 ms | healthy c0=90% c1=96% n=1180 | probe 88231441 passes worst 412 cyc of 24000
+-- rssi   : now -69 min -78 max -64 dBm n=1204
+-- holes  : n=17 board=12 link=3 mixed=2 unknown=0 | burst=10 cadence=7 | seq 41/s
+-- hole   : #12 1240 ms c0=9%/90% c1=93% rssi=-70 seq+3 of +51 | recov 3,4,6,78 ms -> BOARD-BOUND burst
+```
+
+- **`cpu`** — per-core idle. `window` is the console's own reading over the last
+  10 s; `healthy` is the baseline built from every sub-1 s inter-event window,
+  and it is the reference each hole is judged against. `probe … worst N cyc of M`
+  is the instrument checking itself: `N` is the longest interval it accepted as
+  idle and `M` the threshold above which an interval is treated as work, so `N`
+  approaching `M` means the verdict is at the limit of its own resolution.
+- **`holes`** — every >1 s book-hole, classified. **`n` here must equal `>1s` on
+  the `event` line**; they are two independent instruments counting the same
+  thing off the same threshold, so a disagreement is a bug rather than a nuance.
+- **`hole`** — one line per hole as it completes, printed at `W` so it stands out
+  in the scrollback. Every derived judgement sits beside the numbers it came
+  from: `c0=9%/90%` is this hole's Core-0 idle against the healthy baseline, and
+  `seq+3 of +51` is the wire-seq step across the hole against what Anvil's own
+  publish rate says a *fresh* frame would have carried.
+
+### The verdict table
+
+| Core 0 idle across the hole | Recovery | Reading |
+| --- | --- | --- |
+| far below `healthy` | burst, `seq` step small | **board-bound** — the frames sat unread in the socket buffer while Core 0 was busy |
+| far below `healthy` | cadence, `seq` step ≈ fresh | **board-bound** — Anvil shed the middle because this socket backed up |
+| at or above `healthy` | burst, `seq` step small | **link-bound** — the frames existed and the air delayed them |
+| at or above `healthy` | cadence | **link-bound** — nothing arrived and nothing was waiting to |
+
+Board-bound is firmware's to fix and can step-change to zero, because a board
+that keeps up is never shed. Link-bound is not reachable from this repo at all —
+it becomes 2.4 GHz channel, placement and antenna.
+
+And the two rows the old table still owns, unchanged: `event` >1s filling with
+`arrive` clean is ours *and localisable*, with `qwait` in seconds meaning the
+feed task did not run and `qwait` small with a large `worst_frame` meaning the
+work itself got slow.
+
+### The procedure
+
+1. **One environment.** `pio run -e depthcharge -t upload -t monitor`. Naming it
+   is not optional — with no `-e`, `pio run -t upload` uploads *both* and the
+   second one wins. Power save is settled (both arms measured, 17 vs 25 holes),
+   so `depthcharge-ps` is not part of this run.
+2. Confirm at start-up, in order: `power-save requested=OFF driver ps=0`, then
+   `per-core idle probe up at 240 MHz`. **If the second line is missing or reads
+   `idle probe NOT RUNNING`, stop** — every hole verdict in that run is
+   `unknown`, deliberately, rather than a plausible-looking 0% idle.
+3. **Let it run ≥10 minutes, steady state, and do not pull the Wi-Fi.**
+   `connects=1` and `sock_gaps=0` at the end is what makes this a steady-state
+   distribution rather than a mixture; a hole that spanned a reconnect prints
+   `(socket dropped)` and must not be pooled with the others, because a reconnect
+   costs a ~2.5 s blocking `stop()` on Core 1 and is a different phenomenon.
+4. **Read `cpu` before `holes`.** The tally is derived from per-hole idle against
+   the `healthy` baseline, so a baseline that looks wrong invalidates the tally
+   above it rather than being a separate observation. Sanity checks worth doing
+   in this order: `holes n=` equals `event >1s=`; `no_slot=0` (a dropped message
+   never reaches the recovery series, so the burst/cadence split degrades if this
+   is non-zero); `window` and `healthy` idle in the same neighbourhood.
+5. Commit the log and the reading to `hardware/bench-YYYY-MM-DD-feed-stall.md`,
+   append the verdict to the session log in
+   `docs/briefs/M3-live-anvil-on-the-panel.md`, and update strain 12.
+
+Pair it with a simultaneous `tools/capture_anvil.py` from the desk, as above —
+the desk is the control for "was the wire quiet", and it costs nothing to have.
+
+### If you suspect the instrument
+
+The idle probe measures idle by keeping a hook being called on each core's idle
+task, which means that core does not execute `waiti` and spins instead of
+sleeping. That is deliberate and it is what makes the interval between two calls
+a measure of idle time rather than of the interrupt rate. It cannot delay real
+work — the idle task is priority 0 — and there is no power management to
+interfere with (`CONFIG_PM_ENABLE` is not set), but it is a genuine change to
+what the board does, so:
+
+```sh
+# PowerShell
+$env:PLATFORMIO_BUILD_FLAGS="-D DC_IDLE_PROBE=0"; pio run -e depthcharge -t upload -t monitor
+$env:PLATFORMIO_BUILD_FLAGS=""      # and clear it afterwards, or every later build inherits it
+```
+
+rebuilds the same firmware with the probe compiled out and every idle figure
+reported as unknown. **Verified rather than assumed** — that build's `.elf`
+contains `per-core idle probe COMPILED OUT` and does not contain `per-core idle
+probe up`. (`pio run` has no `--build-flag` option, which is why this goes
+through the environment variable; the variable *appends* to `build_flags`, so
+nothing in `platformio.ini` is lost.) If the >1 s hole counts differ materially
+between the two builds, the instrument is part of the phenomenon and that is the
+finding. Whether the probe ships past this characterisation is a stage D
+decision.
 
 ---
 
@@ -304,7 +536,11 @@ balanced over hours; it does not decide whether it allocates. Full reasoning in
 | `src/main.cpp` | statics, task creation, bring-up order |
 | `src/ws_transport.*` | Wi-Fi, TLS WebSocket, Espressif event → `WsChunk` |
 | `src/frame_reassembler.hpp` | chunks → whole messages. **No ESP-IDF** — host-tested by `harness/tests/test_frame_reassembler.cpp` |
-| `src/frame_pipe.*` | the two-slot pool + queues, transport → feed |
+| `src/gap_histogram.hpp` | fixed-bucket distributions for the stall hunt. **No ESP-IDF** — host-tested by `harness/tests/test_gap_histogram.cpp` |
+| `src/stall_probe.hpp` | classifies a >1 s book-hole board-bound vs link-bound, plus the recovery shape and rssi. **No ESP-IDF** — host-tested by `harness/tests/test_stall_probe.cpp` |
+| `src/reject_log.hpp` | what the parser threw away: the first ten payloads of each connect, with status, whole length, head, tail and any spliced second frame. **No ESP-IDF** — host-tested by `harness/tests/test_reject_log.cpp` |
+| `src/core_idle.*` | the one platform half of that: per-core idle from an idle hook, because this framework has FreeRTOS run-time stats compiled out |
+| `src/frame_pipe.*` | the four-slot pool + queues, transport → feed, and the arrival histogram |
 | `src/feed_task.*` | Core 0: the pipeline, the RX watchdog, the only book writer |
 | `src/serial_console.*` | Core 1: `consume()` → log. Stage D replaces the body |
 | `src/heap_probe.*` | invariant #7 instrumentation |

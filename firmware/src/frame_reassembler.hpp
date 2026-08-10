@@ -38,19 +38,30 @@ inline constexpr std::uint8_t kOpPing = 0x9;
 inline constexpr std::uint8_t kOpPong = 0xA;
 
 // One WEBSOCKET_EVENT_DATA, reduced to the fields that matter.
+//
+// `arrival_us` is not Espressif's — it is stamped by the caller from the
+// monotonic clock as the chunk is handed over, and it is the arrival half of the
+// arrival-vs-event split. It travels on the chunk rather than being read inside
+// this class for the usual reason: a clock is a platform call and this header
+// has none, so the host test can drive a synthetic timeline instead of a real
+// one.
 struct WsChunk {
     std::uint8_t op_code = kOpText;
     std::uint32_t payload_offset = 0;  // offset of this piece within the frame
     std::uint32_t payload_len = 0;     // total size of the frame
     const char* data = nullptr;
     std::uint32_t data_len = 0;
+    std::int64_t arrival_us = 0;       // when this chunk came off the socket
 };
 
 // `Slots` must provide:
 //     bool  acquire(std::uint8_t&)         non-blocking; false when none free
 //     char* buffer(std::uint8_t)           writable bytes of an owned slot
 //     void  release(std::uint8_t)          give a slot back unpublished
-//     bool  publish(std::uint8_t, uint32)  hand a complete message on
+//     bool  publish(std::uint8_t, uint32, int64)  hand a complete message on,
+//                                          with the instant it finished arriving
+//     void  note_arrival(std::int64_t)     a whole message came off the socket,
+//                                          whether or not it could be kept
 //     void  count_oversize() / count_abandoned()
 //     void  count_continuation() / count_control()
 // plus a static/consteval capacity, passed in as `capacity` so the test can use
@@ -110,7 +121,7 @@ public:
         const std::uint32_t at = (c.op_code == kOpContinuation) ? fill_ : c.payload_offset;
         write(at, c.data, c.data_len);
 
-        if (complete(c)) { finish(); }
+        if (complete(c)) { finish(c.arrival_us); }
     }
 
     // The socket went away: whatever partial message we held is gone with it.
@@ -164,9 +175,24 @@ private:
         return static_cast<std::size_t>(c.payload_offset) + c.data_len >= c.payload_len;
     }
 
-    void finish() noexcept {
+    void finish(std::int64_t arrival_us) noexcept {
+        // ARRIVAL IS COUNTED BEFORE OWNERSHIP IS RESOLVED, and that ordering is
+        // the whole point of the instrument. A message dropped for want of a
+        // free slot still came off the socket at this instant; if the arrival
+        // series only recorded messages we managed to keep, then feed-side
+        // starvation — which is what empties the slot pool — would show up as a
+        // hole on the ARRIVAL side and implicate the network. That is the exact
+        // misreading the split exists to prevent, so `note_arrival` fires for
+        // every whole message including the ones this class throws away.
+        //
+        // A zero-length frame is not a message and is excluded: `dropping_`
+        // covers the no-slot and oversize cases (bytes we saw and discarded)
+        // and `fill_` covers the ones we kept, so the two together are exactly
+        // "a message with a body finished arriving".
+        if (dropping_ || fill_ > 0) { slots_.note_arrival(arrival_us); }
+
         if (holding_ && !dropping_ && fill_ > 0) {
-            (void)slots_.publish(slot_, fill_);
+            (void)slots_.publish(slot_, fill_, arrival_us);
             holding_ = false;
         } else {
             drop_held();

@@ -52,6 +52,12 @@ struct FakeSlots {
     std::uint8_t free_count = kSlots;
 
     std::vector<std::string> published;
+    // The arrival half of M3's stall instrument: `arrivals` is every whole
+    // message the socket delivered, `published_at` only the ones that survived
+    // to the feed task. The two differing is the point — see the note in
+    // FrameReassembler::finish().
+    std::vector<std::int64_t> arrivals;
+    std::vector<std::int64_t> published_at;
     std::uint32_t oversize = 0;
     std::uint32_t abandoned = 0;
     std::uint32_t continuation = 0;
@@ -77,13 +83,15 @@ struct FakeSlots {
         in_flight[slot] = false;
         ++free_count;
     }
-    bool publish(std::uint8_t slot, std::uint32_t len) noexcept {
+    bool publish(std::uint8_t slot, std::uint32_t len, std::int64_t arrival_us) noexcept {
         REQUIRE(in_flight[slot]);
         published.emplace_back(storage[slot], len);
+        published_at.push_back(arrival_us);
         in_flight[slot] = false;
         ++free_count;
         return true;
     }
+    void note_arrival(std::int64_t at_us) noexcept { arrivals.push_back(at_us); }
     void count_oversize() noexcept { ++oversize; }
     void count_abandoned() noexcept { ++abandoned; }
     void count_continuation() noexcept { ++continuation; }
@@ -97,16 +105,23 @@ struct Fixture {
 
     // Deliver `text` as a single WebSocket frame split into `chunk` byte pieces,
     // exactly as esp_websocket_client would with that RX buffer size.
-    void deliver(const std::string& text, std::size_t chunk, std::uint8_t op = kOpText) {
+    //
+    // `at_us` stamps every piece with the same instant. The real transport
+    // stamps each chunk as it lands, and only the last one's stamp is kept, so
+    // a synthetic timeline only needs to be right about the last piece — but
+    // passing one value keeps the tests readable about which message arrived
+    // when.
+    void deliver(const std::string& text, std::size_t chunk, std::uint8_t op = kOpText,
+                 std::int64_t at_us = 0) {
         const std::uint32_t total = static_cast<std::uint32_t>(text.size());
         if (total == 0) {
-            re.on_chunk(WsChunk{op, 0, 0, text.data(), 0});
+            re.on_chunk(WsChunk{op, 0, 0, text.data(), 0, at_us});
             return;
         }
         for (std::size_t off = 0; off < text.size(); off += chunk) {
             const std::size_t n = (off + chunk <= text.size()) ? chunk : text.size() - off;
             re.on_chunk(WsChunk{op, static_cast<std::uint32_t>(off), total, text.data() + off,
-                                static_cast<std::uint32_t>(n)});
+                                static_cast<std::uint32_t>(n), at_us});
         }
     }
 };
@@ -339,6 +354,79 @@ TEST_CASE("a server-fragmented message is counted so the assumption is observabl
     CHECK(f.slots.free_count == kSlots);
 }
 
+// --- the arrival stamp (M3 stall characterisation) --------------------------
+
+TEST_CASE("a completed message is stamped once, at the chunk that completed it") {
+    // One arrival per message and not per chunk: the arrival histogram is a
+    // distribution of inter-MESSAGE gaps, and stamping three times for one
+    // 8.7 KB book frame would fill its bottom bucket with sub-millisecond
+    // intervals that are an artefact of the RX buffer size.
+    Fixture f;
+    f.deliver("0123456789abcdefghijklmnopqrstuvwxyz", 7, kOpText, 4242);
+
+    REQUIRE(f.slots.arrivals.size() == 1);
+    CHECK(f.slots.arrivals[0] == 4242);
+    REQUIRE(f.slots.published_at.size() == 1);
+    CHECK(f.slots.published_at[0] == 4242);
+}
+
+TEST_CASE("a message dropped for want of a slot still counts as an arrival") {
+    // THE CASE THE WHOLE SPLIT TURNS ON. Slot exhaustion is caused by the feed
+    // task being slow, so if the arrival series skipped the messages it costs
+    // us, feed-side starvation would print as a hole on the ARRIVAL side and
+    // implicate the network — the exact misreading the instrument exists to
+    // prevent.
+    FakeSlots slots;
+    FrameReassembler<FakeSlots> re{slots, kCap};
+
+    std::uint8_t a = 0;
+    std::uint8_t b = 0;
+    REQUIRE(slots.acquire(a));
+    REQUIRE(slots.acquire(b));
+
+    re.on_chunk(WsChunk{kOpText, 0, 4, "cccc", 4, 1000});
+    re.on_chunk(WsChunk{kOpText, 0, 4, "dddd", 4, 2000});
+
+    CHECK(slots.acquire_failures == 2);
+    CHECK(slots.published.empty());
+    REQUIRE(slots.arrivals.size() == 2);   // the bytes came off the socket
+    CHECK(slots.arrivals[0] == 1000);
+    CHECK(slots.arrivals[1] == 2000);
+}
+
+TEST_CASE("an oversize message counts as an arrival too") {
+    Fixture f;
+    f.deliver(std::string(kCap + 1, 'y'), 16, kOpText, 777);
+
+    CHECK(f.slots.oversize == 1);
+    CHECK(f.slots.published.empty());
+    REQUIRE(f.slots.arrivals.size() == 1);
+    CHECK(f.slots.arrivals[0] == 777);
+}
+
+TEST_CASE("frames with no body are not arrivals") {
+    // A zero-length frame, a ping and a close are not messages, and counting
+    // them would put phantom samples in the arrival distribution at whatever
+    // cadence the server pings.
+    Fixture f;
+    f.re.on_chunk(WsChunk{kOpText, 0, 0, "", 0, 100});
+    f.re.on_chunk(WsChunk{kOpPing, 0, 0, nullptr, 0, 200});
+    f.re.on_chunk(WsChunk{kOpClose, 0, 2, "\x03\xe8", 2, 300});
+
+    CHECK(f.slots.arrivals.empty());
+}
+
+TEST_CASE("a message that never completes is never stamped") {
+    // Arrival means "a whole message is off the socket". A half-delivered one
+    // that the disconnect throws away has not arrived, and pretending otherwise
+    // would put a short gap in the histogram immediately before an outage.
+    Fixture f;
+    f.re.on_chunk(WsChunk{kOpText, 0, 100, "half", 4, 500});
+    f.re.reset();
+
+    CHECK(f.slots.arrivals.empty());
+}
+
 TEST_CASE("no sequence of chunks ever leaks a slot") {
     // The property that actually matters: whatever the stream does, the pool
     // must come back whole, or the feed dies silently a few messages later.
@@ -354,18 +442,41 @@ TEST_CASE("no sequence of chunks ever leaks a slot") {
 
     const char* payload = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     for (int i = 0; i < 5000; ++i) {
+        const std::int64_t at = 1000 + i;   // a strictly increasing timeline
         switch (next(6)) {
-            case 0: re.on_chunk(WsChunk{kOpText, 0, next(90), payload, next(20)}); break;
-            case 1: re.on_chunk(WsChunk{kOpText, next(40), next(90), payload, next(20)}); break;
-            case 2: re.on_chunk(WsChunk{kOpContinuation, next(40), next(90), payload, next(20)});
+            case 0: re.on_chunk(WsChunk{kOpText, 0, next(90), payload, next(20), at}); break;
+            case 1: re.on_chunk(WsChunk{kOpText, next(40), next(90), payload, next(20), at});
                 break;
-            case 3: re.on_chunk(WsChunk{kOpPing, 0, 0, nullptr, 0}); break;
+            case 2: re.on_chunk(WsChunk{kOpContinuation, next(40), next(90), payload, next(20),
+                                        at});
+                break;
+            case 3: re.on_chunk(WsChunk{kOpPing, 0, 0, nullptr, 0, at}); break;
             case 4: re.reset(); break;
-            default: re.on_chunk(WsChunk{kOpText, 0, 0, "", 0}); break;
+            default: re.on_chunk(WsChunk{kOpText, 0, 0, "", 0, at}); break;
         }
     }
     re.reset();
 
     CHECK(slots.free_count == kSlots);
     CHECK_FALSE(re.holding());
+
+    // The arrival series' two properties, over the same walk. Whatever the
+    // stream does: every message that reached the feed task was also counted as
+    // an arrival (so `arrivals` is a superset, never the other way round), and
+    // the stamps a published message carries are the ones the arrival series
+    // recorded, in order. If those ever diverge, the bench's arrival histogram
+    // and its event histogram are counting different populations and the whole
+    // arrival-vs-event reading is void.
+    CHECK(slots.arrivals.size() >= slots.published_at.size());
+    std::size_t a = 0;
+    for (const std::int64_t stamp : slots.published_at) {
+        while (a < slots.arrivals.size() && slots.arrivals[a] != stamp) { ++a; }
+        REQUIRE(a < slots.arrivals.size());   // a published stamp with no arrival
+        ++a;
+    }
+    // ...and the timeline never runs backwards, which is what makes a
+    // difference between consecutive arrivals a duration.
+    for (std::size_t i = 1; i < slots.arrivals.size(); ++i) {
+        CHECK(slots.arrivals[i] >= slots.arrivals[i - 1]);
+    }
 }

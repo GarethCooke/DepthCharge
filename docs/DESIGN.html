@@ -361,8 +361,8 @@
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status amber">in progress <b>M3 — live Anvil on the panel · A and B done, C feed proven on the board, acceptance pending</b></span>
-    <span class="status">first-party C++ <b>~5,000 lines</b></span>
-    <span class="status">drawn from source at <b>a56ccd6</b></span>
+    <span class="status">first-party C++ <b>~10,900 lines</b></span>
+    <span class="status">drawn from source at <b>a0e8e31</b></span>
   </div>
 </header>
 
@@ -1286,6 +1286,112 @@ sequenceDiagram
     stage C's scope was firmware.
   </p>
 
+  <h3>What the board can now say about its own silence</h3>
+  <p>
+    The re-measurement above ends with the board holding a number the desk cannot reproduce —
+    a 2,461 ms silence with the socket up — and no way to say anything more about it.
+    <code>worst_gap</code> is a single high-water mark, and a maximum is the one sample
+    guaranteed to be an outlier: it cannot distinguish one reconnect artefact from a
+    population of 1.2 s stalls, and it cannot say whether the hole is in the bytes arriving
+    or in the pipeline that consumes them. Those have different causes and different fixes,
+    so the next firmware session's output is an instrument rather than a patch.
+  </p>
+  <p>
+    Two clocks, two histograms, one reading. Every whole WebSocket message is stamped inside
+    the client's callback as it finishes arriving, and again when the event it carries
+    reaches the book. <code>FramePipeStats::arrival_gaps</code> buckets the first series and
+    <code>FeedTask::Stats::event_gaps</code> the second, on shared edges whose 1000 ms
+    boundary <em>is</em> the watchdog threshold — so the count above that edge is literally
+    the number of occasions the panel had grounds to grey.
+    <code>arrival_to_event</code> bridges them for a single message, with
+    <code>worst_queue_wait_us</code> splitting off the part spent waiting for the feed task
+    to be scheduled at all.
+  </p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th><code>arrival_gaps</code> &gt;1 s</th><th><code>event_gaps</code> &gt;1 s</th><th>Implicates</th></tr></thead>
+      <tbody>
+        <tr><td>fills</td><td>fills</td><td><s>the transport — the bytes stopped</s> — see below; this row over-claims</td></tr>
+        <tr><td>clean</td><td>fills</td><td>the board — the bytes arrived and the pipeline sat on them</td></tr>
+        <tr><td>clean</td><td>fills, with seconds of queue wait</td><td>scheduling: Core-0 starvation or a blocking call</td></tr>
+        <tr><td>clean</td><td>fills, with a small queue wait</td><td>the work itself — parser or book</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The load-bearing detail is on the arrival side and it is one line of ordering: a message
+    dropped for want of a free slot is counted as an arrival <em>anyway</em>. Slot exhaustion
+    is caused by the feed task being slow, so an arrival series that recorded only the
+    messages the board managed to keep would print feed-side starvation as a hole in the
+    <em>network</em> — the exact misreading the split exists to prevent. That rule lives in
+    <code>FrameReassembler::finish()</code>, which is ESP-IDF-free and therefore host-tested
+    beside the bucketing arithmetic; the bucket boundaries are pinned by a test rather than
+    by a comment, because an instrument that is wrong by one column does not fail, it sends a
+    bench session after the wrong candidate.
+  </p>
+
+  <h3>Where that table over-claimed, and the signal that replaces it</h3>
+  <p>
+    The two steady-state runs it was built for came back with the split <em>refusing to
+    split</em>: <code>connects=1</code> and <code>sock_gaps=0</code> across whole runs that
+    still logged 17 book-holes in 11 minutes (power save off) and 25 in 10.5 minutes (on),
+    each a genuine 1–2.5 s window. The socket never dropped and Anvil — an unconditional
+    ~80 ms republisher — never stopped. The board simply received the stream in bursts, and
+    both histograms filled together.
+  </p>
+  <p>
+    Read against the table above, that says "transport". It does not, and the reason is the
+    first row's premise: <b>the arrival stamp is not the wire.</b> It is taken in
+    <code>WsTransport::on_event</code>, inside <code>esp_websocket_client</code>'s own task,
+    which is already downstream of the Wi-Fi driver, lwIP, the socket read, the TLS record
+    decrypt and the <code>esp_event</code> dispatch hop. A hole in <code>arrival_gaps</code>
+    therefore means <em>no complete message was handed to our callback for a second</em> —
+    equally consistent with a dry socket and with that task not being scheduled on a busy
+    Core 0. The split is real, but the line it draws is at the FramePipe queue hop, not at
+    the antenna.
+  </p>
+  <p>
+    The second reason is upstream and not ours: Anvil's per-socket coalescing
+    <em>sheds</em> <code>book</code> frames whenever a socket backs up (measured 2026-08-09:
+    a client throttled to a quarter rate receives 4× fewer messages and is never silent for
+    longer than one drain interval). So shedding is a <em>symptom</em> of the board falling
+    behind rather than an independent cause, and "Anvil shed it" and "Wi-Fi delayed it"
+    surface identically as no book frame for two seconds. The un-entangled question is not
+    where the hole appears in the pipeline; it is whether Core 0 had the headroom to drain
+    the stream at all.
+  </p>
+  <p>
+    That needs a signal from outside the data path, and as of 2026-08-10 the board carries
+    three (<code>firmware/src/stall_probe.hpp</code>, <code>core_idle.*</code>):
+    <b>per-core idle across exactly the window that greyed the panel</b>, the <b>shape of the
+    recovery</b> that ended it, and the <b>rssi</b> at the time. Idle is measured from inside
+    each core's own idle task — FreeRTOS run-time stats are compiled out of the precompiled
+    Arduino framework, the fourth capability this vintage has decided here — by differencing
+    the core's cycle counter across passes through an idle hook that returns
+    <code>false</code>, which is what keeps the hook being called instead of the core
+    sleeping.
+  </p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Core 0 idle across the hole</th><th>Recovery shape</th><th>Reading</th></tr></thead>
+      <tbody>
+        <tr><td>far below the run's healthy baseline</td><td>burst, <code>seq</code> catching up</td><td><b>board-bound</b> — the frames sat unread in the socket buffer because Core 0 was busy</td></tr>
+        <tr><td>far below baseline</td><td>cadence, <code>seq</code> already moved on</td><td><b>board-bound</b> — Anvil shed the middle because this socket backed up (§7, strain 10)</td></tr>
+        <tr><td>at or above baseline</td><td>burst, <code>seq</code> catching up</td><td><b>link-bound</b> — the frames existed and the air delayed them</td></tr>
+        <tr><td>at or above baseline</td><td>cadence</td><td><b>link-bound</b> — nothing arrived and nothing was waiting to</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The wire <code>seq</code> earns its place here for the one thing it <em>can</em> do.
+    It is a global counter and unusable for ordering (§04), but its <em>rate</em> is a clock:
+    a frame ending a hole with a <code>seq</code> step of about one is an old frame that was
+    sitting somewhere, and one with a step of roughly rate × hole is a fresh frame whose
+    predecessors were never sent to us. The board prints both the step and the prediction, so
+    the reading is checkable rather than asserted — as are the verdicts, which print beside
+    the idle figure and the baseline they were derived from. Nothing branches on any of it.
+  </p>
+
   <h3>The other failure, which deliberately does nothing</h3>
 
   <figure>
@@ -1456,9 +1562,13 @@ classDiagram
     <code>cmake --workflow --preset host</code> configures, builds and tests in one step
     (<code>host-mingw</code> is the Windows MinGW-w64 equivalent; the two presets share a
     binary directory, so switching between them needs <code>build/host</code> cleared).
-    Nine ctest entries run; the main doctest binary carries 80 cases across eight files, and
-    a second doctest binary re-runs the parser-facing subset of them against the other
-    implementation of the parse seam.
+    Eleven ctest entries run; the main doctest binary carries 169 cases across twelve files,
+    and a second doctest binary re-runs the parser-facing subset of them against the other
+    implementation of the parse seam. Five of those files test <em>firmware</em> headers —
+    <code>frame_reassembler</code>, <code>gap_histogram</code>, <code>stall_probe</code>,
+    <code>reject_log</code> and <code>ws_supervisor</code> are all deliberately ESP-IDF-free
+    so that the reassembly, the bucketing, the stall verdict, the reject capture and the
+    reconnect policy are ctest's problem rather than the bench's.
   </p>
 
   <div class="tablewrap">
@@ -1866,13 +1976,154 @@ classDiagram
       place to look.
     </p>
     <p>
-      The instrumentation is the real gap. <code>worst_gap</code> is a single high-water mark
-      with no distribution behind it, so the board can report that it saw 2,461 ms but not
-      how often, nor whether the hole is in arrival or in decode, nor whether the feed task
-      was starved or the socket was quiet. Every question the desk answers in one command is
-      currently unanswerable on the device that has the problem.
+      The instrumentation was the real gap, and it is now closed. <code>worst_gap</code> is a
+      single high-water mark with no distribution behind it, so the board could report that
+      it saw 2,461 ms but not how often, nor whether the hole was in arrival or in decode,
+      nor whether the feed task was starved or the socket was quiet. Every question the desk
+      answers in one command was unanswerable on the device that has the problem. As of
+      2026-08-09 the board carries the arrival and event gap histograms, the
+      arrival→event latency and the queue-wait split described in
+      <a href="#outage">§05</a> — 128 bytes of static storage, allocation-free, and the
+      bucketing host-tested. <b>The measurement itself is still owed: it takes a ≥10-minute
+      bench run with no deliberate disconnects, which is the owner's, and until then this
+      strain point is instrumented but not diagnosed.</b>
     </p>
-    <p class="verdict">Resolves: <b>next firmware session, before Stage D — a bucketed gap histogram plus arrival-vs-event counters in <code>FeedTask::Stats</code>, then one bench run. Candidates to discriminate between, in the order the evidence favours them: the 2.5 s blocking <code>esp_websocket_client_stop()</code> already measured on loopTask; <code>esp_event</code> dispatch backing up behind three DATA events per book frame at a 4 KiB RX buffer; and feed-task starvation on Core 0, which also hosts the Wi-Fi and lwIP tasks at higher priority. Stage D adds a render task to that core's neighbour and will only make it harder to see</b></p>
+    <p>
+      One candidate was narrowed without the board, and it is the one the characterisation
+      brief expected to be cheapest: Wi-Fi modem sleep. Arduino-ESP32 2.0.14 does default it
+      on for the S3 (<code>_sleepEnabled = WIFI_PS_MIN_MODEM</code>), but this firmware has
+      called <code>WiFi.setSleep(false)</code> since the stage C draft, and after
+      <code>WiFi.mode()</code>, which the shipped source says is the order that makes it take
+      effect. So the experiment was not "does turning it off help" — it was whether turning
+      it off was ever taking effect, and whether turning it back <em>on</em> reproduces the
+      stall. It does not reproduce it and it does not remove it: <b>17 holes in 11 minutes
+      with power save off, 25 in 10.5 minutes with it on</b>, worst 2,461 ms and 1,893 ms
+      respectively. Modem sleep is not the mechanism.
+    </p>
+    <p>
+      <b>The bench ran, and the split the instrument was built around could not decide it.</b>
+      Both runs held <code>connects=1</code> and <code>sock_gaps=0</code> while
+      <code>arrive</code> and <code>event</code> filled their &gt;1 s buckets together — which
+      the 2026-08-09 verdict table reads as "transport", and which is an over-claim on two
+      counts, both now written into <a href="#outage">§05</a>. The arrival stamp is taken
+      inside <code>esp_websocket_client</code>'s task, downstream of the Wi-Fi driver, lwIP
+      and the TLS decrypt, so an arrival-side hole does not exclude a busy Core 0; and Anvil's
+      per-socket coalescing sheds to a slow consumer, so "the server stopped sending" and
+      "the board stopped keeping up" are the same observation seen from two ends. The two
+      candidates are <em>entangled by construction</em>, and no amount of instrumenting the
+      data path separates them.
+    </p>
+    <p>
+      So the 2026-08-10 instrument steps outside the data path: per-core idle across each
+      hole window, the recovery shape that ended it, and rssi
+      (<code>stall_probe.hpp</code>, <code>core_idle.*</code>; +640 B RAM, +4.2 KB flash,
+      still allocation-free, and the classification host-tested in
+      <code>test_stall_probe.cpp</code> because a verdict that is wrong reads exactly like one
+      that is right — the property test there caught the hole log handing out a record that was
+      still being written, which would have printed an unclassified verdict as a real one). Its
+      own load-bearing detail is what happens when it cannot measure:
+      a probe that failed to register reports idle as <em>unknown</em>, never as zero, because
+      zero would classify every hole in the run as board-bound and read as an unusually
+      decisive result.
+    </p>
+    <p>
+      It is not free of perturbation and does not pretend to be. Keeping the idle hook being
+      called means the idle task does not execute <code>waiti</code>, so an idle core spins
+      instead of sleeping — acceptable on a mains-powered object with
+      <code>CONFIG_PM_ENABLE</code> off and a priority-0 idle task that cannot delay real
+      work, and reversible with <code>-D DC_IDLE_PROBE=0</code> so a suspicious result can be
+      re-run without the instrument. Whether it ships past the characterisation is a stage D
+      decision, not a settled one.
+    </p>
+    <p class="verdict">Resolves: <b>verdict instrument landed 2026-08-10; the diagnosis needs one more ≥10-minute <code>-e depthcharge</code> run with <code>connects=1</code>. It picks the next brief outright: <b>board-bound</b> (Core 0 starved) opens the lever bundle — <code>esp_websocket_client buffer_size</code>, the LWIP TCP window (<code>CONFIG_LWIP_TCP_WND_DEFAULT</code> is 5,744 B, smaller than one 8.7 KB Anvil book frame), WS-task priority and core — each re-benched against this instrument with near-zero steady-state &gt;1 s holes as the bar; <b>link-bound</b> (Core 0 idle) leaves firmware entirely for 2.4 GHz channel, placement and rssi correlation, with Anvil's incremental-L2 feed staying on the Anvil backlog for M4/M5. What is already excluded: modem sleep (both arms measured), Anvil's cadence (17.02 frames/s, 391 ms worst gap at the desk), and the socket (<code>connects=1</code>)</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>13 · The board throws away most of the opening burst, and no counter can say what it was</h4>
+    <p>
+      A second finding out of the 2026-08-10 bench, independent of the stall and much
+      simpler: <b>~1,281 frames rejected in the first ~60 s of every connect — around 85 % of
+      the opening burst — then flat, with a smaller batch on each reconnect.</b>
+      <code>price_errors</code>, <code>other_ticker</code>, <code>unknown_kind</code> and
+      <code>truncated_frames</code> are all zero, so every one of them is
+      <code>parse_errors</code>: the frame did not decode at all.
+    </p>
+    <p>
+      Nothing about the ladder is at risk — Anvil's book frames are idempotent full replaces
+      and one lost frame costs an ~80 ms refresh, which is exactly why the adapter counts and
+      drops rather than gapping. What is at risk is the <em>reading</em>. Under invariant #5
+      a transport that delivers frames the parser rejects is <em>stopped</em>, so this is the
+      one shape of failure the firmware's event-armed watchdog was built for, and the board
+      is currently doing it to itself for a minute at a time on every connect.
+    </p>
+    <p>
+      <b>The counter cannot name the cause and no finer counter can either</b>, because
+      <code>parse_errors</code> is three unrelated diagnoses in one bucket, each owned by a
+      different half of the system: <code>NotJson</code> means the bytes were not a JSON
+      document, which on a real socket means truncated or spliced and indicts the reassembler
+      or the WebSocket client under burst load; <code>MissingType</code> means a well-formed
+      object this client does not know, which is the venue's and wants skip-not-error;
+      <code>BadShape</code> means a known type with a payload we reject, which is a wire
+      change and wants a re-vendor. Three fixes, three owners, one number.
+    </p>
+    <p>
+      <b>The desk constrains it before the board says anything.</b> The committed
+      2026-08-09 capture opens <em>at a connect</em> — its first frame is the on-connect
+      <code>snapshot</code> — and runs 1,513 frames over 90 s with
+      <code>parse_errors == 0</code>, pinned as a golden. So there is no frame Anvil sends at
+      connect that this parser rejects, and the burst is either something the board does to
+      the bytes or something the server sends only to <em>this</em> client. One hypothesis the
+      desk cannot exclude: the capture tool's WebSocket library reassembles server-level
+      fragmentation before writing a line, so a message Anvil split at the WebSocket layer is
+      invisible in a trace and is precisely what
+      <code>FrameReassembler</code> documents itself as publishing incomplete.
+    </p>
+    <p>
+      So 2026-08-10 landed the instrument rather than a fix: <code>reject_log.hpp</code>
+      captures the first ten rejected payloads <em>of each connect</em> — status, the whole
+      length, a printable head and tail, and the offset of any second
+      <code>{"type":</code> inside one buffer — and the console prints them as they happen.
+      Each field discriminates: a length at a multiple of the 4,096-byte RX buffer names a
+      chunk-boundary truncation, a tail that is not <code>}</code> names a cut-off message
+      against one rejected on its contents, and a second header names two messages in one
+      buffer, which is the failure that looks valid at both ends and would otherwise be read
+      as inexplicable. 2,168 B of <code>.bss</code>, allocation-free, ESP-IDF-free and
+      host-tested in <code>test_reject_log.cpp</code>; the reject path is the only path that
+      touches it.
+    </p>
+    <p class="verdict">Resolves: <b>instrumented 2026-08-10, not diagnosed — and the fix is deliberately not chosen, because the three candidates have three different owners and picking one before the payload is read is the trap this milestone has already paid for. One bench run supplies it: the first <code>-- reject</code> lines of a connect. <code>MissingType</code> on a whole, well-formed payload → the venue's, so skip-not-error it and document the frame in the vendored protocol; <code>NotJson</code> with a chunk-boundary length or a <code>SPLIT@</code> offset → ours, and the lever bundle is the same one strain 12 names (<code>buffer_size</code>, the LWIP window, WS-task priority)</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>14 · The reconnect is correct because of three facts about a binary nobody here built</h4>
+    <p>
+      <code>WsTransport</code> now keeps two <code>esp_websocket_client</code> handles and
+      opens the idle one on a drop, because the alternative — <code>esp_websocket_client_stop()</code>
+      — blocks for up to five seconds. That design is sound only while three undocumented
+      properties of the precompiled Arduino-ESP32 2.0.14 archive hold, all three read out of
+      it with <code>objdump</code> on 2026-08-10 rather than taken from IDF source:
+    </p>
+    <p>
+      <b>(a)</b> <code>wait_timeout_ms</code> is 10 s and the task sleeps half of it per
+      WAIT_TIMEOUT pass, so a retired handle becomes reusable ~5 s after its abort — which is
+      what <code>kReconnectBackoffUs + kRetryCycleUs &gt; kClientSelfExitUs</code> is asserted
+      against. <b>(b)</b> With <code>disable_auto_reconnect</code> set, the task takes the
+      <code>run = false</code> arm and deletes itself; without that it wakes at 10 s and opens
+      a <em>second live socket</em> into one reassembler. <b>(c)</b>
+      <code>abort_connection()</code> closes the transport at the drop, which is the only
+      reason two handles cost one TLS context rather than two.
+    </p>
+    <p>
+      None of the three is in a header, a changelog or a test. An IDF or framework bump
+      changes any of them silently, and the failure modes are not loud: (a) degrades to a
+      reconnect that takes an extra retry cycle, (b) is a duplicate feed, (c) is a heap
+      spike during every outage. The guard that exists is the assert on (a) — the other two
+      have only the comments at their call sites naming the offsets they were read from.
+      This is the fifth design this vintage has decided, after <code>esp_crt_bundle</code>,
+      <code>heap_trace_start</code>, the missing <code>reconnect_timeout_ms</code> and
+      <code>CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS</code>.
+    </p>
+    <p class="verdict">Resolves: <b>not by a test — nothing on the desk can see a precompiled xtensa archive. It resolves by a platform decision: pioarduino / IDF 5.x supplies <code>reconnect_timeout_ms</code> as a real config field, at which point the spare handle, the disabled auto-reconnect and this whole card collapse into one line of configuration. Until then the mitigation is that the bench can see it — a drop that recovers on the wrong handle, or twice, shows up in the <code>opening handle X</code> and <code>socket up on handle X</code> lines, which is why those print the handle at all</b></p>
   </div>
 </section>
 
@@ -1908,24 +2159,25 @@ classDiagram
 
   <h3>Known M3 edits, already queued</h3>
   <ul>
-    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 40.7%, flash 834 KB) and has now <em>run</em> — the first bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. The boxes stay dashed until the pull-the-Wi-Fi acceptance is captured too, and the stage D render task is still entirely hypothetical.</li>
+    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Half done at stage C</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 40.8%, flash 836 KB) and has now <em>run</em> — the first bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. The boxes stay dashed until the pull-the-Wi-Fi acceptance is captured too, and the stage D render task is still entirely hypothetical.</li>
     <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
-    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement (the board stalls for seconds and only the panel can see it); 7 should close at stage D; 1 and 3 will not.</li>
-    <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12).</li>
+    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement (the board stalls for seconds and only the panel can see it), <em>half-closed</em> the same day, and <em>re-opened</em> on 2026-08-10 when the bench showed the arrival-vs-event split could not decide it — the two candidates are entangled through Anvil's shedding and through where the arrival stamp is taken, so the verdict now rests on per-core idle instead; 13 <em>opened</em> on 2026-08-10 alongside it (the board rejects ~85% of every connect's opening burst and no counter can say what the frames were); 14 <em>opened</em> on 2026-08-10 by the reconnect rebuild (the recovery is correct because of three undocumented properties of a precompiled archive, and only one of them has an assert); 7 should close at stage D; 1 and 3 will not.</li>
+    <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12). It has since gained the arrival-vs-event split as well, and then the correction the bench forced on it — the first row of that split's verdict table over-claims, because the arrival stamp sits downstream of the TLS decrypt and Anvil sheds to a slow consumer, so the board-versus-link verdict moved to per-core idle. When the stall is found and fixed, the histograms stay (they are how the next one gets found) but both verdict tables become history.</li>
   </ul>
 </section>
 
 <footer>
-  Drawn from source at <b>bae1c49</b> plus M3 stage C · <code>wc -l</code>: engine 2,449
-  lines (958 of them the streaming parser) · harness 5,668 (3,955 of it tests) · firmware
-  1,615 · plus 961 lines of Python capture and analysis tooling in <code>tools/</code>.
+  Drawn from source at <b>a0e8e31</b> plus the M3 stall instrument · <code>wc -l</code>:
+  engine 2,449 lines (958 of them the streaming parser) · harness 6,098 (4,385 of it tests) ·
+  firmware 2,379 · plus 962 lines of Python capture and analysis tooling in
+  <code>tools/</code>.
   Revisions before stage B counted with a tool that dropped unterminated final lines, so those
   figures are not comparable with these.<br>
-  Verified against a green <code>host-mingw</code> workflow run: 11/11 ctest, 99/99 doctest in
-  <code>dc_tests</code> (9,126 assertions) and 45/45 in <code>dc_tests_streaming</code>
+  Verified against a green <code>host-mingw</code> workflow run: 11/11 ctest, 117/117 doctest
+  in <code>dc_tests</code> (9,780 assertions) and 45/45 in <code>dc_tests_streaming</code>
   (704), plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1, and a clean
-  <code>pio run</code> of <code>firmware/</code> (RAM 40.7%, flash 833,621 B). Every
+  <code>pio run</code> of both firmware environments (RAM 40.8%, flash 835,793 B). Every
   <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the parser's
   <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.
   The firmware's <b>feed half has now run on hardware</b> (2026-08-09: connect → first snapshot
