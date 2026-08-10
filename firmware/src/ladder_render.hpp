@@ -115,20 +115,33 @@ namespace detail {
 // Assigned BY NAME rather than positionally. Twelve same-typed members in a row
 // is a transposition that still compiles — the console ladder's Glyphs struct
 // took designated initialisers for the same reason, and a C array cannot.
+// THE HUES ARE PURE, AND THAT IS A SIX-BIT DECISION.
+//
+// The first version tinted the sides towards white to mark the touch —
+// Ask {160,20,20}, AskBest {255,60,60}. At the library's default eight-bit depth
+// that reads as a brighter red. At the six bits this build actually uses (see
+// kMaxColourDepth), the small green and blue components survive quantisation
+// while the red is already saturated, and the bench verdict was immediate:
+// **"red is now more pink"**.
+//
+// So each side is one channel and nothing else, and best-of-book is distinguished
+// by INTENSITY rather than by tint. A pure channel cannot drift towards another
+// hue however coarsely it is quantised, which is the property worth having on a
+// panel whose entire job is that green and red mean opposite things.
 constexpr Palette make_live_palette() noexcept {
     Palette p{};
     p.ink[ink_index(Ink::Background)] = {0, 0, 0};
-    p.ink[ink_index(Ink::Chrome)] = {26, 26, 38};
-    p.ink[ink_index(Ink::Symbol)] = {0, 130, 170};
-    p.ink[ink_index(Ink::Value)] = {225, 230, 255};
-    p.ink[ink_index(Ink::Bid)] = {0, 140, 30};
-    p.ink[ink_index(Ink::BidBest)] = {40, 255, 80};
-    p.ink[ink_index(Ink::Ask)] = {160, 20, 20};
-    p.ink[ink_index(Ink::AskBest)] = {255, 60, 60};
-    p.ink[ink_index(Ink::Spread)] = {70, 55, 0};
-    p.ink[ink_index(Ink::Tape)] = {0, 120, 160};
+    p.ink[ink_index(Ink::Chrome)] = {30, 30, 45};
+    p.ink[ink_index(Ink::Symbol)] = {0, 160, 200};
+    p.ink[ink_index(Ink::Value)] = {255, 255, 255};
+    p.ink[ink_index(Ink::Bid)] = {0, 150, 0};
+    p.ink[ink_index(Ink::BidBest)] = {0, 255, 0};
+    p.ink[ink_index(Ink::Ask)] = {170, 0, 0};
+    p.ink[ink_index(Ink::AskBest)] = {255, 0, 0};
+    p.ink[ink_index(Ink::Spread)] = {90, 70, 0};
+    p.ink[ink_index(Ink::Tape)] = {0, 150, 200};
     p.ink[ink_index(Ink::Flash)] = {255, 255, 255};
-    p.ink[ink_index(Ink::Beat)] = {0, 90, 120};
+    p.ink[ink_index(Ink::Beat)] = {0, 110, 150};
     return p;
 }
 
@@ -142,20 +155,27 @@ constexpr Palette make_live_palette() noexcept {
 // It is what makes the boot frame — header, chrome, no ladder at all — read as
 // an honest empty panel rather than a dead one. The bars sit well above it, so
 // the ladder's shape stays readable through the wash.
+// The wash stays where it is and EVERYTHING ELSE MOVES UP, which is the other
+// half of the six-bit correction. The bench could not read the stale reason
+// against the background: the whole ramp had been chosen at eight bits, where
+// 215 against 64 is ample, and at six bits the gap closes enough that a 3x5 glyph
+// stops carrying. Lowering the background would have been the wrong fix — it is
+// the "this panel is ON, and not to be trusted" signal, and the boot frame has
+// nothing else — so the text goes to full white and the ladder inks lift instead.
 constexpr Palette make_stale_palette() noexcept {
     Palette p{};
     p.ink[ink_index(Ink::Background)] = {64, 64, 64};
-    p.ink[ink_index(Ink::Chrome)] = {96, 96, 96};
-    p.ink[ink_index(Ink::Symbol)] = {130, 130, 130};
-    p.ink[ink_index(Ink::Value)] = {215, 215, 215};
-    p.ink[ink_index(Ink::Bid)] = {120, 120, 120};
-    p.ink[ink_index(Ink::BidBest)] = {180, 180, 180};
-    p.ink[ink_index(Ink::Ask)] = {120, 120, 120};
-    p.ink[ink_index(Ink::AskBest)] = {180, 180, 180};
-    p.ink[ink_index(Ink::Spread)] = {80, 80, 80};
-    p.ink[ink_index(Ink::Tape)] = {150, 150, 150};
-    p.ink[ink_index(Ink::Flash)] = {230, 230, 230};
-    p.ink[ink_index(Ink::Beat)] = {150, 150, 150};
+    p.ink[ink_index(Ink::Chrome)] = {130, 130, 130};
+    p.ink[ink_index(Ink::Symbol)] = {175, 175, 175};
+    p.ink[ink_index(Ink::Value)] = {255, 255, 255};
+    p.ink[ink_index(Ink::Bid)] = {140, 140, 140};
+    p.ink[ink_index(Ink::BidBest)] = {210, 210, 210};
+    p.ink[ink_index(Ink::Ask)] = {140, 140, 140};
+    p.ink[ink_index(Ink::AskBest)] = {210, 210, 210};
+    p.ink[ink_index(Ink::Spread)] = {100, 100, 100};
+    p.ink[ink_index(Ink::Tape)] = {190, 190, 190};
+    p.ink[ink_index(Ink::Flash)] = {255, 255, 255};
+    p.ink[ink_index(Ink::Beat)] = {190, 190, 190};
     return p;
 }
 

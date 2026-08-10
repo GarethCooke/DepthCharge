@@ -36,6 +36,7 @@
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 
 #include "ladder_render.hpp"
+#include "panel_budget.hpp"
 
 namespace depthcharge::fw {
 
@@ -46,41 +47,66 @@ namespace depthcharge::fw {
 // a 64x64 panel at arm's length at full brightness is unpleasant to sit beside
 // for an evening, which is the actual use. It is one constant, and the bench may
 // raise it to 255 for the acceptance photograph with no other consequence.
-inline constexpr std::uint8_t kPanelBrightness = 160;
+// Raised 160 -> 224 on 2026-08-10 bench evidence, and the reason is legibility
+// rather than mood: the ladder reads well at 160 but the 3x5 header does not,
+// and a 3-pixel-wide glyph has no contrast to spare. Still not a power decision
+// (M2: 2.6 A full white, 0.25 A representative content, 5 V/5 A supply), and
+// still one constant — drop it back if it turns out to be unpleasant to sit
+// beside for an evening, which is the only thing 160 was ever protecting.
+inline constexpr std::uint8_t kPanelBrightness = 224;
 
 // Colour depth is chosen at run time from a measurement (see panel.cpp). These
-// bound the search. 8 is the library's default and the most colour this ladder
-// could use; below 3 the two-tone grey ramp the stale state depends on starts to
-// band, and at that point the second buffer is the better thing to keep.
-inline constexpr int kMaxColourDepth = 8;
+// bound the search.
+//
+// THE CEILING IS 6, NOT THE LIBRARY'S DEFAULT 8, AND THE BENCH IS WHY.
+// At depth 8 on this panel the driver cannot reach its 60 Hz minimum without
+// collapsing the bottom three colour bits onto one timing slot — its own log
+// says so: "lsbMsbTransitionBit of 2 used to achieve refresh rate of 60 Hz.
+// Percieved colour depth to the eye may be reduced." At depth 6 it clears 60 Hz
+// with transition bit 0, every bit correctly weighted, at the same ~100 Hz.
+//
+// So depth 8 was buying 16 KiB of internal DMA RAM worth of colour the panel was
+// never actually showing. That mattered: the 2026-08-10 run steadied at
+// **13,816 bytes of free internal heap with a 4,084 byte largest block** once
+// Wi-Fi and TLS were up, against ~124 KB in stage C with no panel. The arithmetic
+// is in panel_budget.hpp and pinned against that run's numbers in
+// test_panel_budget.cpp.
+//
+// Below 3 the two-tone grey ramp the stale state depends on starts to band, and
+// at that point the second buffer is the better thing to keep.
+inline constexpr int kMaxColourDepth = 6;
 inline constexpr int kMinDoubleBufferedDepth = 3;
 inline constexpr int kMinColourDepth = 2;
 
 // Internal DMA-capable heap held back from the panel, taken BEFORE the WebSocket
-// client exists. Deliberately generous: the panel's colour depth is cosmetic and
-// the feed is not, so this errs toward a dimmer ladder rather than a TLS
-// handshake that cannot allocate. It has to cover two esp_websocket_client
-// handles' buffers (~10 KiB each — the spare-handle reconnect, ARCHITECTURE §9
-// 2026-08-10), one live mbedTLS context, the client task's stack, and working
-// slack for a reconnect's handshake at 3 a.m. on a warm heap.
+// client exists. The panel's colour depth is cosmetic and the feed is not, so
+// this errs toward a dimmer ladder rather than a TLS handshake that cannot
+// allocate. It has to cover two esp_websocket_client handles' buffers (~10 KiB
+// each — the spare-handle reconnect, ARCHITECTURE §9 2026-08-10), one live
+// mbedTLS context, the client task's stack, and working slack for a reconnect's
+// handshake on a warm heap.
 //
-// The board reports free-before, free-after, the measured delta and what every
-// rung would have cost, so a later session can lower this against a number
-// instead of an argument.
+// NOW MEASURED, AND THE GUESS WAS NEARLY EXACT — which is luck, and is written
+// down so nobody mistakes it for judgement. On the 2026-08-10 run the network
+// stack settled at **~86 KB** consumed against this 96 KiB held back, leaving
+// 13,816 bytes of free internal heap and a 4,084 byte largest block. That is
+// enough, but it is not comfortable: a reconnect rebuilds a TLS context, and the
+// only reason it succeeds is that the old one is freed at the drop first (the
+// bench saw free jump +54,720 the instant the socket died).
+//
+// Do NOT lower this without a run that shows the steady-state figure improving
+// for some other reason. The lever that actually bought headroom was the colour
+// depth ceiling above, which is a cosmetic cost; lowering the reserve trades
+// against the feed.
 inline constexpr std::uint32_t kReserveInternalBytes = 96u * 1024u;
 
-// The library allocates ROWS_PER_FRAME row buffers per frame buffer, each
-// PIXELS_PER_ROW * colour_depth DMA words of two bytes. Reproduced here because
-// the decision has to be made BEFORE begin() — see panel.cpp for why there is no
-// retry — and cross-checked against the library's own "Allocating %d bytes"
-// line and against the measured heap delta, so a drift shows up as three numbers
-// that disagree rather than as a silent mis-sizing.
-constexpr std::uint32_t panel_framebuffer_bytes(int depth, bool double_buffered) noexcept {
-    return static_cast<std::uint32_t>(kPanelHeight / 2) *   // ROWS_PER_FRAME
-           static_cast<std::uint32_t>(kPanelWidth) *        // PIXELS_PER_ROW
-           static_cast<std::uint32_t>(depth) *
-           2u *                                             // sizeof(ESP32_I2S_DMA_STORAGE_TYPE)
-           (double_buffered ? 2u : 1u);
+// What begin() will really take: framebuffer + DMA descriptors + the allocator's
+// own bookkeeping. The arithmetic lives in panel_budget.hpp, ESP-IDF-free and
+// host-tested against the numbers this board printed, because the first version
+// of it counted the framebuffer alone and was wrong by 44% — predicted 65,536
+// against 94,468 measured, an error only a conservative reserve concealed.
+constexpr std::uint32_t panel_cost_bytes(int depth, bool double_buffered) noexcept {
+    return panel_total_bytes(kPanelWidth, kPanelHeight, depth, double_buffered);
 }
 
 // Everything the bench needs to close stage D's "known unknowns" in one line.

@@ -180,6 +180,7 @@ add_executable(dc_tests
   harness/tests/test_frame_reassembler.cpp
   harness/tests/test_gap_histogram.cpp
   harness/tests/test_ladder_render.cpp
+  harness/tests/test_panel_budget.cpp
   harness/tests/test_parser_equivalence.cpp
   harness/tests/test_reject_log.cpp
   harness/tests/test_replay_goldens.cpp

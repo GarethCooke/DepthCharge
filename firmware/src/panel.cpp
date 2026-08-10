@@ -52,11 +52,11 @@ struct Choice {
 
 Choice choose_depth(std::uint32_t budget) noexcept {
     for (int d = kMaxColourDepth; d >= kMinDoubleBufferedDepth; --d) {
-        const std::uint32_t need = panel_framebuffer_bytes(d, true);
+        const std::uint32_t need = panel_cost_bytes(d, true);
         if (need <= budget) { return Choice{d, true, need}; }
     }
     for (int d = kMaxColourDepth; d >= kMinColourDepth; --d) {
-        const std::uint32_t need = panel_framebuffer_bytes(d, false);
+        const std::uint32_t need = panel_cost_bytes(d, false);
         if (need <= budget) { return Choice{d, false, need}; }
     }
     return Choice{};
@@ -83,17 +83,22 @@ bool Panel::begin() noexcept {
                                      : 0u;
     const Choice choice = choose_depth(budget);
 
+    // The rungs are printed as TOTAL cost, which is what the fit is decided on.
+    // They are larger than the library's own "Allocating N bytes" line by the
+    // descriptors and bookkeeping — that gap is the defect this arithmetic was
+    // rewritten to close, so the two lines disagreeing is now expected and the
+    // amount they disagree by is checkable.
     ESP_LOGI(kTag,
              "dma-internal free=%u largest=%u | reserve=%u budget=%u"
-             " | rungs d8=%u d6=%u d4=%u d3=%u (double), d8single=%u",
+             " | rungs d6=%u d5=%u d4=%u d3=%u (double), d6single=%u",
              static_cast<unsigned>(report_.free_before),
              static_cast<unsigned>(report_.largest_before),
              static_cast<unsigned>(kReserveInternalBytes), static_cast<unsigned>(budget),
-             static_cast<unsigned>(panel_framebuffer_bytes(8, true)),
-             static_cast<unsigned>(panel_framebuffer_bytes(6, true)),
-             static_cast<unsigned>(panel_framebuffer_bytes(4, true)),
-             static_cast<unsigned>(panel_framebuffer_bytes(3, true)),
-             static_cast<unsigned>(panel_framebuffer_bytes(8, false)));
+             static_cast<unsigned>(panel_cost_bytes(6, true)),
+             static_cast<unsigned>(panel_cost_bytes(5, true)),
+             static_cast<unsigned>(panel_cost_bytes(4, true)),
+             static_cast<unsigned>(panel_cost_bytes(3, true)),
+             static_cast<unsigned>(panel_cost_bytes(6, false)));
 
     if (choice.depth == 0) {
         ESP_LOGE(kTag,
