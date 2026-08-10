@@ -225,6 +225,22 @@ private:
     std::atomic<std::uint8_t> live_{0};
 
     WsSupervisor supervisor_;
+
+    // The association half, added 2026-08-10 after the bench found the case
+    // nothing was watching: an AP that deauthenticates with AUTH_FAIL leaves
+    // Arduino's auto-reconnect permanently disarmed (see ws_supervisor.hpp), so
+    // `connect_wifi()` being a one-shot at boot meant the panel stayed grey for
+    // the rest of the run. The policy is host-tested beside the socket one; this
+    // is the platform half and the credentials it needs to act.
+    //
+    // The two pointers are borrowed, not owned. They come from `secrets.h`,
+    // where they are `inline constexpr char[]` with static storage duration, so
+    // there is nothing to copy and nothing that can dangle — and copying them
+    // into a buffer here would put the Wi-Fi password in a second place.
+    WifiSupervisor wifi_supervisor_;
+    const char* ssid_ = nullptr;
+    const char* password_ = nullptr;
+
     std::int64_t last_rssi_us_ = 0;
 };
 

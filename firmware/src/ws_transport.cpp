@@ -20,6 +20,12 @@ constexpr char kHandleName[] = {'A', 'B'};
 
 bool WsTransport::connect_wifi(const char* ssid, const char* password,
                                std::uint32_t timeout_ms) noexcept {
+    // Kept so supervise() can rejoin later. This function used to be the ONLY
+    // place the station was ever asked to associate, which is the hole the
+    // 2026-08-10 bench fell into — see WifiSupervisor.
+    ssid_ = ssid;
+    password_ = password;
+
     WiFi.mode(WIFI_STA);
     // Modem sleep off by default. The power-save mode parks the radio between
     // DTIM beacons and can add hundreds of milliseconds of RX latency — which on
@@ -238,6 +244,35 @@ void WsTransport::supervise() noexcept {
     // is "could a TCP connection possibly succeed", and that needs an IP, which
     // is what Arduino's status tracks and an AP record does not.
     in.wifi_associated = (WiFi.status() == WL_CONNECTED);
+
+    // THE ASSOCIATION, BEFORE THE SOCKET. Arduino gives up permanently on an
+    // AUTH_FAIL deauth (ws_supervisor.hpp cites the framework lines), so if
+    // nothing here rejoins, the socket supervisor below holds forever and the
+    // panel greys for the rest of the run — which is exactly what the bench saw.
+    //
+    // WiFi.begin() is non-blocking: it queues the association and returns, so
+    // this costs loopTask nothing and cannot stall the 250 ms poll. The
+    // disconnect() first is what clears WL_CONNECT_FAILED, which the framework
+    // latches on AUTH_FAIL and which begin() alone does not reset.
+    // WL_CONNECT_FAILED is Arduino latching "that attempt is over and it lost"
+    // (WiFiGeneric.cpp:1065 on AUTH_FAIL, :1088 on ASSOC_FAIL). Distinguishing
+    // it from a plain "not associated" is what lets a refused retry come back in
+    // a second instead of five — the bench measured the refusal itself at 60 ms.
+    const bool wifi_refused = (WiFi.status() == WL_CONNECT_FAILED);
+    if (const auto w = wifi_supervisor_.poll(now, in.wifi_associated, wifi_refused); w.rejoin) {
+        ESP_LOGW(kTag, "wifi down %d ms and the framework has stopped trying — rejoining (#%u)",
+                 static_cast<int>(w.down_us / 1000), static_cast<unsigned>(w.attempt));
+        WiFi.disconnect();
+        if (ssid_ != nullptr) {
+            WiFi.begin(ssid_, password_);
+        } else {
+            // Only reachable if supervise() ran before connect_wifi(), which
+            // main.cpp's bring-up order rules out. Reported rather than silently
+            // skipped, because a rejoin that does nothing looks identical in the
+            // log to one that failed.
+            ESP_LOGE(kTag, "no credentials to rejoin with — connect_wifi() never ran");
+        }
+    }
 
     const SupervisorDecision d = supervisor_.poll(in);
 
