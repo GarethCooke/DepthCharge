@@ -99,6 +99,28 @@ inline std::uint32_t clamp_us_to_u32(std::uint64_t value_us) noexcept {
     return (value_us > 0xFFFFFFFFull) ? 0xFFFFFFFFu : static_cast<std::uint32_t>(value_us);
 }
 
+// Append-with-truncation, for every fixed-buffer render in the firmware.
+//
+// `written` is what snprintf returned, `cap` the whole buffer and `at` the
+// cursor, advanced in place. Returns true when there is no room for more, so a
+// caller's loop reads `if (append_truncating(n, cap, at)) { break; }`.
+//
+// Shared for the same reason clamp_us_to_u32 above is: it was written twice —
+// once here and once in the stall probe's renderer — and the failure mode of
+// getting it wrong is not a crash but a log line that is silently one field
+// short, in the one place a bench session is reading for a verdict. The
+// off-by-one to get right is that snprintf returns the length it WANTED, so
+// `written >= remaining` is truncation even though nothing was overrun.
+inline bool append_truncating(int written, std::size_t cap, std::size_t& at) noexcept {
+    if (written < 0) { return true; }
+    if (static_cast<std::size_t>(written) >= cap - at) {
+        at = cap - 1;
+        return true;
+    }
+    at += static_cast<std::size_t>(written);
+    return false;
+}
+
 template <typename Scale>
 class Histogram {
 public:
@@ -162,9 +184,7 @@ public:
         for (std::size_t i = 0; i < kBuckets; ++i) {
             const int n = std::snprintf(out + at, cap - at, "%s%s:%u", (i == 0) ? "" : " ",
                                         Scale::kLabel[i], static_cast<unsigned>(counts_[i]));
-            if (n < 0) { break; }
-            if (static_cast<std::size_t>(n) >= cap - at) { return cap - 1; }
-            at += static_cast<std::size_t>(n);
+            if (append_truncating(n, cap, at)) { break; }
         }
         return at;
     }

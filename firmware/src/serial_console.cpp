@@ -73,6 +73,11 @@ void SerialConsole::run() noexcept {
             draw(received_);
         }
 
+        // Before the timed block, because a hole's verdict is most useful while
+        // the grey it caused is still on the screen in front of whoever is at
+        // the bench.
+        drain_holes(feed_.stats().stall);
+
         const std::int64_t now = esp_timer_get_time();
         if (now - last_stats_us_ >= kStatsPeriodUs) {
             last_stats_us_ = now;
@@ -173,6 +178,7 @@ void SerialConsole::print_stats() noexcept {
              static_cast<unsigned>(f.worst_gap_us / 1000),
              static_cast<unsigned>(f.worst_parse_us));
     print_distributions(f, p);
+    print_stall(f);
     ESP_LOGI(kTag, "-- pipe   : published=%u oversize=%u no_slot=%u qfull=%u abandoned=%u cont=%u ctrl=%u",
              static_cast<unsigned>(p.frames_published), static_cast<unsigned>(p.oversize),
              static_cast<unsigned>(p.no_slot), static_cast<unsigned>(p.queue_full),
@@ -207,13 +213,19 @@ void SerialConsole::print_distributions(const FeedTask::Stats& f,
     // ladder: the same silence the RX watchdog greys on. `a->e` is the bridge
     // between one message's arrival and the book having moved.
     //
-    //   >1s filling on `arrive` and on `event` together  -> transport. The bytes
-    //       stopped; Wi-Fi, TLS, the socket, or the server's egress to us.
     //   >1s filling on `event` with `arrive` clean       -> ours. The bytes came
     //       and the pipeline sat on them; then `a->e`, `qwait` and `backlog`
     //       say whether it was scheduling or work.
     //   `qwait` in seconds with `worst_frame` in millis  -> the feed task was
     //       not running: Core-0 starvation or a blocking call on this side.
+    //   >1s filling on `arrive` and on `event` together  -> UNDECIDED, and the
+    //       first draft of this comment said "transport", which is the reading
+    //       the 2026-08-10 bench had to withdraw. `arrive` is stamped on the
+    //       WebSocket client's task, downstream of the Wi-Fi driver, lwIP and
+    //       the TLS decrypt, so it fills for a busy Core 0 too; and Anvil sheds
+    //       to a slow consumer, so the server going quiet to us is a symptom of
+    //       the same thing. Read the `cpu` and `holes` lines below for that
+    //       fork; these three cannot settle it.
     //
     // Cumulative since boot, not per window — the question is "how often across
     // the whole run", and a distribution that resets every 10 s cannot answer it
@@ -248,6 +260,80 @@ void SerialConsole::print_gap_line(const char* what, const GapHistogram& h) noex
              static_cast<unsigned>(h.worst_us() / 1000),
              static_cast<unsigned>(h.count_from(GapScale::kFirstLong)),
              GapHistogram::label(h.mode_from(GapScale::kFirstLong)));
+}
+
+void SerialConsole::print_stall(const FeedTask::Stats& f) noexcept {
+    // THE THREE LINES THAT PICK THE NEXT BRIEF.
+    //
+    // Read `cpu` first and only then `holes`. The tally's board-bound /
+    // link-bound split is derived from the per-hole idle against the healthy
+    // baseline on the `cpu` line, so a baseline that looks wrong — Core 0 at 30%
+    // idle in steady state, say — invalidates the tally above it rather than
+    // being a separate observation.
+    //
+    // `window` is this task's own reading over the last statistics period, from
+    // the same counters by a different task. It is not redundant: the per-hole
+    // figures are a handful of one-second windows on Core 0 and this is ten
+    // seconds of wall clock on Core 1, so the two disagreeing is the instrument
+    // reporting a problem with itself.
+    const std::int64_t now = esp_timer_get_time();
+    const std::uint32_t idle0 = idle_.idle_us(0);
+    const std::uint32_t idle1 = idle_.idle_us(1);
+    if (block_started_us_ != 0 && now > block_started_us_) {
+        const std::uint32_t window_us =
+            clamp_us_to_u32(static_cast<std::uint64_t>(now - block_started_us_));
+        const std::uint32_t d0 = wrapping_delta_u32(idle0, idle0_at_block_);
+        const std::uint32_t d1 = wrapping_delta_u32(idle1, idle1_at_block_);
+        if (idle_.valid()) {
+            ESP_LOGI(kTag,
+                     "-- cpu    : window c0=%u%% c1=%u%% over %u ms | healthy c0=%u%% c1=%u%% n=%u"
+                     " | probe %u passes worst %u cyc of %u",
+                     static_cast<unsigned>(idle_percent(d0, window_us)),
+                     static_cast<unsigned>(idle_percent(d1, window_us)),
+                     static_cast<unsigned>(window_us / 1000u),
+                     static_cast<unsigned>(f.stall.baseline0_pct()),
+                     static_cast<unsigned>(f.stall.baseline1_pct()),
+                     static_cast<unsigned>(f.stall.baseline_windows()),
+                     static_cast<unsigned>(idle_.accumulator(0).passes()),
+                     static_cast<unsigned>(idle_.accumulator(0).worst_pass_cycles()),
+                     static_cast<unsigned>(idle_.accumulator(0).continuity_cycles()));
+        } else {
+            ESP_LOGW(kTag, "-- cpu    : idle probe NOT RUNNING — every hole verdict is unknown");
+        }
+    }
+    block_started_us_ = now;
+    idle0_at_block_ = idle0;
+    idle1_at_block_ = idle1;
+
+    ESP_LOGI(kTag, "-- rssi   : now %d min %d max %d dBm n=%u",
+             static_cast<int>(link_.last_dbm()), static_cast<int>(link_.min_dbm()),
+             static_cast<int>(link_.max_dbm()), static_cast<unsigned>(link_.samples()));
+
+    // 160 bytes: the tally is seven counts and a rate, the longest of which is
+    // ten digits. Truncation is defined and harmless.
+    char line[160];
+    f.stall.render_tally(line, sizeof line);
+    ESP_LOGI(kTag, "-- holes  : %s", line);
+}
+
+void SerialConsole::drain_holes(const StallProbe& stall) noexcept {
+    // A record can be evicted from the ring before this task reaches it — it
+    // cannot happen at two holes a minute against a 20 ms poll, but a silently
+    // skipped verdict is exactly the sort of thing that gets noticed as "the
+    // counts do not add up" three sessions later, so it is reported.
+    if (holes_printed_ < stall.oldest_retained()) {
+        ESP_LOGW(kTag, "-- hole   : %u verdicts evicted before printing",
+                 static_cast<unsigned>(stall.oldest_retained() - holes_printed_));
+        holes_printed_ = stall.oldest_retained();
+    }
+    while (holes_printed_ < stall.completed()) {
+        const HoleRecord* r = stall.completed_at(holes_printed_);
+        ++holes_printed_;
+        if (r == nullptr) { continue; }
+        char line[208];
+        StallProbe::render_hole(*r, line, sizeof line);
+        ESP_LOGW(kTag, "-- hole   : %s", line);
+    }
 }
 
 void SerialConsole::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {

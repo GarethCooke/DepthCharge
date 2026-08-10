@@ -28,6 +28,7 @@
 
 #include "frame_pipe.hpp"
 #include "frame_reassembler.hpp"
+#include "stall_probe.hpp"
 
 namespace depthcharge::fw {
 
@@ -117,10 +118,27 @@ inline constexpr std::int64_t kHandshakeBudgetUs = 7 * 1000 * 1000;
 static_assert(kHandshakeBudgetUs >= kObservedRecoveryUs,
               "the handshake budget must cover the slowest recovery the bench has measured");
 
+// How often the supervisor samples rssi.
+//
+// It lives here rather than in the console because this class is the only one
+// that already owns Wi-Fi driver calls, and because the console must not include
+// <Arduino.h>: doing so would let esp32-hal-log.h redefine its ESP_LOGx onto
+// Arduino's log_printfv, which mallocs past 64 characters and takes the UART
+// mutex — the path feed_task.cpp had all its logging removed for. So the sample
+// is taken on loopTask, inside supervise(), which is already there every 250 ms.
+//
+// 500 ms gives ~1,200 samples over a ten-minute run and bounds how stale the
+// figure attached to a hole can be at half a second, which is well inside the
+// timescale over which 2.4 GHz conditions change.
+inline constexpr std::int64_t kRssiPeriodUs = 500 * 1000;
+
 class WsTransport {
 public:
-    explicit WsTransport(FramePipe& pipe) noexcept
-        : pipe_(pipe), reassembler_(pipe, kFrameCapacity) {}
+    // `link` is written here and read by the feed task and console — one writer,
+    // 8- and 32-bit fields, the same unsynchronised-diagnostics trade as every
+    // counter in this firmware.
+    WsTransport(FramePipe& pipe, LinkQuality& link) noexcept
+        : pipe_(pipe), link_(link), reassembler_(pipe, kFrameCapacity) {}
 
     // Blocks until the station has an IP or `timeout_ms` elapses.
     bool connect_wifi(const char* ssid, const char* password,
@@ -174,7 +192,14 @@ private:
     // the .cpp so the header need not pull in esp_timer.h.
     void note_attempt_begun() noexcept;
 
+    // Reads the association's rssi out of the driver, at most every
+    // kRssiPeriodUs. Silent when the station is not associated: the driver
+    // answers with an error there, and recording its zero would put a 0 dBm
+    // sample — a perfect signal — in the middle of an outage.
+    void sample_rssi(std::int64_t now) noexcept;
+
     FramePipe& pipe_;
+    LinkQuality& link_;
     // Touched only by the WebSocket client's callback, which is a single task,
     // so it needs no synchronisation of its own.
     FrameReassembler<FramePipe> reassembler_;
@@ -202,6 +227,7 @@ private:
     std::int64_t disconnected_since_us_ = 0;
     std::int64_t attempt_started_us_ = 0;
     std::uint32_t attempts_ = 0;
+    std::int64_t last_rssi_us_ = 0;
 };
 
 }  // namespace depthcharge::fw

@@ -70,6 +70,21 @@ public:
     const Stats& stats() const noexcept { return stats_; }
     Seq next_seq() const noexcept { return next_seq_; }
 
+    // The last wire `seq` seen, for DIAGNOSTICS ONLY — it is already tracked for
+    // `wire_seq_backward` and this exposes it rather than adding state.
+    //
+    // Read the warning in the header comment before using it for anything: this
+    // is Anvil's global counter, shared across every ticker and frame type, so
+    // it is not this stream's sequence and nothing may order, dedupe or gap-test
+    // on it. What it is good for is a CLOCK — its rate is Anvil's whole-engine
+    // publish rate, so comparing the step across a silence against that rate
+    // says whether the frame that ended the silence is fresh (the middle was
+    // never sent to us) or stale (it was sent and arrived late). That is the M3
+    // stall characterisation's shed-versus-delayed discriminator, and it is the
+    // only reason this accessor exists.
+    std::int64_t last_wire_seq() const noexcept { return last_wire_seq_; }
+    bool have_wire_seq() const noexcept { return have_wire_seq_; }
+
     // One received WebSocket text frame, verbatim. Emits 0 or 1 FeedEvents.
     //
     // A frame that will not parse is counted and dropped, NOT turned into a Gap:

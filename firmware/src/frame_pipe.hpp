@@ -158,12 +158,20 @@ struct FramePipeStats {
     // THE ARRIVAL HALF OF THE ARRIVAL-VS-EVENT SPLIT.
     //
     // Inter-arrival gaps between whole messages, measured where the bytes land
-    // rather than where they are consumed. This is the histogram that decides
-    // which half of the board the 2026-08 stall lives in, and the reading is
-    // blunt: a >1 s bucket that fills HERE means the bytes stopped coming —
-    // Wi-Fi, TLS, the socket, the server's egress to this client. A >1 s bucket
-    // that fills only in FeedTask::Stats::event_gaps, with this one clean, means
-    // the bytes arrived and something on the board sat on them.
+    // rather than where they are consumed. A >1 s bucket that fills only in
+    // FeedTask::Stats::event_gaps, with this one clean, means the bytes arrived
+    // and something between here and the book sat on them.
+    //
+    // BE PRECISE ABOUT WHERE "HERE" IS — the 2026-08-09 draft of this comment
+    // was not, and the 2026-08-10 bench cost a reading for it. The stamp is
+    // taken in WsTransport::on_event, which runs on esp_websocket_client's own
+    // task, so it is already downstream of the Wi-Fi driver, lwIP, the socket
+    // read, the TLS record decrypt and the esp_event dispatch hop. A hole HERE
+    // therefore means "no complete message was handed to our callback for a
+    // second" — which is as consistent with that task not being scheduled on a
+    // busy Core 0 as it is with a dry socket. It does NOT mean the bytes stopped
+    // coming, and the pair of histograms cannot say that it does. What separates
+    // the two is per-core idle across the hole: stall_probe.hpp.
     //
     // `messages_arrived` counts every whole message including those dropped for
     // want of a slot, so it is deliberately >= frames_published.

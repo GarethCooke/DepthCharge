@@ -39,8 +39,8 @@ namespace depthcharge::fw {
 class SerialConsole {
 public:
     SerialConsole(SnapshotChannel& channel, const FeedTask& feed, const FramePipe& pipe,
-                  HeapProbe& heap) noexcept
-        : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap) {}
+                  HeapProbe& heap, const CoreIdleProbe& idle, const LinkQuality& link) noexcept
+        : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap), idle_(idle), link_(link) {}
 
     // Creates the task pinned to Core 1 — the other half of the two-core split.
     // Bytes, not words (see feed_task.hpp). The console formats several
@@ -62,6 +62,18 @@ private:
     void print_distributions(const FeedTask::Stats& f, const FramePipeStats& p) noexcept;
     void print_gap_line(const char* what, const GapHistogram& h) noexcept;
 
+    // The stall verdict block: per-core idle, rssi, and the classified tally of
+    // >1 s book-holes. Separate from print_stats() for the same reason the
+    // distributions are — it is a unit, meant to be grepped out of a bench log
+    // as one, and read as one.
+    void print_stall(const FeedTask::Stats& f) noexcept;
+
+    // One line per finalised hole, printed as it completes rather than saved for
+    // the 10 s block: at the bench the useful moment is while the grey is still
+    // on screen. Called from the run loop, so it must print at most a couple of
+    // lines per pass — which it does, holes being a twice-a-minute event.
+    void drain_holes(const StallProbe& stall) noexcept;
+
     // Per-window rates, derived from the running counters. Separate from
     // print_stats() because it is the only part that carries state across calls.
     void print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept;
@@ -70,8 +82,20 @@ private:
     const FeedTask& feed_;
     const FramePipe& pipe_;
     HeapProbe& heap_;
+    const CoreIdleProbe& idle_;
+    const LinkQuality& link_;
 
     DisplaySnapshot received_{};
+
+    // How far this task has got through the probe's finalised hole records, and
+    // the per-core idle counters at the last statistics block so the block can
+    // report idle over ITS window as well — a cheap independent check on the
+    // per-hole figures, since the two are computed from the same counters by
+    // different tasks over different windows and must tell the same story.
+    std::uint32_t holes_printed_ = 0;
+    std::uint32_t idle0_at_block_ = 0;
+    std::uint32_t idle1_at_block_ = 0;
+    std::int64_t block_started_us_ = 0;
 
     // Transition tracking: the log's job is to make the stale window obvious.
     bool have_seen_frame_ = false;

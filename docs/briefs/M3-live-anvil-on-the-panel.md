@@ -1265,3 +1265,147 @@ genuinely not chosen yet, which is the whole reason this session stopped here. T
 (which touched `ws_transport.cpp` only for the arrival stamp and the power-save readback); if
 the data indicts the blocking `stop()`, that extraction and the fix become the same task. Then
 Stage D.
+
+### 2026-08-10 · Opus 5 · the split could not decide it; the verdict moves outside the data path
+
+**The two runs happened and the instrument built for them came back undecided.** Both arms held
+`connects=1` and `sock_gaps=0` across a whole run that still logged **17 book-holes over 11 min**
+(power save off, worst 2,461 ms) and **25 over 10.5 min** (power save on, worst 1,893 ms), with
+`arrive` and `event` filling their >1 s buckets **together**. Two results fall straight out of
+that and are now closed: **modem sleep is not the mechanism** (it makes it worse, not different —
+both arms measured, `driver ps` read back out of the driver), and the socket is not involved.
+What does *not* fall out is the fork the next brief depends on, and the reason is worth more than
+the measurement.
+
+**The old verdict table's first row was an over-claim, and this is the correction.** "Both fill →
+transport" rests on `arrive` being the wire. It is not. The stamp is taken in
+`WsTransport::on_event`, on `esp_websocket_client`'s own task, so it already sits **downstream of
+the Wi-Fi driver, lwIP, the socket read, the TLS record decrypt and the `esp_event` dispatch
+hop** — the split's real boundary is the FramePipe queue hop, not the antenna, and an arrival-side
+hole is as consistent with a Core 0 that cannot keep up as with a dry socket. The brief asked for
+this to be stated precisely before the new signals were read against it; it is now stated in
+`frame_pipe.hpp`, `serial_console.cpp`, `firmware/README.md` and DESIGN §05, with the offending
+row struck through rather than quietly rewritten.
+
+**The second entanglement is upstream and not ours.** Anvil's per-socket coalescing *sheds* `book`
+frames whenever a socket backs up (2026-08-09: a client throttled to a quarter rate receives 4×
+fewer messages and is never silent longer than one drain interval). Shedding is therefore a
+**symptom** of the board falling behind, not an independent cause, and "Anvil shed it" and "Wi-Fi
+delayed it" are indistinguishable from anywhere inside the data path. No amount of instrumenting
+that path separates them — which is why this session's output is a different *kind* of signal
+rather than a finer version of the same one.
+
+**Delivered: three signals from outside the feed path, and the classification that reads them.**
+
+1. **Per-core idle across exactly the window that greyed the panel** — the verdict. Core 0 far
+   below its own healthy baseline means it could not drain the stream (board-bound, firmware's to
+   fix); at or above it means it was waiting on data that was not there (link-bound, and no lever
+   in this repo reaches it).
+2. **Recovery shape** — the inter-arrival of the next four messages plus the wire-`seq` step,
+   separating "the frames existed and were delivered late" from "the middle was never sent to us".
+3. **rssi through the run**, sampled every 500 ms on loopTask, with the value at each hole
+   attached to that hole's record.
+
+`firmware/src/stall_probe.hpp` is the arithmetic and is ESP-IDF-free and host-tested;
+`core_idle.*` is the one platform half. Costs, measured by building with and without: RAM 133,640
+→ **134,280 B** (+640, 40.8% → 41.0%), flash 835,793 → **840,025 B** (+4,232, 12.8%). Still
+allocation-free — `nm -u` on `feed_task.cpp.o` shows no `operator new`, no `malloc`, no
+`snprintf`, and no float instruction in the disassembly. The feed path did gain `__divdi3` /
+`__udivdi3`: three soft 64-bit divides per event (~40/s) against the ~3,000/s the parser's qty
+scaling already does, so it is recorded rather than optimised, with the reason the obvious
+cheaper version is wrong written where it would be tried.
+
+**`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS is not set`, which is the fourth time this vintage has
+decided a design here** (after `esp_crt_bundle`, `heap_trace_start` and `reconnect_timeout_ms`).
+The brief named it directly. It is a compile-time switch that changes the TCB layout and is baked
+into the precompiled `libfreertos.a`, so defining it in our own flags would not enable it — it
+would make our translation units disagree with the archive about the shape of a task. Read out of
+the shipped `sdkconfig`, alongside `CONFIG_FREERTOS_USE_TRACE_FACILITY is not set`.
+
+**So idle is measured directly, and the mechanism was verified in the shipped archives rather than
+from the docs.** Disassembling `esp_vApplicationIdleHook` in `qio_opi/libesp_system.a` shows the
+loop over eight hook slots, a `moveqz` clearing `can_go_idle` for any hook that returns zero, and
+`esp_pm_impl_waiti` called **only** if that flag survives; `prvIdleTask` in `libfreertos.a` calls
+the hook every pass. A hook that returns `false` is therefore called in a tight loop for as long as
+its core has nothing to run, and differencing the core's own cycle counter across those calls is
+idle time in microseconds — no calibration constant, no statistical sampling. The generated hook
+is 30 instructions: `rsr.prid`, `rsr.ccount`, hardware `quou`/`remu`, no call, no flash access.
+
+**The perturbation is real and is stated rather than buried.** Returning `false` suppresses
+`waiti`, so an idle core spins. Acceptable here — `CONFIG_PM_ENABLE` is not set so there is no
+light sleep or frequency scaling to disturb, the idle task is priority 0 so it cannot delay real
+work, modem sleep is a radio state and is untouched, and the task watchdog is fed more often
+rather than less. It is reversible with `-D DC_IDLE_PROBE=0`, which compiles the probe out and
+reports every idle figure as unknown, so a suspicious result can be re-run without the instrument.
+**Whether it ships past this characterisation is a stage D decision and is not settled here.**
+
+**The decision to argue with: a failed probe reports `unknown`, never zero.** A probe that could
+not register would otherwise report 0 µs of idle, which classifies *every* hole in the run as
+board-bound and reads as an unusually decisive result — the single most expensive way this
+instrument could be wrong. `idle_valid` rides on every sample and on every record, the console
+prints `idle probe NOT RUNNING` as a warning, and the README makes a missing `per-core idle probe
+up` line a stop-the-run condition. Host-tested from both sides.
+
+**Two other choices worth recording.** The hole threshold is taken *from* `GapScale`'s >1 s bucket
+edge rather than restated, with a `static_assert` tying it to `kRxWatchdogMs` — so `holes n=` and
+`event >1s=` are two independent instruments counting the same events, and the bench can check one
+against the other. And a message is offered as a recovery sample **before** it is allowed to open
+a hole of its own; reversed, every hole would record a first recovery gap equal to itself and every
+recovery would classify as a resumed cadence. Both are pinned by tests, because both are invisible
+on inspection.
+
+**The engine diff is one read-only accessor**, `AnvilAdapter::last_wire_seq()`, exposing state the
+adapter already keeps for `wire_seq_backward`. It exists because Anvil's global seq is unusable for
+ordering but its *rate* is a clock: a frame ending a hole with a step of about one is an old frame
+that was sitting somewhere, and one with a step of roughly rate × hole is a fresh frame whose
+predecessors were never sent to us. That is the shed-versus-delayed discriminator, and the board
+prints the step beside the prediction so it is checkable rather than asserted. No behaviour
+changed; no golden moved.
+
+**Two real defects, both found by tests rather than by the bench, and neither would have failed
+loudly.**
+
+1. The "what a fresh frame would have carried" prediction folded the hole's own second into the
+   rate it was predicting from, so a genuinely stale hole looked *less* stale the longer it was —
+   backwards, and exactly the kind of thing that gets believed on a log line. The rate is now taken
+   as it stood before the sample.
+2. **The hole ring handed out a record that was being overwritten.** With eight slots the retained
+   window was eight, but one slot always holds the record still gathering its recovery series — so
+   the moment a new hole opened, the "oldest retained" index pointed at it and the console could
+   print an unclassified record as the oldest finalised one. The log retains seven now. Found by
+   the property test added during review (a random walk asserting the tally stays closed: verdict
+   buckets sum to the finalised count, at most one hole open at a time, ordinals dense across the
+   retained window), which is the argument for having written it.
+
+**The review also collapsed three copies of one idiom.** The truncating snprintf-append existed
+in `Histogram::render`, in `render_tally` and in `render_hole` — the same three lines whose failure
+mode is not a crash but a log line silently one field short, in the one place a bench session is
+reading for a verdict. It is now `append_truncating` in `gap_histogram.hpp`, used by all three and
+covered by both files' guard-region tests. Likewise the percentage helper existed twice (32- and
+64-bit) and is now one function, and `IdleAccumulator::pass` became `note_pass` to match
+`note_event` / `note_message` / `note`.
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: **11/11 ctest**, `dc_tests`
+117 → **144 cases** (16,084 assertions), `dc_tests_streaming` 45/45 unchanged. Both firmware
+environments build clean. No engine behaviour change, no golden moved, `kRxWatchdogMs` still
+1000 ms, and no board-side lever pulled — applying a fix before the split says "board-bound" is the
+trap this milestone has already paid for three times. No ARCHITECTURE §9 amendment: nothing has
+been decided yet, and the reasoning that has reach (where the arrival stamp really sits) is
+recorded where it is implemented and in DESIGN §05, following the precedent of the previous entry.
+
+**NOT DONE — the run and the verdict, which are the point.** No bench run, so no idle figure, no
+classified tally, no verdict, and the candidate list is deliberately left in its prior order.
+
+**Exact next step: one ≥10-minute `-e depthcharge` run, steady state, `connects=1`** (protocol and
+the read-in-this-order checklist in `firmware/README.md`). It picks the next brief outright:
+
+- **board-bound** → the lever bundle, each re-benched against this instrument with near-zero
+  steady-state >1 s holes as the bar: `esp_websocket_client buffer_size`; the LWIP receive window —
+  worth noting that this framework ships `CONFIG_LWIP_TCP_WND_DEFAULT=5744`, **smaller than one
+  8.7 KB Anvil book frame**, so a burst cannot be absorbed without TCP-backpressuring Anvil into
+  shedding; and WS-task priority/core.
+- **link-bound** → out of firmware entirely: 2.4 GHz channel scan, placement, rssi-vs-hole
+  correlation. Anvil's incremental-L2 feed stays on the Anvil backlog for M4/M5.
+
+Then the `ws_supervisor.hpp` host-test extraction, still open from three entries back and untouched
+by this work. Then Stage D.

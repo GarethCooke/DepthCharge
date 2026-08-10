@@ -100,7 +100,8 @@ leaving it commented.
 | `esp_websocket_client` (its own) | unpinned | TLS, socket reads, hands chunks to the reassembler |
 | `dc_feed` | **0** | reassembled frame → parse → adapter → book → `publish`. **Never logs** — see below |
 | `dc_panel` | **1** | `consume()` → serial log (stage D: HUB75) |
-| Arduino `loopTask` | 1 | the WebSocket supervisor, every 250 ms, and nothing else |
+| Arduino `loopTask` | 1 | the WebSocket supervisor every 250 ms, and an rssi sample every 500 ms |
+| FreeRTOS idle | 0 and 1 | the per-core idle probe's hook — a register read and an add, and the reason an idle core spins rather than sleeping (see below) |
 
 **`dc_feed` deliberately contains no `ESP_LOGx`, and stage D must not add one.**
 Arduino routes `ESP_LOGx` to `log_printfv`, which `malloc`s for any line over 64
@@ -315,42 +316,123 @@ Cumulative since boot, so the **last block of the run is the answer**; the
 histograms are diagnostics read across cores without synchronisation, so treat
 them as human-readable and never gate anything on them.
 
+### Where that split stops, and why it needed a third signal
+
+The 2026-08-09 runs answered "how often" and then refused to answer "which
+half": both arms held `connects=1` and `sock_gaps=0` while `arrive` and `event`
+filled their >1 s buckets **together** — 17 holes over 11 minutes with power save
+off, 25 over 10.5 minutes with it on, worst 2,461 ms and 1,893 ms. That reads as
+"transport" on the old table, and it is an over-claim on two counts:
+
+- **The arrival stamp is not the wire.** It is taken in `WsTransport::on_event`,
+  on `esp_websocket_client`'s own task, already downstream of the Wi-Fi driver,
+  lwIP, the socket read, the TLS record decrypt and the `esp_event` hop. A hole
+  in `arrive` means *no complete message reached our callback for a second*,
+  which a busy Core 0 produces just as well as a quiet socket. The split's real
+  boundary is the FramePipe queue hop, not the antenna.
+- **Anvil sheds to a slow consumer, evenly** (measured: a client throttled to a
+  quarter rate gets 4× fewer messages and is never silent for more than one drain
+  interval). So "the server went quiet to us" is a *symptom* of this socket
+  backing up, not an independent cause. "Anvil shed it" and "Wi-Fi delayed it"
+  look identical from inside the data path.
+
+So the fork — **board-bound** (Core 0 cannot drain the stream) versus
+**link-bound** (the frames are not arriving) — needs a signal from outside that
+path. Three more lines carry it:
+
+```text
+-- cpu    : window c0=88% c1=96% over 10001 ms | healthy c0=90% c1=96% n=1180 | probe 88231441 passes worst 412 cyc of 24000
+-- rssi   : now -69 min -78 max -64 dBm n=1204
+-- holes  : n=17 board=12 link=3 mixed=2 unknown=0 | burst=10 cadence=7 | seq 41/s
+-- hole   : #12 1240 ms c0=9%/90% c1=93% rssi=-70 seq+3 of +51 | recov 3,4,6,78 ms -> BOARD-BOUND burst
+```
+
+- **`cpu`** — per-core idle. `window` is the console's own reading over the last
+  10 s; `healthy` is the baseline built from every sub-1 s inter-event window,
+  and it is the reference each hole is judged against. `probe … worst N cyc of M`
+  is the instrument checking itself: `N` is the longest interval it accepted as
+  idle and `M` the threshold above which an interval is treated as work, so `N`
+  approaching `M` means the verdict is at the limit of its own resolution.
+- **`holes`** — every >1 s book-hole, classified. **`n` here must equal `>1s` on
+  the `event` line**; they are two independent instruments counting the same
+  thing off the same threshold, so a disagreement is a bug rather than a nuance.
+- **`hole`** — one line per hole as it completes, printed at `W` so it stands out
+  in the scrollback. Every derived judgement sits beside the numbers it came
+  from: `c0=9%/90%` is this hole's Core-0 idle against the healthy baseline, and
+  `seq+3 of +51` is the wire-seq step across the hole against what Anvil's own
+  publish rate says a *fresh* frame would have carried.
+
 ### The verdict table
 
-| `arrive` >1s | `event` >1s | reading |
+| Core 0 idle across the hole | Recovery | Reading |
 | --- | --- | --- |
-| fills | fills | **transport** — the bytes stopped. Wi-Fi, TLS, the socket, or Anvil's egress to this client |
-| clean | fills | **ours** — the bytes arrived and the pipeline sat on them |
-| clean | fills, `qwait` in seconds, `behind` non-zero | the feed task did not run: Core-0 starvation, or something blocking on this side |
-| clean | fills, `qwait` small, `worst_frame` large | the work itself got slow — parser or book |
+| far below `healthy` | burst, `seq` step small | **board-bound** — the frames sat unread in the socket buffer while Core 0 was busy |
+| far below `healthy` | cadence, `seq` step ≈ fresh | **board-bound** — Anvil shed the middle because this socket backed up |
+| at or above `healthy` | burst, `seq` step small | **link-bound** — the frames existed and the air delayed them |
+| at or above `healthy` | cadence | **link-bound** — nothing arrived and nothing was waiting to |
+
+Board-bound is firmware's to fix and can step-change to zero, because a board
+that keeps up is never shed. Link-bound is not reachable from this repo at all —
+it becomes 2.4 GHz channel, placement and antenna.
+
+And the two rows the old table still owns, unchanged: `event` >1s filling with
+`arrive` clean is ours *and localisable*, with `qwait` in seconds meaning the
+feed task did not run and `qwait` small with a large `worst_frame` meaning the
+work itself got slow.
 
 ### The procedure
 
-1. **Baseline, power save off.** `pio run -e depthcharge -t upload -t monitor`.
-   Confirm the association line reads `power-save requested=OFF driver ps=0` —
-   read back out of the driver with `esp_wifi_get_ps()`, not echoed from what we
-   asked for, so it cannot agree with us by construction.
-2. **Let it run ≥10 minutes with no deliberate disconnects**, and log the whole
-   session to a file. `sock_gaps=0` and `connects=1` at the end is what makes the
-   distribution a *steady-state* one; if the socket dropped, note it, because a
-   reconnect costs a ~2.5 s blocking `stop()` on Core 1 and can put a >2.5 s
-   sample in `event` that has nothing to do with the steady stall. **The absence
-   of a >2.5 s sample in a run with `connects=1` is itself a result** — it says
-   the 2,461 ms outlier was the reconnect and the steady population is the
-   1–1.5 s one.
-3. **Contrast, power save on.** `pio run -e depthcharge-ps -t upload -t monitor`,
-   same duration, same conditions. Confirm `power-save requested=ON driver ps=1`.
-4. **Record the `>1s` bucket count for each arm**, from both `arrive` and
-   `event`, plus `n` and the window length so they are rates and not raw counts.
-   Modem sleep parks the radio between DTIM beacons and shows up **arrival-side**
-   — if it moves `arrive`, the mechanism is radio scheduling and the baseline's
-   `setSleep(false)` is load-bearing; if it moves neither, power save is excluded
-   as a candidate on evidence rather than by inspection of a `setSleep` call.
+1. **One environment.** `pio run -e depthcharge -t upload -t monitor`. Naming it
+   is not optional — with no `-e`, `pio run -t upload` uploads *both* and the
+   second one wins. Power save is settled (both arms measured, 17 vs 25 holes),
+   so `depthcharge-ps` is not part of this run.
+2. Confirm at start-up, in order: `power-save requested=OFF driver ps=0`, then
+   `per-core idle probe up at 240 MHz`. **If the second line is missing or reads
+   `idle probe NOT RUNNING`, stop** — every hole verdict in that run is
+   `unknown`, deliberately, rather than a plausible-looking 0% idle.
+3. **Let it run ≥10 minutes, steady state, and do not pull the Wi-Fi.**
+   `connects=1` and `sock_gaps=0` at the end is what makes this a steady-state
+   distribution rather than a mixture; a hole that spanned a reconnect prints
+   `(socket dropped)` and must not be pooled with the others, because a reconnect
+   costs a ~2.5 s blocking `stop()` on Core 1 and is a different phenomenon.
+4. **Read `cpu` before `holes`.** The tally is derived from per-hole idle against
+   the `healthy` baseline, so a baseline that looks wrong invalidates the tally
+   above it rather than being a separate observation. Sanity checks worth doing
+   in this order: `holes n=` equals `event >1s=`; `no_slot=0` (a dropped message
+   never reaches the recovery series, so the burst/cadence split degrades if this
+   is non-zero); `window` and `healthy` idle in the same neighbourhood.
 5. Commit the log and the reading to `hardware/bench-YYYY-MM-DD-feed-stall.md`,
-   and update strain 12 with the ranking the data supports.
+   append the verdict to the session log in
+   `docs/briefs/M3-live-anvil-on-the-panel.md`, and update strain 12.
 
 Pair it with a simultaneous `tools/capture_anvil.py` from the desk, as above —
 the desk is the control for "was the wire quiet", and it costs nothing to have.
+
+### If you suspect the instrument
+
+The idle probe measures idle by keeping a hook being called on each core's idle
+task, which means that core does not execute `waiti` and spins instead of
+sleeping. That is deliberate and it is what makes the interval between two calls
+a measure of idle time rather than of the interrupt rate. It cannot delay real
+work — the idle task is priority 0 — and there is no power management to
+interfere with (`CONFIG_PM_ENABLE` is not set), but it is a genuine change to
+what the board does, so:
+
+```sh
+# PowerShell
+$env:PLATFORMIO_BUILD_FLAGS="-D DC_IDLE_PROBE=0"; pio run -e depthcharge -t upload -t monitor
+$env:PLATFORMIO_BUILD_FLAGS=""      # and clear it afterwards, or every later build inherits it
+```
+
+rebuilds the same firmware with the probe compiled out and every idle figure
+reported as unknown. **Verified rather than assumed** — that build's `.elf`
+contains `per-core idle probe COMPILED OUT` and does not contain `per-core idle
+probe up`. (`pio run` has no `--build-flag` option, which is why this goes
+through the environment variable; the variable *appends* to `build_flags`, so
+nothing in `platformio.ini` is lost.) If the >1 s hole counts differ materially
+between the two builds, the instrument is part of the phenomenon and that is the
+finding. Whether the probe ships past this characterisation is a stage D
+decision.
 
 ---
 
@@ -393,6 +475,8 @@ balanced over hours; it does not decide whether it allocates. Full reasoning in
 | `src/ws_transport.*` | Wi-Fi, TLS WebSocket, Espressif event → `WsChunk` |
 | `src/frame_reassembler.hpp` | chunks → whole messages. **No ESP-IDF** — host-tested by `harness/tests/test_frame_reassembler.cpp` |
 | `src/gap_histogram.hpp` | fixed-bucket distributions for the stall hunt. **No ESP-IDF** — host-tested by `harness/tests/test_gap_histogram.cpp` |
+| `src/stall_probe.hpp` | classifies a >1 s book-hole board-bound vs link-bound, plus the recovery shape and rssi. **No ESP-IDF** — host-tested by `harness/tests/test_stall_probe.cpp` |
+| `src/core_idle.*` | the one platform half of that: per-core idle from an idle hook, because this framework has FreeRTOS run-time stats compiled out |
 | `src/frame_pipe.*` | the four-slot pool + queues, transport → feed, and the arrival histogram |
 | `src/feed_task.*` | Core 0: the pipeline, the RX watchdog, the only book writer |
 | `src/serial_console.*` | Core 1: `consume()` → log. Stage D replaces the body |

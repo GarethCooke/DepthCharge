@@ -40,7 +40,9 @@
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/snapshot_channel.hpp>
 
+#include "core_idle.hpp"
 #include "frame_pipe.hpp"
+#include "stall_probe.hpp"
 
 namespace depthcharge::fw {
 
@@ -54,6 +56,14 @@ namespace depthcharge::fw {
 // is what makes the M1 goldens a preview of this firmware rather than an
 // analogy.
 inline constexpr std::uint32_t kRxWatchdogMs = 1000;
+
+// The stall probe's definition of a hole is the histogram's >1 s bucket edge,
+// and the watchdog's threshold is this constant. They have always been the same
+// number and every reading of the bench log assumes it — `holes n=`, `event
+// >1s=` and `wd_gaps` are compared against each other line by line. Assert it
+// rather than leave three files agreeing by habit.
+static_assert(kHoleThresholdUs == kRxWatchdogMs * 1000,
+              "the stall probe must count exactly the silences the watchdog greys on");
 
 // WHAT THE WATCHDOG WATCHES — the one place this firmware is deliberately
 // STRICTER than the host replay driver, and the reason is invariant #5.
@@ -123,6 +133,21 @@ public:
         // the second name a different candidate than the reverse.
         GapHistogram event_gaps{};
         LatencyHistogram arrival_to_event{};
+
+        // THE VERDICT HALF (strain 12, the stage C→D interlude).
+        //
+        // The histograms above say a hole happened and how long it was. They
+        // cannot say which half of the board it came from, and neither can the
+        // arrival-vs-event split — the arrival stamp is taken inside the
+        // WebSocket client's task, so it is already downstream of the Wi-Fi
+        // driver, lwIP and the TLS decrypt, and a hole in it is as consistent
+        // with a busy Core 0 as with a dry socket (stall_probe.hpp).
+        //
+        // This is the signal from outside the data path: per-core idle across
+        // exactly the window that greyed the panel, the shape of the recovery
+        // that ended it, and the rssi at the time. Board-bound is firmware's to
+        // fix; link-bound is not, and guessing costs a milestone round.
+        StallProbe stall{};
         std::uint32_t worst_queue_wait_us = 0;
         // The most messages ever left queued BEHIND the one being processed —
         // sampled after the dequeue, so it is one below the peak depth and can
@@ -131,8 +156,13 @@ public:
         std::uint32_t max_ready_backlog = 0;
     };
 
-    FeedTask(FramePipe& pipe, SnapshotChannel& channel, const SymbolSpec& symbol) noexcept
-        : pipe_(pipe), channel_(channel), adapter_(symbol), book_(symbol) {}
+    // `idle` and `link` are read-only instruments this task samples as it goes;
+    // neither can affect what it does, and both are const so that stays true by
+    // construction rather than by review.
+    FeedTask(FramePipe& pipe, SnapshotChannel& channel, const SymbolSpec& symbol,
+             const CoreIdleProbe& idle, const LinkQuality& link) noexcept
+        : pipe_(pipe), channel_(channel), idle_(idle), link_(link), adapter_(symbol),
+          book_(symbol) {}
 
     // Creates the task pinned to Core 0. Returns false if FreeRTOS refused.
     // NOTE: ESP-IDF's xTaskCreate takes the stack size in BYTES, not words —
@@ -170,6 +200,8 @@ private:
 
     FramePipe& pipe_;
     SnapshotChannel& channel_;
+    const CoreIdleProbe& idle_;
+    const LinkQuality& link_;
 
     anvil::AnvilAdapter adapter_;
     Book book_;
@@ -184,6 +216,25 @@ private:
     bool watching_ = false;
     bool gap_raised_ = false;
     std::int64_t last_event_us_ = 0;
+
+    // Stall-probe state, all of it sampled and none of it consulted.
+    //
+    // `prev_idle*_us_` are the free-running per-core idle counters as they stood
+    // at the PREVIOUS event, so differencing them at this one measures idle over
+    // exactly the window `event_gaps` just bucketed — the two numbers describe
+    // the same interval or the verdict means nothing.
+    //
+    // `last_msg_arrival_us_` is the previous message's arrival stamp, giving the
+    // inter-arrival series that names a recovery a burst or a resumed cadence.
+    // Measured from the arrival stamps rather than from when this task got to
+    // them, because this task's own lateness is precisely what would smear it.
+    //
+    // `socket_dropped_pending_` marks a hole that spanned a transport gap, so a
+    // reconnect's blocking `stop()` is never read as the steady-state stall.
+    std::uint32_t prev_idle0_us_ = 0;
+    std::uint32_t prev_idle1_us_ = 0;
+    std::int64_t last_msg_arrival_us_ = 0;
+    bool socket_dropped_pending_ = false;
 
     Stats stats_{};
 };

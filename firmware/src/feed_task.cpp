@@ -65,6 +65,12 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     const std::int64_t now = esp_timer_get_time();
     ++stats_.frames_in;
 
+    // The per-core idle counters as of THIS instant, taken before any work so
+    // the window they will be differenced over is the same window `event_gaps`
+    // measures: previous event's `now` to this one's. Two 32-bit loads.
+    const std::uint32_t idle0_now = idle_.idle_us(0);
+    const std::uint32_t idle1_now = idle_.idle_us(1);
+
     // How long this message waited between being complete on the socket and
     // this task looking at it, and how much else was still queued behind it.
     // Both are sampled before any work, because both are measurements OF the
@@ -77,6 +83,18 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     }
     const std::uint32_t backlog = pipe_.ready_waiting();
     if (backlog > stats_.max_ready_backlog) { stats_.max_ready_backlog = backlog; }
+
+    // Inter-arrival against the previous message, for the recovery shape. Held
+    // until after the adapter has run so it can be filed in the right order —
+    // see the note at the call below.
+    std::uint32_t arrival_delta_us = 0;
+    if (msg.arrival_us != 0) {
+        if (last_msg_arrival_us_ != 0 && msg.arrival_us > last_msg_arrival_us_) {
+            arrival_delta_us =
+                clamp_us_to_u32(static_cast<std::uint64_t>(msg.arrival_us - last_msg_arrival_us_));
+        }
+        last_msg_arrival_us_ = msg.arrival_us;
+    }
 
     // Whether this frame reaches the book is the question the watchdog cares
     // about, so ask the adapter rather than assuming. Bytes arriving is not the
@@ -95,6 +113,14 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
 
     const std::int64_t done = esp_timer_get_time();
 
+    // ORDER MATTERS, and this is the one line of it worth a comment. A message
+    // is offered as a recovery sample BEFORE it is allowed to open a hole of its
+    // own, so the message that ends a hole is filed against the hole *before*
+    // it, never as the first sample of its own recovery. Reversed, every hole
+    // would report a first recovery gap equal to the hole and every recovery
+    // would read as a resumed cadence.
+    stats_.stall.note_message(arrival_delta_us);
+
     if (adapter_.stats().events_out != events_before) {
         // Measured from the previous EVENT and not gated on `watching_`, so the
         // first event after an outage records the whole hole. Gating it was a
@@ -109,7 +135,21 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
             // must agree with `watchdog_gaps` up to the one hole that is still
             // open when the log is read.
             stats_.event_gaps.add(gap);
+            // The same sample, taken apart. Sub-threshold windows build the
+            // healthy-idle baseline the verdict is measured against; a window
+            // over the threshold opens a hole record and is classified against
+            // it. `idle_.valid()` is false when the probe could not register or
+            // was compiled out, and then every hole reports its idle as unknown
+            // rather than as zero — which would read as total starvation.
+            stats_.stall.note_event(clamp_us_to_u32(gap),
+                                    wrapping_delta_u32(idle0_now, prev_idle0_us_),
+                                    wrapping_delta_u32(idle1_now, prev_idle1_us_),
+                                    idle_.valid(), adapter_.last_wire_seq(), link_.last_dbm(),
+                                    socket_dropped_pending_);
+            socket_dropped_pending_ = false;
         }
+        prev_idle0_us_ = idle0_now;
+        prev_idle1_us_ = idle1_now;
         // Arrival -> event for this message: everything between the bytes being
         // complete on the socket and the book having moved. Recorded only when
         // an event actually came out, so it prices the path the panel depends
@@ -137,6 +177,12 @@ void FeedTask::on_watchdog() noexcept {
 
 void FeedTask::on_disconnected() noexcept {
     ++stats_.socket_gaps;
+    // Flagged, not acted on: the hole this outage is inside is only recorded
+    // when data returns, and by then nothing else would remember that the
+    // transport went down in the middle of it. A reconnect costs a ~2.5 s
+    // blocking stop() on Core 1, so a hole carrying this flag must never be read
+    // as a sample of the steady-state stall.
+    socket_dropped_pending_ = true;
     raise_gap_once();
     watching_ = false;
 }

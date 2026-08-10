@@ -140,10 +140,27 @@ void WsTransport::note_attempt_begun() noexcept {
     attempt_started_us_ = esp_timer_get_time();
 }
 
+void WsTransport::sample_rssi(std::int64_t now) noexcept {
+    if (now - last_rssi_us_ < kRssiPeriodUs) { return; }
+    last_rssi_us_ = now;
+    // esp_wifi_sta_get_ap_info rather than WiFi.RSSI(): the Arduino wrapper
+    // returns 0 both for "not associated" and for a genuine 0 dBm, and this is
+    // an instrument whose whole job is to be checkable against a link verdict.
+    wifi_ap_record_t ap{};
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        link_.note(static_cast<std::int8_t>(ap.rssi));
+    }
+}
+
 void WsTransport::supervise() noexcept {
     if (client_ == nullptr) { return; }
 
     const std::int64_t now = esp_timer_get_time();
+    // Sampled on every pass, connected or not, and before the early return
+    // below — the rssi through a hole is exactly the number a link verdict has
+    // to be checked against, so it must not stop being collected precisely when
+    // the transport is unhappy.
+    sample_rssi(now);
 
     if (esp_websocket_client_is_connected(client_)) {
         if (attempt_started_us_ != 0) {
