@@ -182,14 +182,16 @@ add_executable(dc_tests
   harness/tests/test_parser_equivalence.cpp
   harness/tests/test_replay_goldens.cpp
   harness/tests/test_snapshot_channel.cpp
-  harness/tests/test_stall_probe.cpp)
+  harness/tests/test_stall_probe.cpp
+  harness/tests/test_ws_supervisor.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
-# M3 stage C: the firmware's WebSocket reassembler, its gap histograms and the
-# stall probe that classifies a >1 s book-hole are deliberately ESP-IDF-free so
-# they can be tested here. These are the ONLY firmware/ paths the host build
-# knows about, and all three are headers — no firmware .cpp is compiled on the
-# host, so nothing in firmware/ can quietly become a host dependency.
+# M3 stage C: the firmware's WebSocket reassembler, its gap histograms, the
+# stall probe that classifies a >1 s book-hole and the reconnect policy that
+# decides how long the panel stays grey are deliberately ESP-IDF-free so they
+# can be tested here. These are the ONLY firmware/ paths the host build knows
+# about, and all four are headers — no firmware .cpp is compiled on the host,
+# so nothing in firmware/ can quietly become a host dependency.
 target_include_directories(dc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
 target_link_libraries(dc_tests PRIVATE
   dc_harness dc_engine_anvil dc_vendor dc_warnings Threads::Threads)

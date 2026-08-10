@@ -120,12 +120,33 @@ still holds — the panel greys, via `CLOSED` or the RX watchdog — but it woul
 grey *forever*, which at a bench reads as an intermittent hang hours into a
 healthy run. It has since taken over the retry cadence as well, because this
 vintage's `esp_websocket_client_config_t` has no `reconnect_timeout_ms` and the
-library's own 10 s wait is unreachable: `loopTask` polls
-`esp_websocket_client_is_connected()` at 250 ms and does `stop()` + `start()`
-2 s after the socket goes down, then leaves that attempt 7 s of immunity so it
-never kills a handshake it started. It has to be `loopTask` — those two calls are
-documented as unsafe from the event handler — and `stop()` blocks for ~2.5 s on
-an already-dead socket, which is a Core 1 stall stage D inherits.
+library's own 10 s wait is unreachable from the config.
+
+**It recovers onto a SPARE HANDLE, and never waits for the dead one.** There are
+two `esp_websocket_client` handles, both built at boot; `loopTask` polls
+`esp_websocket_client_is_connected()` at 250 ms and, one poll after the socket
+goes down, starts the idle handle and publishes it as live. The handle that
+dropped is left to expire on its own clock. `esp_websocket_client_stop()` is not
+called anywhere, and `disable_auto_reconnect` is set — without it the retired
+handle would wake 10 s later and open a *second* live socket to Anvil.
+
+The reason is worth knowing before touching any of it: a socket that aborts puts
+the library's own task into `vTaskDelay(wait_timeout_ms / 2)` — **5 seconds** —
+and `stop()` sets `run = false` and then blocks until that task wakes. So the
+old design's 2 s backoff and its 2.5 s blocking `stop()` were two halves of one
+5 s sleep (2445 + 2545 = 4990 on the 2026-08-09 bench), and shortening the
+backoff would have moved time between them without moving the grey by a
+millisecond. All five facts were read out of the precompiled archive with
+`objdump`; the offsets are cited in `ws_supervisor.hpp` and the consequences in
+DESIGN §08 strain 14.
+
+The *policy* — when an attempt is due, how long it is immune, and the Wi-Fi
+association gate that holds an attempt rather than deferring it — is
+`firmware/src/ws_supervisor.hpp`, which is ESP-IDF-free and host-tested in
+`test_ws_supervisor.cpp`. `WsTransport` keeps the platform half. It still has to
+be `loopTask` — `start()` is documented as unsafe from the event handler — and
+the one call there that can still block is the DNS warm, which runs only when the
+station is associated and prints what it cost as `dns=N ms`.
 
 The WebSocket client's task cannot be pinned — this vintage of
 `esp_websocket_client_config_t` has no `task_core_id` — which is fine, because
@@ -231,9 +252,23 @@ ours to fix.
 3. **Pull the Wi-Fi** (unplug the AP, or take the board out of range).
    - Within ~1 s: `RX watchdog: no frame for 1000 ms -> Gap{Disconnect}` and
      `*** STALE (disconnect) at v… — panel greys here ***`.
-4. **Restore it.** The client reconnects on its own; Anvil sends a fresh
-   snapshot; expect `*** LIVE at v… ***` followed by `grey for NNNN ms before
-   resync`, and the version advancing again.
+4. **Restore it.** The supervisor opens the spare handle; Anvil sends a fresh
+   snapshot. Expect, in order: `feed down N ms — opening handle B (attempt #2,
+   dns N ms)`, then `socket up on handle B, N ms into attempt #2`, then
+   `*** LIVE at v… ***` followed by `grey for NNNN ms before resync`, and the
+   version advancing again.
+   - While the station is still down you should see **one** line —
+     `reconnect due but the station is not associated — holding` — and not one
+     every 250 ms. The attempt then goes out on the first poll after the station
+     is back, not a retry cycle later.
+   - The handle letter must **alternate** across drops (A → B → A). If two
+     consecutive recoveries name the same handle, or `handle X would not start`
+     appears, the assumption DESIGN §08 strain 14 rests on has moved and the
+     archive needs re-reading before anything else is believed.
+   - `grey for NNNN ms` is the number this change exists to move: 9,451 ms on
+     2026-08-09, predicted ~4,700 ms now, of which ~4,000 is the connect. The
+     `dns=` figure says how much of that 4 s is the resolver — the first split of
+     that term anyone has taken.
 5. Let it run ten minutes and read the `--` statistics block (every 10 s).
 
 What the statistics should say on a healthy run:

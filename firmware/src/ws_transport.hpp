@@ -21,6 +21,8 @@
 // this header can get it wrong.
 #include <Arduino.h>
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include "esp_event.h"
@@ -29,12 +31,22 @@
 #include "frame_pipe.hpp"
 #include "frame_reassembler.hpp"
 #include "stall_probe.hpp"
+#include "ws_supervisor.hpp"
 
 namespace depthcharge::fw {
 
 // Ticker 101 on the deployed demo — the M0/M1/M3 subject, hardcoded for M3 (the
 // brief's "one panel, one ticker, one venue"). Multi-ticker is M7.
 inline constexpr char kAnvilUri[] = "wss://anvil.garethcooke.com/ws?ticker=101";
+
+// The same authority, spelled apart, because the DNS warm below resolves it
+// itself and this vintage of the client exposes no way to ask it what it parsed
+// out of the URI. They must agree; a mismatch shows up as a `dns=` figure that
+// is always a cache miss while the socket connects perfectly, which is a
+// misleading instrument rather than a broken one — so it is worth an eye on
+// every edit of the line above.
+inline constexpr char kAnvilHost[] = "anvil.garethcooke.com";
+inline constexpr char kAnvilPortText[] = "443";
 
 // Wi-Fi modem sleep: OFF here, ON in the `depthcharge-ps` build environment.
 //
@@ -68,55 +80,15 @@ inline constexpr bool kWifiPowerSave = (DC_WIFI_POWER_SAVE != 0);
 // and any bug in it shows up on the first bench run rather than in a month.
 inline constexpr int kWsRxBufferBytes = 4096;
 
-// How long a failed connection attempt waits before the next one.
-//
-// This is OUR backoff, not the client's, and the distinction is forced on us:
-// this vintage of `esp_websocket_client_config_t` has no `reconnect_timeout_ms`
-// field (checked member by member in the shipped header — the same gap that put
-// a pinned root in anvil_root_ca.hpp instead of the certificate bundle), so the
-// library's `WEBSOCKET_RECONNECT_TIMEOUT_MS` is a compile-time 10 s baked into
-// the precompiled archive with no way to override it. The supervisor therefore
-// preempts that wait rather than configuring it, restarting the client itself
-// this long after the socket went down. The client's auto-reconnect stays
-// enabled underneath as a backstop and simply never wins the race at 2 s
-// against 10 s — on the 2026-08-09 bench it was given 12 s twice and recovered
-// neither outage, so "backstop" is the most that can be claimed for it.
-//
-// 2 s rather than 10 s because an Anvil redeploy is the routine case, not the
-// exceptional one. Ten seconds of grey for a server that came back in three
-// tells the desk nothing it could act on; it just makes a healthy feed look
-// broken, which is the mirror image of the lie invariant #5 exists to prevent.
-inline constexpr std::int64_t kReconnectBackoffUs = 2 * 1000 * 1000;
-
-// Measured, not assumed: 2026-08-09 bench, the interval from the supervisor's
-// stop/start to the panel reading LIVE again, end to end.
-//
-// The 18:22 run split it, and the split is the reason this stays conservative
-// rather than being tuned down to the one term it now formally bounds:
-//
-//   ~2545 ms  esp_websocket_client_stop() blocking before the attempt begins
-//    4018 ms  DNS + TCP + TLS + upgrade — the only part inside the budget
-//    ~435 ms  socket up -> Anvil's snapshot -> LIVE (invariant #5 grants LIVE
-//             on data, never on a socket; the server is not the slow part)
-//
-// Only the middle term runs against kHandshakeBudgetUs, because the stamp is
-// taken after stop() returns — so today's real margin is 7000/4018 = 1.74x.
-// Held at the end-to-end figure anyway: it is one sample, and the cost of being
-// wrong downward is a supervisor that kills connections a beat before they
-// succeed, which is the failure mode that cannot self-correct.
-inline constexpr std::int64_t kObservedRecoveryUs = 6136 * 1000;
-
-// What one connection attempt is allowed to take end to end: DNS, TCP, the TLS
-// handshake against the pinned root, the HTTP upgrade, and the snapshot that
-// follows. The supervisor will not disturb an attempt of its own inside this
-// window, so understating it is the one way this code can turn a recoverable
-// outage into a permanent one — hence the assert, and hence a value picked
-// above the worst figure the bench has actually produced rather than the 2.5 s
-// cold Wi-Fi-plus-TLS bring-up that the first run made it tempting to use.
-inline constexpr std::int64_t kHandshakeBudgetUs = 7 * 1000 * 1000;
-
-static_assert(kHandshakeBudgetUs >= kObservedRecoveryUs,
-              "the handshake budget must cover the slowest recovery the bench has measured");
+// The reconnect constants and the policy that uses them live in
+// ws_supervisor.hpp, which is ESP-IDF-free and therefore host-tested. What used
+// to be here — a 2 s backoff, and the claim that it preempted the library's
+// unreachable 10 s `WEBSOCKET_RECONNECT_TIMEOUT_MS` — was true about the config
+// struct and wrong about the effect: the library's task sleeps 5 s inside every
+// abort, `esp_websocket_client_stop()` blocks for whatever is left of it, and
+// the two are anti-correlated to a constant. That measurement, and the change it
+// forced (a spare client handle, so nothing waits for the sleeper), are argued
+// in ws_supervisor.hpp's header comment.
 
 // How often the supervisor samples rssi.
 //
@@ -144,15 +116,32 @@ public:
     bool connect_wifi(const char* ssid, const char* password,
                       std::uint32_t timeout_ms = 30000) noexcept;
 
-    // Builds and starts the client. Auto-reconnect is left ON (the IDF default):
-    // recovery here is transport-driven, never seq-driven — on reconnect Anvil
-    // sends a fresh snapshot and the phase-1 book adopts it (protocol §4).
+    // Builds BOTH client handles and starts one of them. Recovery here is
+    // transport-driven, never seq-driven — on reconnect Anvil sends a fresh
+    // snapshot and the phase-1 book adopts it (protocol §4).
+    //
+    // Two handles, and this is the change the 2026-08-10 measurement forced.
+    // A dropped socket puts the library's task to sleep for 5 s (see
+    // ws_supervisor.hpp), and the only ways to get a live socket back before it
+    // wakes are to wait for it — `esp_websocket_client_stop()` blocks on exactly
+    // that — or to not need it. So there are two clients, both built once here,
+    // and a reconnect starts the one that is idle while the other expires on its
+    // own clock. Nothing blocks; the whole 5 s leaves the grey path.
+    //
+    // The costs, in full: ~10 KiB of heap for the spare's rx/tx buffers, taken
+    // once at boot and never in steady state (invariant #7 untouched); one extra
+    // 6 KiB task stack for the ~5 s the sleeper overlaps the new connection; and
+    // `disable_auto_reconnect = true`, without which the sleeper would wake at
+    // 10 s and open a SECOND live socket to Anvil behind our back. Only one TLS
+    // context is ever live, because `esp_websocket_client_abort_connection()`
+    // closes the transport at the drop — which the 2026-08-09 bench saw as
+    // `free=172708 (+47780)` the instant the socket died.
     bool start() noexcept;
 
     // Call periodically from a normal task context — NOT from the event handler,
     // which esp_websocket_client.h explicitly forbids for stop()/start().
     //
-    // This exists because the client's auto-reconnect does not cover every way a
+    // This exists because the client's own recovery does not cover every way a
     // socket ends. On a CLEAN server-side close, esp_websocket_client's task
     // sets WEBSOCKET_STATE_CLOSING, echoes the close frame, then breaks out of
     // its `while (client->run)` loop and calls vTaskDelete(NULL). auto_reconnect
@@ -167,16 +156,17 @@ public:
     // diagnose. Anvil is redeployed from time to time, so this is not a
     // hypothetical.
     //
-    // It now does a second job as well: it OWNS the retry cadence, because the
-    // client's own is not configurable here (see kReconnectBackoffUs). The
-    // trigger is this function's own poll of esp_websocket_client_is_connected()
-    // and nothing else — deliberately, after a first attempt drove it from the
-    // event stream instead and never fired once on the bench. See on_event() for
-    // what that cost and why the socket state is the only signal worth trusting.
+    // The decision of WHEN is not here: it is WsSupervisor, which is host-tested.
+    // What is here is the platform half — which handle to open, the DNS warm,
+    // and the logging. The trigger is this function's own poll of
+    // esp_websocket_client_is_connected() and nothing else — deliberately, after
+    // a first attempt drove it from the event stream instead and never fired
+    // once on the bench. See on_event() for what that cost.
     void supervise() noexcept;
 
     bool connected() const noexcept {
-        return client_ != nullptr && esp_websocket_client_is_connected(client_);
+        const esp_websocket_client_handle_t c = clients_[live_.load(std::memory_order_relaxed)];
+        return c != nullptr && esp_websocket_client_is_connected(c);
     }
 
 private:
@@ -184,13 +174,29 @@ private:
                                  void* event_data) noexcept;
     void on_event(std::int32_t id, esp_websocket_event_data_t* data) noexcept;
 
-    // Records that a connection attempt has just begun: counts it, and starts
-    // its handshake-immunity clock. Both must happen together at every site that
-    // starts one, which is why this exists rather than the two lines — the boot
-    // connection in start() forgot them and so got no immunity at all, which the
-    // 18:15 bench log's attempt counter gave away only by accident. Defined in
-    // the .cpp so the header need not pull in esp_timer.h.
-    void note_attempt_begun() noexcept;
+    // Starts the idle handle and makes it the live one. Returns false if the
+    // library refused, which happens when the idle handle's previous task has
+    // not exited yet — `esp_websocket_client_start()` rejects any handle whose
+    // state is still >= INIT. The supervisor's constants are asserted to make
+    // that rare rather than impossible, so it is reported and retried, never
+    // assumed away.
+    bool open_spare(const SupervisorDecision& d) noexcept;
+
+    // Resolves kAnvilHost on OUR clock, immediately before handing the connect
+    // to the library, and returns how long it took.
+    //
+    // Two jobs, and the second is the one that will still matter in a month.
+    // It warms lwIP's DNS cache, so the client's own lookup inside
+    // `esp_transport_connect` is a hit. And it SPLITS the 4018 ms that is now
+    // the largest term in a reconnect and has never been decomposed: `dns=` on
+    // the restart line against `socket up N ms` on the recovery line says
+    // whether the next lever is a resolver problem or a TLS one. Guessing which
+    // has already cost this milestone two sessions.
+    //
+    // It blocks loopTask for as long as the resolver takes, which is the reason
+    // it is called only when the station is associated. That is a smaller and
+    // better-understood block than the one this design removed.
+    std::int64_t warm_dns() noexcept;
 
     // Reads the association's rssi out of the driver, at most every
     // kRssiPeriodUs. Silent when the station is not associated: the driver
@@ -201,32 +207,24 @@ private:
     FramePipe& pipe_;
     LinkQuality& link_;
     // Touched only by the WebSocket client's callback, which is a single task,
-    // so it needs no synchronisation of its own.
+    // so it needs no synchronisation of its own. Both handles' callbacks are
+    // that same one task per handle, and they never overlap: a handle that has
+    // been retired cannot deliver DATA, because its transport was closed at the
+    // abort that retired it.
     FrameReassembler<FramePipe> reassembler_;
-    esp_websocket_client_handle_t client_ = nullptr;
 
-    // Supervisor state, touched only from supervise()'s caller context — no
-    // atomics and no shared flags, because after the 2026-08-09 bench there is
-    // nothing left to share: the client's task reports nothing this needs.
-    //
-    // Two clocks, and the whole correctness argument is the gap between them.
-    // `disconnected_since_us_` says when the feed died and schedules the FIRST
-    // attempt a backoff later. `attempt_started_us_` says when we last restarted
-    // the client, and buys that attempt kHandshakeBudgetUs of immunity — inside
-    // that window supervise() does nothing at all. Without the second clock a
-    // 2 s cadence would kill every attempt a beat before it succeeded, and an
-    // outage that recovers on its own would become one that never recovers.
-    //
-    // The cost is that attempts after the first come a full cycle apart rather
-    // than every 2 s. That is the right trade: the case worth optimising is the
-    // server that is already back when we look, and that one is served by the
-    // first attempt.
-    static constexpr std::int64_t kRetryCycleUs = kReconnectBackoffUs + kHandshakeBudgetUs;
-    static_assert(kRetryCycleUs > kHandshakeBudgetUs,
-                  "supervisor grace must exceed a full client reconnect or it preempts one");
-    std::int64_t disconnected_since_us_ = 0;
-    std::int64_t attempt_started_us_ = 0;
-    std::uint32_t attempts_ = 0;
+    // A and B. Both built in start(), both registered for events, exactly one
+    // started at a time.
+    static constexpr std::size_t kClientCount = 2;
+    esp_websocket_client_handle_t clients_[kClientCount] = {nullptr, nullptr};
+
+    // Which of them is the live one. Written by supervise()'s caller context and
+    // read inside the event callback, so it is atomic — unlike every diagnostic
+    // counter in this firmware, this one is BRANCHED ON, and a torn read would
+    // route a data chunk to the reassembler from a handle that is being retired.
+    std::atomic<std::uint8_t> live_{0};
+
+    WsSupervisor supervisor_;
     std::int64_t last_rssi_us_ = 0;
 };
 

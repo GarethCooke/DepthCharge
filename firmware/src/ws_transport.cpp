@@ -6,12 +6,16 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "lwip/netdb.h"
 
 #include "anvil_root_ca.hpp"
 
 namespace depthcharge::fw {
 namespace {
 constexpr const char* kTag = "ws";
+// A/B in the log, because "handle 1" and "attempt #1" beside each other at a
+// bench at 11pm is one transposition away from a wrong diagnosis.
+constexpr char kHandleName[] = {'A', 'B'};
 }  // namespace
 
 bool WsTransport::connect_wifi(const char* ssid, const char* password,
@@ -60,6 +64,29 @@ bool WsTransport::connect_wifi(const char* ssid, const char* password,
     return true;
 }
 
+std::int64_t WsTransport::warm_dns() noexcept {
+    const std::int64_t t0 = esp_timer_get_time();
+
+    addrinfo hints = {};
+    hints.ai_family = AF_INET;  // the client connects over IPv4; asking for both
+                                // would time a lookup the socket never makes
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    const int rc = ::getaddrinfo(kAnvilHost, kAnvilPortText, &hints, &res);
+    const std::int64_t elapsed = esp_timer_get_time() - t0;
+    if (res != nullptr) { ::freeaddrinfo(res); }
+
+    if (rc != 0) {
+        // Not fatal and not a reason to skip the attempt: the client resolves
+        // again itself, and a resolver that failed here may succeed a beat
+        // later. Logged because a reconnect that fails with `dns=fail` in front
+        // of it is a different bug from one that fails after a good lookup.
+        ESP_LOGW(kTag, "dns: %s did not resolve (rc %d) after %d ms", kAnvilHost, rc,
+                 static_cast<int>(elapsed / 1000));
+    }
+    return elapsed;
+}
+
 bool WsTransport::start() noexcept {
     esp_websocket_client_config_t cfg = {};
     cfg.uri = kAnvilUri;
@@ -76,25 +103,26 @@ bool WsTransport::start() noexcept {
     // server rejects the upgrade loudly at connect and the one-line fallback is:
     //     cfg.headers = "Origin: https://anvil.garethcooke.com\r\n";
 
-    // Auto-reconnect stays enabled (disable_auto_reconnect defaults false), and
-    // the pingpong watchdog stays on: if the socket dies quietly the client will
-    // tear it down and tell us, which arrives here as DISCONNECTED and becomes
+    // AUTO-RECONNECT OFF, which reverses the previous decision on new evidence.
+    //
+    // It was left on as a backstop, and on the bench it earned nothing: across
+    // two outages it held the connection down for the full 12 s the supervisor
+    // gave it and recovered neither. It is now actively harmful, because the
+    // spare-handle design depends on a retired client GOING AWAY. With
+    // auto-reconnect on, the sleeper wakes 10 s after its abort and opens a
+    // second live socket to Anvil that nothing in this firmware is watching —
+    // two sockets, one reassembler. With it off, the library's task takes the
+    // `if (!client->config->auto_reconnect) { client->run = false; break; }`
+    // arm of WEBSOCKET_STATE_WAIT_TIMEOUT and deletes itself, leaving the handle
+    // clean for reuse. Read out of the shipped archive, not the docs:
+    // `.text.esp_websocket_client_task + 0x36e`.
+    //
+    // The pingpong watchdog stays on: if the socket dies quietly the client
+    // tears it down and tells us, which arrives here as DISCONNECTED and becomes
     // Gap{Disconnect}. Our own RX watchdog is the faster and more honest of the
     // two — it fires on the *data* stopping, not on the socket dying — but both
     // paths exist because a half-open TCP connection can outlive a feed.
-    //
-    // What is NOT set here, and was meant to be: the interval that auto-reconnect
-    // waits between attempts. There is no `reconnect_timeout_ms` in this
-    // vintage's config struct — the field arrives in a later IDF than the one
-    // Arduino-ESP32 2.0.14 ships — so the library's 10 s
-    // WEBSOCKET_RECONNECT_TIMEOUT_MS stands and is unreachable from here. The
-    // 2 s cadence is enforced by supervise() preempting it instead.
-    //
-    // Left enabled all the same, but on evidence it earns little: across two
-    // bench outages it held the connection down for the full 12 s the supervisor
-    // gave it and recovered neither. Whether it is retrying and failing or not
-    // retrying at all is not visible from here, because everything it would say
-    // about it is an ESP_LOGI compiled out of the shipped archive.
+    cfg.disable_auto_reconnect = true;
     cfg.ping_interval_sec = 10;
     cfg.pingpong_timeout_sec = 20;
 
@@ -105,20 +133,27 @@ bool WsTransport::start() noexcept {
     cfg.task_stack = 6144;
     cfg.task_prio = 5;
 
-    client_ = esp_websocket_client_init(&cfg);
-    if (client_ == nullptr) {
-        ESP_LOGE(kTag, "esp_websocket_client_init failed");
-        return false;
+    // Both handles, from one config. `esp_websocket_client_init` strdup()s every
+    // string it keeps, so the two do not alias this stack object or each other.
+    for (std::size_t i = 0; i < kClientCount; ++i) {
+        clients_[i] = esp_websocket_client_init(&cfg);
+        if (clients_[i] == nullptr) {
+            ESP_LOGE(kTag, "esp_websocket_client_init failed for handle %c", kHandleName[i]);
+            return false;
+        }
+        if (esp_websocket_register_events(clients_[i], WEBSOCKET_EVENT_ANY,
+                                          &WsTransport::event_trampoline, this) != ESP_OK) {
+            ESP_LOGE(kTag, "esp_websocket_register_events failed for handle %c", kHandleName[i]);
+            return false;
+        }
     }
 
-    if (esp_websocket_register_events(client_, WEBSOCKET_EVENT_ANY,
-                                      &WsTransport::event_trampoline, this) != ESP_OK) {
-        ESP_LOGE(kTag, "esp_websocket_register_events failed");
-        return false;
-    }
+    live_.store(0, std::memory_order_relaxed);
+    const std::int64_t dns_us = warm_dns();
+    ESP_LOGI(kTag, "connecting to %s on handle A (dns %d ms)", kAnvilUri,
+             static_cast<int>(dns_us / 1000));
 
-    ESP_LOGI(kTag, "connecting to %s", kAnvilUri);
-    const esp_err_t err = esp_websocket_client_start(client_);
+    const esp_err_t err = esp_websocket_client_start(clients_[0]);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "esp_websocket_client_start: %s", esp_err_to_name(err));
         return false;
@@ -126,18 +161,13 @@ bool WsTransport::start() noexcept {
 
     // The boot connection is attempt #1, and marking it is not bookkeeping — it
     // is what buys it the same handshake immunity every retry gets. Without this
-    // supervise() sees a client that has simply never been connected, cannot
-    // tell that from one that dropped, and restarts it 2 s in: straight through
-    // the cold TLS handshake, which the 2026-08-09 18:15 log caught it doing
-    // (`attempt #2` for the first outage, and connects=2 before any outage had
-    // happened). It recovered, so it read as noise rather than as a bug.
-    note_attempt_begun();
+    // the supervisor sees a client that has simply never been connected, cannot
+    // tell that from one that dropped, and opens the spare a backoff in: straight
+    // through the cold TLS handshake, which the 2026-08-09 18:15 log caught it
+    // doing (`attempt #2` for the first outage, and connects=2 before any outage
+    // had happened). It recovered, so it read as noise rather than as a bug.
+    supervisor_.note_attempt_begun(esp_timer_get_time());
     return true;
-}
-
-void WsTransport::note_attempt_begun() noexcept {
-    ++attempts_;
-    attempt_started_us_ = esp_timer_get_time();
 }
 
 void WsTransport::sample_rssi(std::int64_t now) noexcept {
@@ -152,69 +182,89 @@ void WsTransport::sample_rssi(std::int64_t now) noexcept {
     }
 }
 
+bool WsTransport::open_spare(const SupervisorDecision& d) noexcept {
+    const std::uint8_t current = live_.load(std::memory_order_relaxed);
+    const std::uint8_t spare = static_cast<std::uint8_t>(current ^ 1u);
+
+    // Warmed BEFORE `live_` moves, and the order matters for one reason: this
+    // call can block for as long as the resolver takes, and for that whole time
+    // `live_` must still name a handle whose state is true. Pointing it at a
+    // handle that has not been started yet would make connected() answer for a
+    // client that does not exist.
+    //
+    // It is also the honest place for the measurement — the last instant that
+    // belongs to us rather than to the library.
+    const std::int64_t dns_us = warm_dns();
+
+    ESP_LOGW(kTag, "feed down %d ms — opening handle %c (attempt #%u, dns %d ms)",
+             static_cast<int>(d.elapsed_us / 1000), kHandleName[spare],
+             static_cast<unsigned>(d.attempt), static_cast<int>(dns_us / 1000));
+
+    // Published first, started second. A handle that has not been started cannot
+    // deliver anything, so this ordering is free; the reverse is not, because
+    // the client's task begins running the instant start() returns and there is
+    // no point at which a DATA chunk may arrive against a `live_` that still
+    // names the handle being retired.
+    live_.store(spare, std::memory_order_relaxed);
+
+    const esp_err_t err = esp_websocket_client_start(clients_[spare]);
+    if (err != ESP_OK) {
+        // Almost always ESP_FAIL for "the client has started" — the spare's
+        // previous task has not finished its 5 s sleep. The constants are
+        // asserted to keep that from happening (ws_supervisor.hpp), so it is
+        // worth an error line rather than a silent retry.
+        ESP_LOGE(kTag, "handle %c would not start: %s", kHandleName[spare],
+                 esp_err_to_name(err));
+        live_.store(current, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
+}
+
 void WsTransport::supervise() noexcept {
-    if (client_ == nullptr) { return; }
+    if (clients_[0] == nullptr) { return; }
 
     const std::int64_t now = esp_timer_get_time();
-    // Sampled on every pass, connected or not, and before the early return
-    // below — the rssi through a hole is exactly the number a link verdict has
-    // to be checked against, so it must not stop being collected precisely when
-    // the transport is unhappy.
+    // Sampled on every pass, connected or not, and before anything below — the
+    // rssi through a hole is exactly the number a link verdict has to be checked
+    // against, so it must not stop being collected precisely when the transport
+    // is unhappy.
     sample_rssi(now);
 
-    if (esp_websocket_client_is_connected(client_)) {
-        if (attempt_started_us_ != 0) {
+    SupervisorInput in;
+    in.now_us = now;
+    in.socket_connected = connected();
+    // WiFi.status(), not esp_wifi_sta_get_ap_info(): the question this gate asks
+    // is "could a TCP connection possibly succeed", and that needs an IP, which
+    // is what Arduino's status tracks and an AP record does not.
+    in.wifi_associated = (WiFi.status() == WL_CONNECTED);
+
+    const SupervisorDecision d = supervisor_.poll(in);
+
+    if (d.wifi_holdoff) {
+        ESP_LOGW(kTag, "reconnect due but the station is not associated — holding");
+    }
+
+    switch (d.action) {
+        case SupervisorAction::ReportConnected:
             // The measurement kHandshakeBudgetUs is guessed from, printed on
             // every recovery so the constant stops being a guess. This is the
             // SOCKET half only; the panel prints its own "grey for N ms", and
             // the difference between the two numbers is how long Anvil took to
-            // send the snapshot that grants LIVE. One 6.1 s figure covering both
-            // was all the last bench run could offer.
-            ESP_LOGI(kTag, "socket up %d ms into attempt #%u",
-                     static_cast<int>((now - attempt_started_us_) / 1000),
-                     static_cast<unsigned>(attempts_));
-            attempt_started_us_ = 0;
-        }
-        disconnected_since_us_ = 0;
-        return;
-    }
+            // send the snapshot that grants LIVE.
+            ESP_LOGI(kTag, "socket up on handle %c, %d ms into attempt #%u",
+                     kHandleName[live_.load(std::memory_order_relaxed)],
+                     static_cast<int>(d.elapsed_us / 1000),
+                     static_cast<unsigned>(d.attempt));
+            break;
 
-    if (disconnected_since_us_ == 0) {
-        disconnected_since_us_ = now;
-        return;
-    }
+        case SupervisorAction::StartAttempt:
+            (void)open_spare(d);
+            break;
 
-    // The first attempt of an outage falls a backoff after the feed died; every
-    // later one falls a full cycle after the previous attempt STARTED. Because
-    // the cycle is the backoff plus the handshake budget, this one comparison is
-    // also what guarantees an attempt of ours is never disturbed inside its
-    // budget — restarting a client mid-handshake is the single way this function
-    // could turn a recoverable outage into a permanent one, and it is ruled out
-    // on a clock we own rather than on anything the library tells us.
-    const std::int64_t due = (attempt_started_us_ == 0)
-                                 ? disconnected_since_us_ + kReconnectBackoffUs
-                                 : attempt_started_us_ + kRetryCycleUs;
-    if (now < due) { return; }
-
-    // Stop then start: stop() is a no-op on an already-dead task and start()
-    // recreates it. Safe here because this is a normal task context, never the
-    // event callback. This covers every way the feed can be down with the one
-    // action, because the bench showed there is no case where waiting longer
-    // helped — the client's own auto-reconnect had 12 s, twice, and used it to
-    // do nothing.
-    ESP_LOGW(kTag, "websocket down %d s — restarting client (attempt #%u)",
-             static_cast<int>((now - disconnected_since_us_) / 1000000),
-             static_cast<unsigned>(attempts_ + 1));
-    (void)esp_websocket_client_stop(client_);
-    const esp_err_t err = esp_websocket_client_start(client_);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "restart failed: %s", esp_err_to_name(err));
+        case SupervisorAction::None:
+            break;
     }
-    // Marked AFTER the calls, not before: stop() blocks until the client's task
-    // has joined — 2545 ms of it on the 18:22 bench run — and letting a slow
-    // teardown eat the handshake budget would put the next restart back on top
-    // of this attempt.
-    note_attempt_begun();
 }
 
 void WsTransport::event_trampoline(void* arg, esp_event_base_t /*base*/, std::int32_t id,
@@ -246,10 +296,12 @@ void WsTransport::on_event(std::int32_t id, esp_websocket_event_data_t* data) no
             // library's own ESP_LOGE on the way there, not an ERROR event.
             //
             // Arming on DISCONNECTED instead was the obvious repair and is the
-            // wrong one: abort_connection() is also what our own stop() runs
-            // through, so each restart would re-arm the timer that caused it.
-            // The supervisor polls the socket state directly now, which needs no
-            // theory about which of these three the library will choose.
+            // wrong one: abort_connection() was also what the supervisor's own
+            // stop() ran through, so each restart would re-arm the timer that
+            // caused it. (There is no stop() any more — see supervise() — but
+            // the rule survives its example: the supervisor polls the socket
+            // state directly, which needs no theory about which of these three
+            // the library will choose.)
             //
             // Whatever half-written message we held is gone with the socket;
             // drop it before telling the feed task, so the next connection
@@ -276,6 +328,20 @@ void WsTransport::on_event(std::int32_t id, esp_websocket_event_data_t* data) no
 
         case WEBSOCKET_EVENT_DATA: {
             if (data == nullptr) { break; }
+            // The one place the two handles have to be told apart, and the
+            // asymmetry with the status events above is deliberate.
+            //
+            // A status event from a retired handle is still a true statement —
+            // a socket of ours went down — and dropping it would cost a
+            // `sock_gaps` count and, if it were the drop that started the
+            // outage, the immediate grey that invariant #5 wants. So those are
+            // taken from either handle. DATA is different: a chunk fed to the
+            // reassembler from a handle we are retiring would interleave with
+            // the live one's message and produce a frame that never existed on
+            // any wire. It cannot happen today — a retired handle's transport is
+            // closed at the abort, so it has nothing left to deliver — and this
+            // is the guard for the day that stops being true.
+            if (data->client != clients_[live_.load(std::memory_order_relaxed)]) { break; }
             WsChunk chunk;
             chunk.op_code = data->op_code;
             chunk.payload_offset =
