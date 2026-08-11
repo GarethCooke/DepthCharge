@@ -136,6 +136,29 @@ bool Panel::begin() noexcept {
     cfg.double_buff = choice.double_buffered;
     cfg.setPixelColorDepthBits(static_cast<std::uint8_t>(choice.depth));
 
+    // CLOCK THE DATA ON THE FALLING EDGE. Bench-established 2026-08-11, and it is
+    // a panel/interconnect fact rather than a preference.
+    //
+    // The library defaults this to `true` (rising edge, its default since 2021).
+    // On this panel over M2's bare-jumper ribbon that samples too close to the
+    // data transition: the symptom was pixels lighting up immediately beside
+    // glyphs — a shifted copy of the real data landing in adjacent shift-register
+    // positions — and it tracked the neighbouring rows' switching activity, so it
+    // got WORSE when the bars were dimmed off the rail and started toggling
+    // bit-planes instead of sitting at DC. Clocking on the opposite edge samples
+    // the data mid-eye and the ghosts go.
+    //
+    // hardware/BRINGUP.md's forward note is the standing instruction here —
+    // "pixel-shift artifacts are a wiring symptom first, re-scope CLK on a 10x
+    // probe before suspecting the firmware" — and it still applies. M2's survey
+    // was done on a 1x probe and recorded "edge softening partly attributable to
+    // the probe", so the edge rate this setting is compensating for has never
+    // actually been measured. This is a working mitigation on the M3 interconnect,
+    // NOT evidence that the ribbon is fine: the carrier board at M6 should
+    // re-check whether it is still needed once the leads are short and there is a
+    // ground plane under them.
+    cfg.clkphase = false;
+
     report_.colour_depth = static_cast<std::uint8_t>(choice.depth);
     report_.double_buffered = choice.double_buffered;
     report_.predicted_bytes = choice.bytes;

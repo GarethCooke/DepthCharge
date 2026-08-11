@@ -134,6 +134,32 @@ constexpr Palette make_live_palette() noexcept {
     p.ink[ink_index(Ink::Chrome)] = {30, 30, 45};
     p.ink[ink_index(Ink::Symbol)] = {0, 160, 200};
     p.ink[ink_index(Ink::Value)] = {255, 255, 255};
+    // BEST-OF-BOOK IS 255 ON PURPOSE, AND IT IS NOT ABOUT BRIGHTNESS.
+    //
+    // This panel is 1/32 scan: row y and row y+32 are shifted out in the SAME
+    // slot, from one 16-bit word, upper half on R1/G1/B1 and lower half on
+    // R2/G2/B2. The header is rows 0-5, so it is paired with rows 32-37 —
+    // asks[0], the spread, and bids[0..3]. The touch.
+    //
+    // Under BCM, a channel at 255 is on for EVERY bit-plane of the frame: DC, no
+    // transitions. An intermediate value is on for only some planes, so it
+    // switches several times per 9.5 ms frame, and every one of those edges is a
+    // transition on a data line running beside the other half's data line down a
+    // bare ribbon.
+    //
+    // That was established the expensive way. The header flickered while being
+    // completely static (Anvil trades roughly every 8 s), and it stopped dead the
+    // moment the feed went stale and the bars froze — so it was coupled to the
+    // neighbours, not to itself. The obvious reading was current draw, so the
+    // bars were cut ~25% to reduce it. IT GOT WORSE, and gained pixels lit just
+    // outside the glyphs. Turning 255 into 200 does not reduce activity on
+    // asks[0] and bids[0] — the two rows paired with the header — it converts
+    // them from DC to switching, and the ghosts arrived with the edges.
+    //
+    // So the aggressor is edges, not amps, and best-of-book stays pinned at the
+    // rail. The remaining artifact is signal integrity on a bare-jumper
+    // interconnect, which hardware/BRINGUP.md's forward note already calls out
+    // as the thing to scope before suspecting firmware.
     p.ink[ink_index(Ink::Bid)] = {0, 150, 0};
     p.ink[ink_index(Ink::BidBest)] = {0, 255, 0};
     p.ink[ink_index(Ink::Ask)] = {170, 0, 0};
