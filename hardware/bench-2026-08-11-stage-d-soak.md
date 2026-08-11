@@ -121,13 +121,34 @@ consistent. The stall probe built for exactly this question answers it unambiguo
 
 ## Three findings to carry forward
 
-**1. Fragmentation is a trend now, not a blip.** `largest` is **−2,560 B** from baseline after
-ten connects, having been −2,048 after a single reconnect in the short run. `free` is −364 B,
-i.e. flat — **nothing is leaking**, but the largest free block steps down with each reconnect and
-does not recover. At 12,276 B it is still comfortable; the question is whether it converges or
-keeps walking. **A multi-hour run is the test that settles it, and it should happen before M4
-adds a second venue.** The TLS handshake also transiently takes ~8 KB out of ~30 KB free, which
-is the tightest moment in any run and the reason `kReserveInternalBytes` should not be lowered
+**1. There is NO fragmentation trend — and the first reading of this record said there was.**
+
+That claim was made from two endpoint samples taken in two different runs (−2,048 after one
+reconnect, −2,560 after ten) and it does not survive plotting the trajectory. `largest` across
+the 18-minute capture, at every 10 s block:
+
+```text
+12,788  for the first ~5 minutes
+16,372  from millis 2,013,820 — UP 3,584 B — and held for ~5 minutes
+12,788  again from 2,314,466
+38,900  transiently at 2,514,762 (socket down, the TLS context freed)
+10,740  transiently at 2,731,140 (a TLS handshake in flight)
+12,276  for the final four blocks
+```
+
+It **oscillates within a small set of discrete values and rose by 3.5 KB mid-run.** `free` sits
+at **30,212–30,220 for essentially the whole capture**, dipping only during handshakes and
+recovering completely every time. That is an allocator landing on different block sizes as
+buffers come and go, which is what `heap_4` does; the −2,560 in the final block is simply where
+it happened to be when logging stopped, one bucket below where it spent most of the run.
+
+**So invariant #7's target-side reading passes on both halves** — no leak (`free` flat over
+13,418 frames and six reconnects) and no fragmentation drift (`largest` bounded and
+non-monotonic). No multi-hour run is needed to establish it.
+
+**What the trajectory does establish is the real headroom.** The tightest moment in the run is a
+TLS handshake at `free=21,896 largest=10,740` — about 8 KB below steady state, and it succeeded.
+That is the number `kReserveInternalBytes` is protecting, and the reason it should not be lowered
 casually.
 
 **2. The connect-burst rejects have collapsed — and `cont` is non-zero for the first time.**
@@ -175,4 +196,8 @@ not hang over the acceptance.
   watchdog plus ~2 s of data still in flight, and ~4.5 s of re-association plus the measured
   ~3.8 s socket bring-up. **The behaviour the DoD line tests is measured fifteen times over
   above**; what is missing is that one event isolated in a log.
-- **A multi-hour run** to settle whether `largest` converges or keeps stepping down.
+- **`cont=2`** — the first thread to pull on the parked reassembler item, and the only finding
+  here that points at a real defect rather than at the link.
+
+**No multi-hour soak is owed.** It was listed here on the strength of a fragmentation trend that
+the trajectory above disproves.
