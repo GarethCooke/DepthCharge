@@ -1802,3 +1802,102 @@ soak, no photo, and **ROADMAP M3 stays `Next`**. Nothing on the panel has been s
 
 Then tick Stage D here and in `docs/briefs/M3-stage-D-the-panel.md`, and only then tick **M3** in
 `ROADMAP.md` and mark **M4 Next**.
+
+### 2026-08-11 · Opus 5 + owner at the bench · THE OBJECT CAME ALIVE, and the panel taught us five things
+
+**The ladder is on the panel.** Live Anvil order book at 64×64: bids stacking green below the
+spread, asks red above it, the amber spread row between them, the header naming the instrument
+and the last price, the tape strip along the bottom. The same `engine/` that runs under `ctest`
+on the desk, drawing copper and light. Photographed twice during the session.
+
+**Invariant #5 was watched behaving, repeatedly and unprompted.** The honest grey `RESYNC` frame
+appears before Wi-Fi finishes associating — never a black screen — and the panel goes coloured on
+the first snapshot. Over the evening it greyed on watchdog trips and socket drops dozens of times
+and came back clean every time, with `grey for N ms` matching the log. **The formal
+pull-the-Wi-Fi acceptance run and its photo are still owed** (see the DoD), but the behaviour it
+tests has now been seen many times over.
+
+Five findings, in the order the bench produced them. Four are recorded here because they are
+*measurements*, and one belongs to hardware.
+
+**1. The framebuffer sizing was wrong by 44%, and the board said so in one line.**
+`predicted=65536 measured=94468`. The model counted the BCM framebuffer and ignored 24,576 B of
+DMA descriptors and ~4,356 B of allocator bookkeeping. It only worked because the reserve
+happened to exceed the error — `choose_depth()` said "fits in 88,332" for something needing
+94,468. `panel_budget.hpp` now replays the library's own integer arithmetic (refresh loop,
+transition-bit search, descriptor count) and `test_panel_budget.cpp` pins it against the numbers
+the board printed. Confirmed the next boot: predicted 78,080 against 77,896 measured, 0.24%.
+
+**2. Colour depth 8 → 6, and it cost nothing visible.** The library's own log said why: at depth
+8 it cannot reach 60 Hz without collapsing the bottom three colour bits ("Percieved colour depth
+to the eye may be reduced"), while at depth 6 it clears 60 Hz with every bit correctly weighted.
+Depth 8 was paying 16 KiB for colour the panel was never showing. That mattered — steady free
+internal heap was **13,816 bytes with a 4,084 byte largest block**, against ~124 KB in stage C
+with no panel. Now 30,172 / 12,276.
+
+**3. Pure hues, because six bits quantise a tint into a different colour.** The sides were tinted
+toward white to mark the touch; at six bits the small off-channel components survive while the
+main channel is already saturated, and the verdict was immediate — "red is now more pink". Each
+side is one channel now, best-of-book distinguished by intensity. **Then the reverse mistake:**
+dimming the bars to reduce coupling made things *worse*, because under BCM a channel at 255 is
+DC-on for the whole frame while an intermediate value toggles bit-planes several times per frame.
+**The aggressor is edges, not amps.** Best-of-book stays pinned at the rail precisely because
+that is the quiet state.
+
+**4. The 3×5 font was never going to be readable, and the row budget absorbed the fix by
+itself.** Two bench verdicts, one of them after brightness went 160 → 224 specifically to rule
+brightness out. 4×6 is 78% more lit area; it costs one header row and therefore `kLevels`
+27 → 26, exactly the trade the stage D brief pre-authorised ("draw fewer levels; never change
+`kDisplayLevels`"). **Changing `kGlyphHeight` moved the header, both rules, both ladders, the
+spread row and the tape strip with no coordinate edited**, and the "budget sums to exactly 64
+rows" assert held throughout. That derivation was built for this moment and it paid.
+
+**5. Wi-Fi: the framework gives up permanently on AUTH_FAIL, and nothing was watching.** Blocking
+the board at the AP left the panel grey for the rest of the run — 145 s and counting, unblocking
+changed nothing. `WiFiGeneric.cpp:1177`'s reconnectable-reason list contains
+`WIFI_REASON_802_1X_AUTH_FAILED` and **not** `WIFI_REASON_AUTH_FAIL` (202), so after Arduino's one
+retry is refused, `WiFi.begin()` is never called again. `connect_wifi()` being a one-shot at boot
+was a latent hole with no owner. `WifiSupervisor` now rejoins on its own clock, host-tested beside
+the socket policy — same lesson as the reconnect rework, one layer down: **supervise on observed
+state, not on the library's policy.** Confirmed on the board (`rejoining (#15)` → LIVE). A second
+pass halved the recovery again by noticing that a *refused* attempt is not an *in-flight* one:
+the AP refuses in 60 ms, so refused retries come back in 1 s instead of 5.
+
+**THE ONE THAT IS HARDWARE, AND IT IS WRITTEN INTO `hardware/BRINGUP.md` RATHER THAN HERE.** The
+panel shows ghost pixels beside the header glyphs. `clkphase = false` clears them completely —
+and collapses inbound Wi-Fi from ~6 msg/s to ~2 msg/s, reproduced consistently both ways, with
+`sock_gaps=0`, 0% lost and both cores 96% idle. It cannot be firmware: `clkphase` reaches only a
+GPIO-matrix inversion on the CLK pin, with no change to DMA, data rate or CPU load. Inverting CLK
+aligns its edge with the thirteen data lines beside it, so ~14 outputs switch simultaneously down
+a bare ribbon with no ground plane, a hand's width from the DevKit's 2.4 GHz antenna. **The panel
+samples its own data better and jams its own radio.** The feed wins; `clkphase` stays default.
+This is now an M6 carrier-board *requirement* with evidence, and it makes the roadmap's existing
+ground plane, short leads and `2× 74HCT245` buffers load-bearing rather than nice-to-have.
+
+**And a fact nobody had noticed in three stages: this panel has never run at the clock the config
+asks for.** The S3 backend *buckets* `i2sspeed` rather than using it — anything ≤ 10 MHz lands on
+divider 16, i.e. 160/16 = **10 MHz** — while the library's refresh loop still computes from the
+nominal 8 MHz. So every `refresh=105 Hz` this firmware has ever printed is ~25% low; the real
+figure was ~131 Hz. The board had been printing both halves on adjacent lines (`Clock divider is
+16`) the whole time. It also means the obvious way to slow the clock (lower `i2sspeed`) would have
+changed nothing and read as a null result. `S3_LCD_DIV_NUM=24` is the real knob and is shipped as
+a partial mitigation (6.67 MHz, ~87 Hz actual): the header's left number went stable, the right
+one did not. **DESIGN strain 15's "one scan inside one render period" margin was computed from
+that wrong number and was right by luck, not analysis.**
+
+**Deliberately stopped here.** The remaining ghosting is cosmetic, understood, and has a hardware
+fix scheduled. Stage D's definition of done does not mention the header, and this milestone's log
+already records three evenings lost to chasing a fix before the data chose it.
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: **11/11 ctest**, `dc_tests`
+169 → **200 cases**. Both firmware environments build clean, RAM 41.9%, flash 13.2%. No `engine/`
+behaviour change, no golden moved, `kRxWatchdogMs` still 1000 ms. Eight commits on
+`m3/stage-d-the-panel`.
+
+**Exact next step: the acceptance run, and it is the only thing left in M3.** Procedure in
+`firmware/README.md`. Pull the Wi-Fi and time the grey; ten-minute soak on the near mesh node with
+`wd_gaps` and `sock_gaps` read at the end; confirm the feed-side histograms and heap are
+unregressed with the panel running; **commit a photo/clip to `hardware/`** (it also unblocks MP
+stage 2, so shoot it like it will be published). Then tick Stage D here and in
+`docs/briefs/M3-stage-D-the-panel.md`, and only then tick **M3** in `ROADMAP.md` and mark **M4
+Next**.

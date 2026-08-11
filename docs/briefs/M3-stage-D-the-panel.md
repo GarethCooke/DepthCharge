@@ -260,21 +260,28 @@ you set and why.
       now carries a CLOSED callout pointing at it, run data unedited.)*
 - [x] Render task on Core 1 draws the live ladder — bids green, asks red, spread gap, last price.
       *(`render_task.*`, was `serial_console.*`. Core 1, priority 3, 33 ms period off
-      `vTaskDelayUntil`, redraw gated on `consume()`. Geometry host-tested.)*
+      `vTaskDelayUntil`, redraw gated on `consume()`. **Confirmed on the panel 2026-08-11** and
+      photographed.)*
 - [x] `status == Stale` greys the whole panel through a single palette selection; boot frame
       renders as honest grey, not black.
       *(Stronger than asked: the renderer emits `Ink` and cannot name a colour;
       `static_assert(all_grey(kStalePalette))` makes a coloured stale panel a **build
-      failure**. Boot frame pinned by its own test case.)*
+      failure**. **Confirmed on the panel**: the honest grey `RESYNC` frame appears before
+      Wi-Fi finishes associating, and the ladder colours on the first snapshot.)*
 - [x] Render heartbeat pixel present. *(Bottom-right, toggled every drawn frame, host-tested.)*
 - [ ] Pull-the-Wi-Fi acceptance passes: live → grey within ~1 s → clean resync. **— owner, at
-      the bench. Nothing below this line has run on hardware.**
+      the bench. The BEHAVIOUR was observed dozens of times on 2026-08-11 (grey on watchdog and
+      on socket drop, clean resync, `grey for N ms` matching the log); what is missing is the
+      deliberate acceptance run and its record.**
 - [ ] ~10-minute soak holds colour; greys correspond to logged socket drops.
-- [ ] Feed-side histograms and heap unregressed with the panel running.
-- [ ] Photo/clip in `hardware/`. *(RAM/flash and task priorities recorded — 41.9% /
-      865,745 B, feed 5 on Core 0, render 3 on Core 1, loopTask 1. PSRAM answer recorded and
-      it is **not** used for the framebuffer. Colour depth is a runtime decision the board
-      prints at boot, so that number comes from the run.)*
+- [ ] Feed-side histograms and heap unregressed with the panel running. *(Looked healthy on
+      every good run — `a→e` all in the 5–25 ms bucket, `no_slot=0`, heap flat, `worst paint`
+      ~2 ms of the 33 ms period — but not read as a deliberate ten-minute comparison.)*
+- [ ] Photo/clip in `hardware/`. **Photographed twice during the session; neither image is
+      committed yet, and that is the outstanding half.** *(Everything else this line asks for
+      is recorded: RAM/flash 41.9% / 13.2%, task priorities feed 5 on Core 0, render 3 on
+      Core 1, loopTask 1; PSRAM present at 8,385,975 B and **not** used for the framebuffer;
+      colour depth **6, double-buffered**, 78,080 B, chosen at run time and printed at boot.)*
 - [ ] M3 brief's Stage D ticks filled; **ROADMAP M3 ticked and M4 marked Next only when the
       acceptance passes.**
 
