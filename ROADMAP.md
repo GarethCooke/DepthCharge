@@ -33,14 +33,29 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
 ## Backlog (not scheduled)
 
 - Anvil-side (lives on Anvil's backlog, cross-referenced only): chaos flag for
-  deterministic gap testing; sequenced incremental L2 feed (DepthCharge is its future
-  test client — must ship a heartbeat/keepalive, or DepthCharge's ~80 ms-republish
-  liveness watchdog false-greys a quiet-but-live book, strain 10); feeder realism
+  deterministic gap testing; **sequenced incremental L2 feed — promoted 2026-08-11 from
+  a nice-to-have to the thing that makes the hardware work at all.** A 5,744-byte TCP
+  receive window across the measured **87 ms** RTT to `52.204.246.224` (AWS us-east-1)
+  caps the board at **65.5 KiB/s** against Anvil's **110.4 KiB/s** full-book stream, so
+  the panel falls permanently behind — 328 s measured — and no firmware lever reaches it
+  (ARCHITECTURE §9, 2026-08-11). A delta feed at a tenth the bytes fits inside the
+  existing window; the alternative is a rebuilt ESP-IDF. Still must ship a
+  heartbeat/keepalive, or DepthCharge's ~80 ms-republish liveness watchdog false-greys a
+  quiet-but-live book (strain 10). DepthCharge is its future test client; feeder realism
   (Hawkes arrivals / mirror mode / FrontierView execution-algo participant); TLS-chain
   rotation is a DepthCharge-firmware-pinned dependency (an Anvil CA/chain change = a
-  lock-step firmware update); per-socket coalescing / even backpressure-shedding (undocumented in PROTOCOL.md —
-lossless for Anvil's idempotent full-replace book, but M4/M5 delta venues cannot shed the
-same way without gap+resync; document Anvil-side, never assume it downstream).
+  lock-step firmware update); **per-socket send-queue behaviour — document it in
+  PROTOCOL.md *and establish whether it bounds queue depth.*** The earlier wording here
+  said "coalescing / even backpressure-shedding", on the strength of a 2026-08-09
+  rate-and-gap measurement; that conclusion is withdrawn (ARCHITECTURE §9, 2026-08-11).
+  Measured on 2026-08-11 with `tools/anvil_freshness_probe.py`: a desk socket throttled to
+  25% of the stream sees **every** frame kind thinned by the same fraction and its lag grow
+  **linearly to 111 s over 150 s with no plateau**, implying **~12.4 MB still queued for that
+  one socket** and rising. A DepthCharge board on one socket accumulated ~98 s of backlog in
+  210 s of uptime. **Anvil is not modified from here and no Anvil change is proposed** — this
+  is a note on their backlog. The downstream rule stands and is now sharper: never assume a
+  thinned stream is a fresh one, and M4/M5 delta venues cannot tolerate either shape without
+  gap+resync.
 - DepthCharge: Crucible post — book structures under fire (flat_map vs dense window,
   driven by Anvil's *trend* workload).
 - Optional **live web mirror** of the panel's `DisplaySnapshot` feed (a browser twin of

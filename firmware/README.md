@@ -422,6 +422,7 @@ What the statistics should say on a healthy run:
 | `feed` | `worst_gap` well under 1000 ms except across the pull |
 | `channel` | `published_v` and `consumed_v` tracking each other |
 | `rate` | `0% lost`, and `in` matching what the host capture sees |
+| `age` | `drain 100%` and an `age` under a second — see below, and note this is the one line that has never yet read healthy |
 | `heap` | `free` delta **0** and `largest` not falling (see the caveat below) |
 
 Reading the two that are new, and easy to misread:
@@ -463,6 +464,95 @@ Reading the two that are new, and easy to misread:
   running on the wire (an ~8 KB frame through a 4 KiB RX buffer), rather than
   only in the host test. `1.00` would mean frames have shrunk below 4 KiB and
   that path has stopped being exercised.
+
+### `-- age` — how OLD the book is, which is not the same as whether it stopped
+
+```text
+-- age    : age 97.4 s (worst 124.0 s, run 124.0 s) | summary 172 of 420 over 210.0 s | drain 41% this window (8 in 10001 ms)
+```
+
+**Every other line in this block can read perfectly while the panel shows a book
+a hundred seconds behind the market.** That is not hypothetical — it is what the
+2026-08-11 bench was doing with `parse=0`, all pipe counters zero and both cores
+85–92% idle. The watchdog measures *stopped*, the parse counters measure *wrong*,
+the stall probe measures *whose fault the stopping was*. None of them measures
+*old*, and neither did invariant #5.
+
+Anvil's `summary` is a fixed **2 Hz timer broadcast**, so its rate is a fact
+about elapsed time rather than about trading — the only clock on this wire. The
+deficit between 2.00/s and what this socket receives, integrated since the socket
+came up, is the age. It costs one counter the adapter was already keeping.
+
+| Field | Healthy | What a bad value means |
+| --- | --- | --- |
+| `drain` | **100%** | the instantaneous half: summaries this window against the 2.00/s broadcast. 41% means the board is receiving 41% of the stream and falling behind by 0.59 s per second |
+| `age` | **under 1 s** | how far behind the book on the panel is. Resolution is one summary period, so a socket that is exactly current reads a 0–500 ms sawtooth |
+| `worst` | tracks `age` | the peak on **this connection**; reset when the socket reconnects, because the backlog dies with the socket |
+| `run` | tracks `worst` | the peak across the **whole run**, retained through reconnects. `worst` far below `run` means reconnects have been flushing a backlog and hiding it — which is exactly why the 2026-08-09 86-minute run looked healthy at 21 reconnects |
+| `seq` | climbing | the **join key**: Anvil's global wire seq. Join it against a simultaneous desk capture and the lag is a subtraction, sampled at the publish rate — the measurement, where the stopwatch is a biased proxy for it |
+| `AHEAD n.n s (m%)` | **absent** | summaries arriving faster than 2 Hz for long. The denominator is wrong for this server and every age above is scaled by the ratio — re-measure with `py tools/anvil_freshness_probe.py --reference-only`. Tested as a *ratio* against a 5% tolerance, deliberately: a ratio is scale-free, so it survives the 500 ms constant being wrong by any amount, a venue that changes its period, and the board's own crystal error — none of which an absolute threshold survives. The wire itself is 2.0003/s over 30 minutes, so the tolerance is ~3,000× the real drift and this fires only on something structural |
+
+**Read `age` beside `drain`, never alone**, and read the assumption in
+`src/staleness.hpp` before quoting either. The deficit is an age only if the
+missing summaries were **queued** rather than dropped; a rate cannot tell those
+apart, and mistaking one for the other is precisely the error that cost this
+milestone the 2026-08-09 "Anvil sheds evenly" finding. That assumption has been
+checked at the desk for Anvil and holds (linear queuing, every kind thinned
+equally, no plateau — `hardware/bench-2026-08-11-feed-lag.md`); it is **not**
+inherited by Kraken or Binance.
+
+A rejected `summary` counts as missing and inflates the age, so cross-check
+`-- errors parse=` in the same block.
+
+---
+
+## The feed-lag run (owner)
+
+The one measurement this firmware cannot make about itself: **is the age the
+board reports the age the panel actually has?**
+
+**Do not use a stopwatch for it.** Freezing the web client and timing until the
+panel catches up measures `age ÷ drain`, not `age` — the panel's market-time
+cursor advances at the drain fraction, so at this board's ~0.41 the stopwatch
+reads about **2.4×** whatever `-- age` prints, and that is the two instruments
+agreeing. The full derivation, and its confirmation against this project's own
+committed desk data, is in `hardware/bench-2026-08-11-feed-lag.md`.
+
+Use the **`seq` join** instead. Anvil's wire seq is one global counter, so the
+same broadcast carries the same value on every socket; the board prints its
+latest one on the `-- age` line, and joining that against a simultaneous desk
+capture gives a continuous lag curve at the publish rate with no stopwatch, no
+human and no `1/f`. Three rules:
+
+1. **Start the desk control first**, and leave it up for the whole session:
+
+   ```sh
+   py tools/anvil_freshness_probe.py --reference-only --seconds 1800
+   ```
+
+2. **Log to a file, from `firmware/`.** `log2file` is in `monitor_filters` now,
+   beside `time` — the per-line timestamp is what every interval is read off, and
+   the log lands in the gitignored `firmware/logs/`. `pio run` has **no `-f`
+   option**; the filters come from `platformio.ini`.
+3. **Do not require one connection.** `-- age` resets per connection and reports
+   its own window, so each connection is a complete lag curve from zero to peak.
+   On a board that drops every few minutes, twenty short curves are better data
+   than one long run that never happens. Record the wall-clock of every drop —
+   regular means a queue filling to a bound, scattered means a link.
+
+And the desk tool that settles the mechanism rather than the magnitude — two
+sockets, one throttled, matched on wire `seq`, which is the measurement
+`anvil_drain_probe.py` could not make:
+
+```sh
+py tools/anvil_freshness_probe.py --seconds 150 --delay 0.25
+```
+
+**Never run that one beside a live bench session.** It deliberately starves a
+socket toward tens of megabytes of server-side queue, and if that pressure makes
+Anvil drop other sockets, a board drop caused by the probe is indistinguishable
+from the board's own backlog closing its connection — the confound manufactures
+the evidence. `--reference-only` is one normal socket and is safe concurrently.
 
 A non-zero `cont` would mean Anvil has started fragmenting at the WebSocket
 layer, which this IDF vintage cannot reassemble correctly (no FIN bit) — see
@@ -765,6 +855,7 @@ balanced over hours; it does not decide whether it allocates. Full reasoning in
 | `src/frame_pipe.*` | the four-slot pool + queues, transport → feed, and the arrival histogram |
 | `src/feed_task.*` | Core 0: the pipeline, the RX watchdog, the only book writer |
 | `src/ws_supervisor.hpp` | when a reconnect is due and how long it is immune. **No ESP-IDF** — host-tested by `harness/tests/test_ws_supervisor.cpp` |
+| `src/staleness.hpp` | how OLD the book is, from the deficit against Anvil's 2 Hz `summary` broadcast. **No ESP-IDF** — host-tested by `harness/tests/test_staleness.cpp`. Raises no `Gap` and nothing branches on it |
 | `src/ladder_font.hpp` | the 3×5 panel font, 41 glyphs. **No ESP-IDF** — host-tested by `harness/tests/test_ladder_render.cpp`, which is the point: the 64-row budget is computed from these metrics |
 | `src/ladder_render.hpp` | the 64×64 ladder: geometry, `Ink`, the two palettes, the sparkline ring and the trade flash. **No ESP-IDF** — host-tested. Cannot name a colour |
 | `src/panel.*` | the HUB75 driver glue: pin map by field name, the colour-depth decision, and `PanelCanvas` — the only place an `Ink` becomes an RGB value |
