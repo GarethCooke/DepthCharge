@@ -244,7 +244,7 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned>(channel_.published_version() - frames_drawn_));
 
     print_panel();
-    print_rates(p, a.events_out);
+    print_rates(p, f, a.events_out);
     heap_.report("steady", frames_drawn_ - frames_at_baseline_);
 }
 
@@ -459,7 +459,8 @@ void RenderTask::drain_rejects(const RejectLog& rejects) noexcept {
     }
 }
 
-void RenderTask::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {
+void RenderTask::print_rates(const FramePipeStats& p, const FeedTask::Stats& f,
+                             std::uint64_t events_out) noexcept {
     const std::int64_t now = esp_timer_get_time();
     const std::uint32_t attempted = p.frames_published + p.no_slot + p.oversize;
 
@@ -471,6 +472,7 @@ void RenderTask::print_rates(const FramePipeStats& p, std::uint64_t events_out) 
     cur.chunks = p.chunks;
     cur.events = events_out;
     cur.drawn = frames_drawn_;
+    cur.summaries = f.staleness.summaries_total();
 
     if (have_prev_ && now > prev_.at_us) {
         // Integer arithmetic throughout — invariant #3's habit, and on this
@@ -517,6 +519,40 @@ void RenderTask::print_rates(const FramePipeStats& p, std::uint64_t events_out) 
                  static_cast<unsigned>(chunks_x100 / 100),
                  static_cast<unsigned>(chunks_x100 % 100),
                  static_cast<unsigned>(dt_ms));
+
+        // HOW OLD THE BOOK IS, AND THE RATIO IT CAME FROM (M3 stage E).
+        //
+        // Printed here, directly under `-- rate`, because the two are one
+        // reading: `rate` says how much of the stream is arriving and this says
+        // what that costs in seconds. Every earlier instrument in this firmware
+        // measures whether the feed is stopped; a feed at 41% of the broadcast
+        // is not stopped and every counter above reads healthy while the panel
+        // shows a book a hundred seconds old.
+        //
+        // `drain` is the instantaneous half — summaries received this window
+        // against the 2.00/s Anvil broadcasts, so 100% is keeping up. The `age`
+        // is that deficit integrated since the socket came up. **It is an age
+        // only if the missing summaries were queued rather than shed** —
+        // staleness.hpp states the assumption and the calibration owed against
+        // it; read it as an upper bound until the lag-versus-uptime run lands.
+        // `seq` is the JOIN KEY, not a diagnostic — see FeedTask::last_wire_seq.
+        // With it on this line, the serial log and a simultaneous desk capture
+        // can be joined offline into a continuous lag curve at the publish rate,
+        // which measures the age directly. The stopwatch alternative measures
+        // age/drain and is biased by ~2.4x at this board's drain fraction.
+        //
+        // Note what `drain` can and cannot say: over a 10 s window its
+        // denominator truncates to 20 broadcast slots, so the field quantises to
+        // multiples of 5%. It is the shape, not the third digit; the cumulative
+        // `summary N of M` pair beside it is the precise ratio.
+        const std::uint32_t d_summ =
+            static_cast<std::uint32_t>(cur.summaries - prev_.summaries);
+        char age[208];
+        f.staleness.render(now, age, sizeof age);
+        ESP_LOGI(kTag, "-- age    : %s | drain %u%% this window (%u in %u ms) | seq %lld", age,
+                 static_cast<unsigned>(drain_percent(d_summ, static_cast<std::uint64_t>(dt_ms) * 1000ull)),
+                 static_cast<unsigned>(d_summ), static_cast<unsigned>(dt_ms),
+                 static_cast<long long>(feed_.last_wire_seq()));
     }
 
     prev_ = cur;

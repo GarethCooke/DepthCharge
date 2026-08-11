@@ -49,18 +49,26 @@ void FeedTask::run() noexcept {
 
         switch (msg.kind) {
             case FeedMessage::Kind::Frame:        on_frame(msg); break;
-            case FeedMessage::Kind::Connected:
+            case FeedMessage::Kind::Connected: {
                 ++stats_.connects;
+                const std::int64_t at = esp_timer_get_time();
                 // Each connect gets its own capture budget: the reject burst
                 // recurs per connect and is smaller on a reconnect, so a budget
                 // spent once at boot would hide the half of the phenomenon that
                 // is hardest to reproduce on purpose.
-                stats_.rejects.note_connect(esp_timer_get_time());
+                stats_.rejects.note_connect(at);
+                // And the age estimate starts over, because the backlog dies
+                // with the socket: Anvil sends a fresh snapshot to a new
+                // connection, so whatever was queued behind the old one is gone.
+                // Carrying it across would have made the 2026-08-09 86-minute
+                // run — 21 reconnects — read as one long healthy stream.
+                stats_.staleness.note_connect(at);
                 // Deliberately does NOT clear stale. Only a fresh Snapshot can
                 // (invariant #5), and on reconnect Anvil sends exactly one as
                 // its first frame (protocol §4) — so the panel goes live on
                 // data, never on the mere fact of a socket.
                 break;
+            }
             case FeedMessage::Kind::Disconnected: on_disconnected(); break;
         }
     }
@@ -105,6 +113,12 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // about, so ask the adapter rather than assuming. Bytes arriving is not the
     // same as the ladder advancing — see the note on kRxWatchdogMs.
     const std::uint64_t events_before = adapter_.stats().events_out;
+    // And whether it was a `summary`, which is the one frame kind on this wire
+    // that carries a CLOCK rather than a market event (staleness.hpp). Taken by
+    // differencing the adapter's own counter rather than by adding a firmware
+    // instrument to the adapter: `engine/` is shared with the host replay and is
+    // not modified from here (invariant #1, and this stage's guardrail).
+    const std::uint64_t summaries_before = adapter_.stats().summary_ignored;
 
     const std::string_view text(pipe_.buffer(msg.slot), msg.len);
     adapter_.on_frame(text, [this](const FeedEvent& ev) { apply_and_publish(ev); });
@@ -144,6 +158,21 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // would report a first recovery gap equal to the hole and every recovery
     // would read as a resumed cadence.
     stats_.stall.note_message(arrival_delta_us);
+
+    // The age clock, and it is stamped at `now` — when this task took the
+    // message — rather than at `msg.arrival_us`. Both are defensible and the
+    // difference is the a->e latency, which this run measures at 5-25 ms against
+    // a 500 ms broadcast period: two orders of magnitude below the quantisation
+    // of the estimate, so the simpler stamp is the honest one. If a->e ever
+    // reaches a sizeable fraction of a period, this line is where that starts to
+    // matter and the arrival stamp is the fix.
+    //
+    // A `summary` that FAILED to parse never increments this counter and so
+    // counts as missing, inflating the lag — cross-check `-- errors parse=`,
+    // which is why both lines are in the same block.
+    if (adapter_.stats().summary_ignored != summaries_before) {
+        stats_.staleness.note_summary(now);
+    }
 
     if (adapter_.stats().events_out != events_before) {
         // Measured from the previous EVENT and not gated on `watching_`, so the
@@ -201,6 +230,12 @@ void FeedTask::on_watchdog() noexcept {
 
 void FeedTask::on_disconnected() noexcept {
     ++stats_.socket_gaps;
+    // Bank whatever backlog this socket had accumulated BEFORE the outage starts
+    // inflating the running estimate. `lag_us` keeps climbing while the feed is
+    // down — honest about the screen, but that time is grey, not backlog — and
+    // note_connect would then zero `worst` on the way back up, losing the whole
+    // episode. See staleness.hpp.
+    stats_.staleness.note_disconnect(esp_timer_get_time());
     // Flagged, not acted on: the hole this outage is inside is only recorded
     // when data returns, and by then nothing else would remember that the
     // transport went down in the middle of it. A reconnect costs a ~2.5 s

@@ -186,17 +186,19 @@ add_executable(dc_tests
   harness/tests/test_replay_goldens.cpp
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
+  harness/tests/test_staleness.cpp
   harness/tests/test_ws_supervisor.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
-# M3 stages C and D: the firmware's WebSocket reassembler, its gap histograms,
+# M3 stages C, D and E: the firmware's WebSocket reassembler, its gap histograms,
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
 # what the parser threw away, the reconnect policy that decides how long the
-# panel stays grey, and — from stage D — the 64x64 ladder renderer and the font
-# its row budget is computed from, are deliberately ESP-IDF-free so they can be
-# tested here. These are the ONLY firmware/ paths the host build knows about, and
-# all seven are headers — no firmware .cpp is compiled on the host, so nothing in
-# firmware/ can quietly become a host dependency.
+# panel stays grey, the 64x64 ladder renderer and the font its row budget is
+# computed from, and — from stage E — the summary-deficit age estimator, are
+# deliberately ESP-IDF-free so they can be tested here. These are the ONLY
+# firmware/ paths the host build knows about, and every one of them is a header —
+# no firmware .cpp is compiled on the host, so nothing in firmware/ can quietly
+# become a host dependency.
 #
 # ladder_render.hpp is the one that most needed it. Stage D's claim is that a
 # stale book CANNOT be drawn in colour, and the panel is a bench instrument two
