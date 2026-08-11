@@ -136,28 +136,40 @@ bool Panel::begin() noexcept {
     cfg.double_buff = choice.double_buffered;
     cfg.setPixelColorDepthBits(static_cast<std::uint8_t>(choice.depth));
 
-    // CLOCK THE DATA ON THE FALLING EDGE. Bench-established 2026-08-11, and it is
-    // a panel/interconnect fact rather than a preference.
+    // CLOCK PHASE: LEFT AT THE LIBRARY DEFAULT, AND THIS IS THE DECISION NOT TO
+    // CHANGE IT. Do not try `false` again without reading the next paragraph.
     //
-    // The library defaults this to `true` (rising edge, its default since 2021).
-    // On this panel over M2's bare-jumper ribbon that samples too close to the
-    // data transition: the symptom was pixels lighting up immediately beside
-    // glyphs — a shifted copy of the real data landing in adjacent shift-register
-    // positions — and it tracked the neighbouring rows' switching activity, so it
-    // got WORSE when the bars were dimmed off the rail and started toggling
-    // bit-planes instead of sitting at DC. Clocking on the opposite edge samples
-    // the data mid-eye and the ghosts go.
+    // `clkphase = false` FIXES the ghosting and BREAKS the feed. Both were
+    // established on the bench on 2026-08-11, consistently, either way round:
     //
-    // hardware/BRINGUP.md's forward note is the standing instruction here —
-    // "pixel-shift artifacts are a wiring symptom first, re-scope CLK on a 10x
-    // probe before suspecting the firmware" — and it still applies. M2's survey
-    // was done on a 1x probe and recorded "edge softening partly attributable to
-    // the probe", so the edge rate this setting is compensating for has never
-    // actually been measured. This is a working mitigation on the M3 interconnect,
-    // NOT evidence that the ribbon is fine: the carrier board at M6 should
-    // re-check whether it is still needed once the leads are short and there is a
-    // ground plane under them.
-    cfg.clkphase = false;
+    //   true  (default)  ghost pixels beside the header glyphs; feed healthy
+    //   false            glyphs clean; inbound collapses to ~2 msg/s against
+    //                    Anvil's 17/s, with sock_gaps=0, connects=1, 0% lost,
+    //                    both cores ~96% idle and every hole classified
+    //                    LINK-BOUND. The panel greys on the watchdog every few
+    //                    seconds because the book genuinely stops advancing.
+    //
+    // IT CANNOT BE SOFTWARE, WHICH IS WHAT MAKES THE MECHANISM READABLE.
+    // `clkphase` reaches exactly one thing: `bus_cfg.invert_pclk`, which becomes
+    // `esp_rom_gpio_connect_out_signal(pin_wr, LCD_PCLK_IDX, invert, false)` — a
+    // GPIO-matrix inversion on the CLK pin alone. No change to the DMA
+    // descriptors, the data rate, the memory bandwidth or any CPU work. (Checked
+    // too: FM6124 does not override it — only MBI5124 and DP3246 force it true.)
+    //
+    // So inverting CLK only moves WHEN the clock edge falls relative to the
+    // thirteen data and control lines beside it. At the default the two are
+    // staggered; inverted, they transition together, and ~14 outputs switching
+    // simultaneously down a bare-jumper ribbon with no ground plane is a far
+    // larger di/dt on a shared return, a hand's width from the DevKit's 2.4 GHz
+    // antenna. The panel samples its data better and jams its own radio.
+    //
+    // THE FEED WINS, and it is not close. A ghosted header is cosmetic; a feed at
+    // 2 msg/s makes the object grey every few seconds and useless. The artifact
+    // is an interconnect defect, exactly where hardware/BRINGUP.md's forward note
+    // said to look, and it is M6's to fix with short leads and a ground plane —
+    // at which point this setting is worth re-testing, because on a proper
+    // carrier the noise argument may simply evaporate.
+    cfg.clkphase = true;
 
     report_.colour_depth = static_cast<std::uint8_t>(choice.depth);
     report_.double_buffered = choice.double_buffered;
