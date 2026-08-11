@@ -1894,10 +1894,31 @@ already records three evenings lost to chasing a fix before the data chose it.
 behaviour change, no golden moved, `kRxWatchdogMs` still 1000 ms. Eight commits on
 `m3/stage-d-the-panel`.
 
-**Exact next step: the acceptance run, and it is the only thing left in M3.** Procedure in
-`firmware/README.md`. Pull the Wi-Fi and time the grey; ten-minute soak on the near mesh node with
-`wd_gaps` and `sock_gaps` read at the end; confirm the feed-side histograms and heap are
-unregressed with the panel running; **commit a photo/clip to `hardware/`** (it also unblocks MP
-stage 2, so shoot it like it will be published). Then tick Stage D here and in
-`docs/briefs/M3-stage-D-the-panel.md`, and only then tick **M3** in `ROADMAP.md` and mark **M4
-Next**.
+**The acceptance was started the same morning and is most of the way there** —
+`hardware/bench-2026-08-11-stage-d-soak.md`. The feed-side and heap line is **met and ticked**:
+`a→e` worst 8 ms against the ≤22 ms bar, both cores exactly at their healthy idle baselines (the
+render task costs nothing measurable), `parse=0` across 589 frames, pipe all zeros, and heap
+`free (+0) largest (+0)` across four consecutive blocks. The reconnect measured **3,975 ms**
+against the ~4,700 ms the transport-residual work predicted. The RX watchdog was caught firing
+**979 ms into a 1,605 ms silence** — the 1,000 ms deadline, to the log's resolution.
+
+**Exact next step, and it is now three specific things rather than "the acceptance".**
+
+1. **Capture with `pio device monitor -f log2file`.** The monitor buffer truncated both attempts
+   at ~2.5 minutes, so the ten-minute cumulative totals do not exist. This is the whole reason
+   two DoD lines are still open.
+2. **Re-run the pull-the-Wi-Fi test with that capture running.** The stopwatch figures (~3 s to
+   grey, ~9 s to recover) both decompose correctly — ~1 s of watchdog plus ~2 s of data still in
+   flight, and ~4.5 s of station re-association plus the measured 3.6 s socket bring-up — but
+   the DoD's number is silence-to-grey off the `-- hole` line, not wall-clock from the switch.
+3. **Commit a photo/clip to `hardware/`.** Shot twice during the session, neither committed.
+   Unblocks MP stage 2, so shoot it like it will be published.
+
+**And one question that outranks all three: three `rst:0x1 (POWERON)` resets in the first 35 s
+of the soak.** Owner power-cycling, or the board browning out? `POWERON` is a genuine power
+event — not a panic, not a task watchdog — and brightness 224 plus panel inrush on a
+USB-powered DevKit is a plausible mechanism. If it is the board, it is a stability question and
+M3 should not be ticked over it.
+
+Then tick Stage D here and in `docs/briefs/M3-stage-D-the-panel.md`, and only then tick **M3** in
+`ROADMAP.md` and mark **M4 Next**.

@@ -273,10 +273,16 @@ you set and why.
       the bench. The BEHAVIOUR was observed dozens of times on 2026-08-11 (grey on watchdog and
       on socket drop, clean resync, `grey for N ms` matching the log); what is missing is the
       deliberate acceptance run and its record.**
-- [ ] ~10-minute soak holds colour; greys correspond to logged socket drops.
-- [ ] Feed-side histograms and heap unregressed with the panel running. *(Looked healthy on
-      every good run — `a→e` all in the 5–25 ms bucket, `no_slot=0`, heap flat, `worst paint`
-      ~2 ms of the 33 ms period — but not read as a deliberate ten-minute comparison.)*
+- [ ] ~10-minute soak holds colour; greys correspond to logged socket drops. *(Run on
+      2026-08-11 and the captured 2.5 minutes of it are clean — one watchdog hole and one socket
+      drop, both accounted for. **The monitor buffer truncated both capture attempts**, so the
+      cumulative totals are missing; re-run with `pio device monitor -f log2file`.)*
+- [x] Feed-side histograms and heap unregressed with the panel running.
+      *(`hardware/bench-2026-08-11-stage-d-soak.md`. `a→e` worst **8 ms** against the ≤22 ms
+      bar, every sample in the 5–25 ms bucket; Core 0 **91 %** idle against a 91 % baseline and
+      Core 1 **87 %** against 87 % — the render task costs nothing measurable; `parse=0` across
+      589 frames; pipe all zeros; 0 % lost; heap `free=30196 (+0) largest=14836 (+0)` repeated
+      across four consecutive blocks. `worst paint` **2,283 µs of 33,000**.)*
 - [ ] Photo/clip in `hardware/`. **Photographed twice during the session; neither image is
       committed yet, and that is the outstanding half.** *(Everything else this line asks for
       is recorded: RAM/flash 41.9% / 13.2%, task priorities feed 5 on Core 0, render 3 on
