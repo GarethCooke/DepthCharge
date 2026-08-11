@@ -13,6 +13,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <initializer_list>
 
 #include "panel_budget.hpp"
 
@@ -119,4 +120,68 @@ TEST_CASE("the deepest rung does not overflow the arithmetic") {
     CHECK(panel_refresh_hz(kW, kH, 12, 0) < 10);
     CHECK(panel_transition_bit(kW, kH, 12) > 0);
     CHECK(panel_total_bytes(kW, kH, 12, true) > panel_total_bytes(kW, kH, 8, true));
+}
+
+TEST_CASE("the S3 buckets the requested clock, so nominal and actual are different numbers") {
+    using depthcharge::fw::kI2sClockHz;
+    using depthcharge::fw::kS3LcdDivNum;
+    using depthcharge::fw::panel_actual_clock_hz;
+    using depthcharge::fw::panel_actual_refresh_hz;
+
+    // The discovery this whole distinction exists for. gdma_lcd_parallel16.cpp
+    // buckets bus_freq instead of using it:
+    //
+    //     auto _div_num = 16;                            // 160/16 = 10 MHz
+    //     if (freq <= 10000000L)      { }
+    //     else if (freq < 20000000L)  { _div_num = 10; }
+    //     else                        { _div_num = 7;  }
+    //
+    // So HZ_8M and 4 MHz produce the SAME hardware clock, and the library's
+    // refresh figure -- computed from the nominal 8 MHz -- has always been low.
+    // The board's own `Clock divider is 16` line is the corroboration.
+    const auto bucket = [](std::int64_t requested) {
+        if (requested <= 10000000L) { return 16; }
+        if (requested < 20000000L) { return 10; }
+        return 7;
+    };
+    CHECK(bucket(4000000) == 16);
+    CHECK(bucket(kI2sClockHz) == 16);      // asking for 8 MHz gets 10 MHz
+    CHECK(bucket(16000000) == 10);
+    CHECK(bucket(20000000) == 7);
+
+    // Which is why lowering the clock needs S3_LCD_DIV_NUM and not i2sspeed.
+    CHECK(panel_actual_clock_hz() == 160000000 / kS3LcdDivNum);
+    CHECK(panel_actual_clock_hz() > 0);
+
+    // The actual refresh scales with the actual clock, and has to clear two
+    // separate bars: visible flicker, and DESIGN strain 15's margin -- one full
+    // panel scan must fit inside the render task's 33 ms frame period, or the
+    // S3's non-blocking buffer flip stops being safe by cadence.
+    const int actual = panel_actual_refresh_hz(kW, kH, 6);
+    CHECK(actual >= 60);                 // flicker
+    CHECK(actual >= 1000 / 33);          // strain 15: a scan inside a render period
+
+    // The host build does not carry the firmware's S3_LCD_DIV_NUM, so the
+    // constant above only ever exercises the default. The dividers that matter
+    // are therefore checked as arithmetic, and this is where the ghosting
+    // experiment's cost is written down rather than estimated in a commit
+    // message. Nominal refresh at depth 6 is 105 Hz; actual scales by
+    // (160/div) / 8 MHz.
+    const auto refresh_at = [](int div) {
+        return static_cast<int>((105LL * (160000000LL / div)) / kI2sClockHz);
+    };
+    CHECK(refresh_at(16) == 131);   // today's default: what the panel has always run at
+    CHECK(refresh_at(24) == 87);    // the experiment: a third off the edge rate
+    CHECK(refresh_at(32) == 65);    // the floor worth trying if 24 is not enough
+
+    // Every divider this firmware would consider must still clear both bars, so
+    // a future session cannot slow the clock into flicker or past strain 15
+    // without a test saying so.
+    for (int div : {16, 20, 24, 32}) {
+        CHECK(refresh_at(div) >= 60);
+        CHECK(refresh_at(div) >= 1000 / 33);
+    }
+    // ...and 40 (4 MHz, ~52 Hz) is where it stops being safe, which is the point
+    // of knowing the number.
+    CHECK(refresh_at(40) < 60);
 }

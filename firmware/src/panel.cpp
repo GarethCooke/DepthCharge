@@ -205,6 +205,18 @@ bool Panel::begin() noexcept {
     // framebuffer(s)" line above this one. They should agree to within the
     // allocator's per-block overhead; if they do not, this arithmetic has drifted
     // from the library's and the bench can see it in one place.
+    // The library's `calculated_refresh_rate` is computed from the NOMINAL
+    // i2sspeed, which the S3 backend then ignores in favour of a bucketed
+    // divider. Print both, and print the divider, so the bench never again reads
+    // a refresh figure that is 25% low without knowing it.
+    ESP_LOGI(kTag, "pixel clock: nominal %d MHz -> divider %d -> ACTUAL %d.%02d MHz"
+                   " | refresh: library says %d Hz, really ~%d Hz",
+             static_cast<int>(kI2sClockHz / 1000000), kS3LcdDivNum,
+             static_cast<int>(panel_actual_clock_hz() / 1000000),
+             static_cast<int>((panel_actual_clock_hz() % 1000000) / 10000),
+             dma_.calculated_refresh_rate,
+             panel_actual_refresh_hz(kPanelWidth, kPanelHeight, choice.depth));
+
     ESP_LOGI(kTag,
              "UP: %dx%d depth=%d %s brightness=%u refresh=%d Hz"
              " | predicted=%u measured=%u B | dma-internal free %u -> %u",
