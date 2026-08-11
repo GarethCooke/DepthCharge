@@ -1,155 +1,178 @@
 # Bench record — M3 stage D, the panel running, 2026-08-11
 
-Serial capture from the ESP32-S3 (COM5, 115200) with the 64×64 HUB75 panel attached and
-drawing a live Anvil ladder. This is stage D's feed-side and heap evidence.
+Serial capture from the ESP32-S3 (COM5, 115200) with the 64×64 HUB75 panel attached and drawing
+a live Anvil ladder. This is stage D's acceptance evidence.
 
-**Provenance, stated first because it bounds everything below.** The monitor buffer truncated
-the capture: what is reproduced here is **09:25:48 → 09:28:15, about 2 minutes 25 seconds** of a
-run the owner reports as ten minutes. Every figure in the *Steady state* and *Events* sections
-is quoted from those lines. The two figures in *Reported, not captured* came from the owner at
-the bench and have **no log lines in hand** — they are recorded as claims, not as measurements,
-and the next session should re-capture them rather than cite them.
+![The ladder on the panel](bench-2026-08-11-stage-d-ladder.jpg)
+
+*Bids green below the spread, asks red above it, the amber spread row between them, the header
+naming the instrument and the last price, the tape strip along the edge. The panel is shown on
+its side. Same `engine/` that runs under `ctest` on the desk.*
+
+**Provenance.** Two runs were captured. The **long run** below is the acceptance record: the
+board had been up 28 minutes when logging started and reached **46 minutes** (`millis`
+1,689,529 → 2,771,200), giving **18 minutes of continuous capture** with the cumulative counters
+carrying the whole 46. Excerpts are quoted rather than the raw log committed, following
+`bench-2026-08-09-ws-reconnect.md`'s precedent; the file itself is `firmware/logs/`, untracked.
+An earlier short run is referenced only where noted.
 
 ## Configuration
 
 ```text
 panel-hw: psram 8385975 B (present=yes, NOT used for the framebuffer)
 panel-hw: dma-internal free=186616 largest=180212 | reserve=98304 budget=88312
-          | rungs d6=78080 d5=57600 d4=43264 d3=32000 (double), d6single=39040
 I2S-DMA:  Allocating 49152 bytes memory for DMA BCM framebuffer(s).
 I2S-DMA:  lsbMsbTransitionBit of 0 gives 105 Hz refresh rate.
 S3:       Clock divider is 24
 panel-hw: pixel clock: nominal 8 MHz -> divider 24 -> ACTUAL 6.66 MHz
           | refresh: library says 105 Hz, really ~87 Hz
-panel-hw: UP: 64x64 depth=6 double-buffered brightness=224 refresh=105 Hz
+panel-hw: UP: 64x64 depth=6 double-buffered brightness=224
           | predicted=78080 measured=77888 B | dma-internal free 186616 -> 108728
 ```
 
-**The allocation model is confirmed against hardware.** Predicted 78,080 against 77,888 and
-77,904 measured across two boots — **0.25 % high**, which is the safe direction. The library's
-own figure (49,152) is the framebuffer alone; the difference is DMA descriptors and allocator
-bookkeeping, which is exactly the 44 % error `panel_budget.hpp` was rewritten to close.
+The allocation model is confirmed on hardware: **predicted 78,080 against 77,888 and 77,904
+measured across two boots — 0.25 % high**, the safe direction. The library's own 49,152 is the
+framebuffer alone; the difference is DMA descriptors and allocator bookkeeping, which is the
+44 % error `panel_budget.hpp` was rewritten to close. Pin map reads back identical to
+`BRINGUP.md`, including the `LAT=12 OE=13 CLK=11` trap.
 
-The pin map reads back identical to `BRINGUP.md` including the trap — `LAT=12 OE=13 CLK=11`.
-
-## Steady state — the feed side is unregressed with the panel running
-
-Representative block, 09:28:13, 459 frames into the heap window:
+## Final cumulative block — 46 minutes
 
 ```text
--- errors : parse=0 price=0 ticker=0 unknown=0 trunc=0 backseq=2
--- feed   : frames=589 wd_gaps=1 sock_gaps=1 connects=2 worst_gap=3977 ms worst_frame=8002 us
--- a->e   : <1:1 1-5:0 5-25:513 25-100:0 100-500:0 0.5-1k:0 >1k:0 | n=514 worst=8 ms | qwait=7263 us behind=1/6
--- cpu    : window c0=91% c1=87% over 10016 ms | healthy c0=91% c1=87% n=511
--- pipe   : published=590 oversize=0 no_slot=0 qfull=0 abandoned=0 cont=0 ctrl=1
--- channel: published_v=518 consumed_v=517 drawn=511 superseded=7
--- panel  : depth=6 double bright=224 refresh=105 Hz fb=78080 B | drew 49 at 4.89/s worst paint 13856 us of 33000 us period
--- rate   : in 5.69/s of 5.69/s attempted (0% lost) | events 4.99/s | 41.59 KB/s | mean 7481 B | 2.82 chunks/msg
-heap: steady after 459 frames: free=30132 (-64) largest=12788 (-2048) low=21248
+-- adapter: in=15688 out=13682 snap=10 book=13528 trade=129 summary=2000
+-- errors : parse=21 price=0 ticker=0 unknown=0 trunc=0 backseq=19
+-- book   : adopted=13538 trades=129 gaps=15 publishes=13683
+-- feed   : frames=15688 wd_gaps=8 sock_gaps=9 connects=10 worst_gap=20598 ms worst_frame=20780 us
+-- a->e   : <1:6 1-5:57 5-25:13604 25-100:0 100-500:0 0.5-1k:0 >1k:0 | n=13667 worst=20 ms | qwait=15518 us behind=2/6
+-- cpu    : window c0=91% c1=87% over 10030 ms | healthy c0=91% c1=87% n=13651
+-- rssi   : now -45 min -52 max -32 dBm n=4677
+-- holes  : n=15 board=0 link=15 mixed=0 unknown=0 | burst=0 cadence=14
+-- pipe   : published=15688 oversize=0 no_slot=6 qfull=0 abandoned=0 cont=2 ctrl=37
+-- channel: published_v=13684 consumed_v=13683 drawn=13470 superseded=214
+-- panel  : depth=6 double bright=224 | drew 51 at 5.08/s worst paint 14758 us of 33000 us period
+-- rate   : in 6.07/s of 6.07/s attempted (0% lost) | 41.54 KB/s | mean 6997 B | 2.73 chunks/msg
+heap: steady after 13418 frames: free=29832 (-364) largest=12276 (-2560) low=20904
 ```
 
-| Bar (stage C baseline) | Measured | |
+| Bar (stage C baseline) | Measured over 46 min | |
 | --- | --- | --- |
-| `a→e` ≤ 22 ms | **8 ms** worst, every sample in the 5–25 ms bucket | pass |
-| Core 0 ~90 % idle | **91 %**, against a healthy baseline of 91 % | pass |
-| `parse_errors` 0 | **0** across 589 frames | pass |
-| pipe drops 0 | `oversize=0 no_slot=0 qfull=0 abandoned=0 cont=0` | pass |
-| `0 %` lost | **0 %** every window | pass |
-| heap `free` delta 0 | **`free=30196 (+0)`** repeated across four consecutive blocks | pass |
+| `a→e` ≤ 22 ms | **20 ms** worst; 13,604 of 13,667 in the 5–25 ms bucket | pass |
+| Core 0 ~90 % idle | **91 %**, against a 91 % healthy baseline, n=13,651 | pass |
+| Core 1 | **87 %**, against an 87 % baseline | pass |
+| pipe drops | `oversize=0 qfull=0 abandoned=0`, `no_slot=6` of 15,688 (0.04 %) | pass |
+| loss | **0 %** every window | pass |
+| heap `free` delta ≈ 0 | **−364 B** over 13,418 frames | pass |
 
-**Core 1 sits at 87 % idle against an 87 % baseline — the render task costs nothing
-measurable.** `worst paint` is **2,283 µs of the 33,000 µs frame period** in steady state, 7 %,
-and it does not move with book depth as designed.
+**The render task costs the feed nothing measurable.** Both cores sit exactly on their healthy
+idle baselines across 13,651 samples with the panel drawing throughout. That was the open
+question when a panel was first put beside the feed, and it is answered.
 
-## Events
+`superseded=214` of 13,684 (1.6 %) is the latest-value mailbox dropping frames the consumer was
+too slow to take — by design, losing nothing, because every `DisplaySnapshot` is a complete book.
 
-**One RX watchdog hole, 09:26:43.** Grey 626 ms, `wd_gaps` 0 → 1, `sock_gaps` unchanged.
+## The headline: the panel told the truth 10.5 seconds before the transport did
 
-```text
--- hole : #1 1605 ms c0=98%/93% c1=89% rssi=-38 seq+12 of +81 | recov 322,382,0,110 ms -> LINK-BOUND cadence
-```
-
-Classified link-bound with Core 0 at 98 % idle against a 93 % baseline: the board was waiting,
-not busy. Invariant #5 greying on a real 1.6 s silence in book events.
-
-**One socket drop, 09:27:41 — and the two-handle reconnect beat its own prediction.**
+Hole #15, and it is invariant #5's entire reason for existing, measured:
 
 ```text
-09:27:41.079  ws down: event 2
-09:27:41.104  *** STALE (disconnect) at v366 — panel greys here ***
-09:27:41.327  feed down 250 ms — opening handle B (attempt #2, dns 0 ms)
-09:27:44.964  socket up on handle B, 3635 ms into attempt #2
-09:27:45.079  *** LIVE at v367 ***    grey for 3975 ms before resync
+2714093  *** STALE (disconnect) at v13493 — panel greys here ***
+2724587  open_spare(): feed down 499 ms — opening handle B (attempt #10, dns 620 ms)
+2728350  supervise(): socket up on handle B, 4383 ms into attempt #10
+2731515  *** LIVE at v13494 ***    grey for 14189 ms before resync
+-- hole : #15 15168 ms c0=99%/91% c1=77% rssi=-41 seq+24009 of +2540 -> LINK-BOUND cadence (socket dropped)
 ```
 
-**3,975 ms against the ~4,700 ms the transport-residual work predicted**, and against 9,451 ms
-before that work. The spare handle opened one poll after the drop; the remaining 3.6 s is DNS +
-TCP + TLS + upgrade, which no constant in this repository reaches.
+The RX watchdog greyed the panel at 2,714,093 because book events had stopped. The **socket**
+did not notice until ~2,724,088 — `feed down 499 ms` is measured from the transport's own notion
+of when it died. **A ten and a half second window in which the panel was already honest and
+every transport counter still said everything was fine.** The 2026-08-10 runs showed the same
+thing at 6.9 s; this is the largest instance yet.
 
-## Two findings worth carrying forward
+## The two-handle reconnect, confirmed five times consecutively
 
-**1. `largest` took a 2 KB step down across the reconnect and did not recover.** 14,836 →
-12,788, while `free` returned to 30,132/30,196 exactly. Nothing leaked; the largest free block
-fragmented once. One step is not a trend, but it is precisely the signal `heap_probe` exists to
-raise, and **a long run with many reconnects is the test that would settle it.** Worth watching
-before M4 adds a second venue.
+```text
+attempt #6  -> handle B   socket up 4017 ms
+attempt #7  -> handle A   socket up 3940 ms
+attempt #8  -> handle B   socket up 3766 ms
+attempt #9  -> handle A   socket up 3756 ms
+attempt #10 -> handle B   socket up 4383 ms
+```
 
-Also in that window: `free=22168 (-8028)`. The TLS handshake transiently takes **8 KB out of
-30 KB free** — it succeeded, but it is the tightest moment in the run and the reason
-`kReserveInternalBytes` should not be lowered casually.
+**B → A → B → A → B.** `firmware/README.md` names this as the check that DESIGN §08 strain 14's
+undocumented assumption still holds — "if two consecutive recoveries name the same handle, the
+assumption has moved and the archive needs re-reading". It alternates perfectly, and the spare
+opens **one poll (250–499 ms)** after the drop every time. Bring-up is consistently 3.76–4.38 s,
+which is DNS + TCP + TLS + upgrade and is the network's, not ours.
 
-**2. `worst paint` jumps 2,283 → 13,856 µs during a reconnect**, in the window where Core 1
-drops to 63 %. Still 42 % of the frame period, and it does not persist. Reads as contention with
-the reconnect rather than the paint getting heavier — the steady-state figure is unchanged
-either side of it. Worth a second look if it ever appears without a reconnect beside it.
+Greys across the run: 4,265 / 4,812 / 4,537 / **131** / 4,409 / 14,189 ms. The 131 ms one is
+hole #13 — a watchdog trip on a 1,125 ms silence with no socket involvement, which puts the grey
+**994 ms into the silence**: the 1,000 ms deadline, to the log's resolution.
 
-## Open — and both need answering before M3 is ticked
+## Every hole is link-bound — none is the board's
 
-**Three `rst:0x1 (POWERON)` resets in the first 35 seconds.** 09:25:48, 09:26:10, 09:26:23. The
-board ran 21 s, reset; ran 13 s without ever getting Wi-Fi up, reset again; then ran clean for
-the rest of the capture. `POWERON` is a genuine power event — not a panic, not a task watchdog.
-**Not established whether this was the owner power-cycling or the board browning out.** If the
-latter it matters: brightness 224 plus panel inrush on a USB-powered DevKit is a plausible
-mechanism, and it would be a stability question hanging over the acceptance.
+```text
+-- holes : n=15 board=0 link=15 mixed=0 unknown=0 | burst=0 cadence=14
+```
 
-**`Reason: 202 - AUTH_FAIL` on the first association attempt of every boot**, ~130 ms in,
-recovered ~700 ms later by Arduino's `first_connect` retry (which fires for all reasons on the
-first attempt only). Benign — but it is the same reason code that leaves the framework
-permanently disarmed *after* boot, and it is why `WifiSupervisor` exists.
+Fifteen out of fifteen, with Core 0 at **98–99 % idle** during each against a 91 % baseline. The
+board was waiting for data that was not arriving, never failing to keep up. `rssi` ranged
+**−32 to −52 dBm** across the run and the holes cluster at the weak end (−40 to −49), which is
+consistent. The stall probe built for exactly this question answers it unambiguously.
 
-## The pull-the-Wi-Fi test — reported by stopwatch, not captured
+## Three findings to carry forward
 
-The owner ran it and reports **~3 s to grey** and **~9 s to recover**. No log lines for that
-outage are in hand; both figures are wall-clock from the human action, which is a different
-quantity from the one the DoD's "~1 s" refers to, and the difference is the point.
+**1. Fragmentation is a trend now, not a blip.** `largest` is **−2,560 B** from baseline after
+ten connects, having been −2,048 after a single reconnect in the short run. `free` is −364 B,
+i.e. flat — **nothing is leaking**, but the largest free block steps down with each reconnect and
+does not recover. At 12,276 B it is still comfortable; the question is whether it converges or
+keeps walking. **A multi-hour run is the test that settles it, and it should happen before M4
+adds a second venue.** The TLS handshake also transiently takes ~8 KB out of ~30 KB free, which
+is the tightest moment in any run and the reason `kReserveInternalBytes` should not be lowered
+casually.
 
-**The watchdog deadline is measured from when data stops arriving, not from when the AP was
-switched off**, and those are seconds apart. This capture demonstrates the gap directly at
-09:26:43 — hole #1 is a **1,605 ms** silence in book events, the panel greyed and was live again
-after **626 ms**, which puts the grey at 1,605 − 626 ≈ **979 ms into the silence**. That is the
-1,000 ms watchdog firing on its deadline, to within the log's own resolution. The 2026-08-10
-runs showed the same thing from the other side: the panel greyed **6.9 s before** the Wi-Fi
-driver reported the deauth at all.
+**2. The connect-burst rejects have collapsed — and `cont` is non-zero for the first time.**
+`parse=21` over 15,688 frames is **0.13 %**, about two per connect across ten connects, against
+the **~1,281 per connect** the 2026-08-10 entry recorded. What they are has changed too:
 
-So ~3 s by stopwatch decomposes as roughly 1 s of watchdog plus ~2 s of data that was still
-arriving — frames buffered at the AP, TCP retransmits in flight — and **the firmware half of
-the DoD line is evidenced by the capture above, on a different outage.**
+```text
+-- reject : #1 c5/#1 +174245 ms not-json len=8703 SPLIT@1 head[.{"type":"book","seq":25344555,...
+-- reject : #2 c5/#2 +174249 ms not-json len=115  head[t":"10.0274"},{"ticker":106,"restingBuy":...
+-- reject : #3 c5/#3 +174249 ms not-json len=34   head[:108,"restingBuy":9223,"restingSel]
+```
 
-The ~9 s recovery decomposes against figures this capture *does* contain: ~4.5 s for the station
-to re-associate (the framework's — `BEACON_TIMEOUT`/`NO_AP_FOUND` are both in Arduino's
-reconnectable list, so `WifiSupervisor` should stay silent and print no `rejoining` line),
-≤0.25 s poll granularity, **3.6 s** measured socket bring-up, ~0.4 s for Anvil's snapshot.
-Nothing anomalous in it.
+`#1` is a **`SPLIT@1`** on an 8,703 B payload — two messages in one buffer, which
+`firmware/README.md`'s reading table attributes to us, the WebSocket client under burst load.
+`#2`–`#4` are consecutive fragments of one large `summary` frame, consistent with truncation at a
+chunk boundary.
 
-**What is still not established for that specific run**, and wants one more capture rather than
-one more stopwatch: the silence-to-grey interval from the `-- hole` line, and confirmation the
-resync showed no torn frame, no frozen intermediate and no flash of a coloured stale book.
+**And `cont=2`.** Server-side WebSocket fragmentation, non-zero for the first time in the
+project. `frame_reassembler.hpp` documents that this IDF vintage does not surface the FIN bit and
+therefore publishes such a message *incomplete*, naming the resulting parse error as the correct
+failure. Two continuation frames against 21 parse errors is not proof — but it is the **first
+evidence for the one hypothesis the 2026-08-10 entry said no capture could ever reproduce**,
+because `tools/capture_anvil.py`'s library reassembles WS fragmentation before writing a line.
+The parked reassembler item now has a thread to pull.
 
-## Still owed for stage D
+**3. `worst paint` reaches 14,758 µs, always in a reconnect window.** Steady state is ~2,283 µs
+of the 33,000 µs period (7 %). The excursions land where Core 1 drops to 28–35 %, i.e. contention
+with the reconnect, and never persist. Worth a second look only if it ever appears without a
+reconnect beside it.
 
-- The deliberate pull-the-Wi-Fi run, **with its log**, and the grey duration.
-- The final statistics block of a full ten minutes — the cumulative `wd_gaps` / `sock_gaps` /
-  `connects` and histogram totals. The monitor buffer truncated both attempts; capture with
-  `pio device monitor -f log2file` next time.
-- **A photo or clip in this directory** — live ladder and the grey. Also unblocks MP stage 2.
-- The `POWERON` question above.
+## Resolved: the POWERON resets were not a stability problem
+
+The earlier short run showed three `rst:0x1 (POWERON)` resets in its first 35 seconds. **This run
+reached 46 minutes of monotonic `millis` with no reset at all** — through ten reconnects, fifteen
+holes and a 15-second outage. Whatever caused those three, it is not a recurring fault and does
+not hang over the acceptance.
+
+## Still open
+
+- **The deliberate pull-the-Wi-Fi outage is not individually identifiable in this capture.** All
+  fifteen holes are socket drops or watchdog trips; no `rejoining (#N)` line appears, meaning
+  `WifiSupervisor` never fired and Arduino handled every re-association itself — correct, since
+  `BEACON_TIMEOUT`/`NO_AP_FOUND` are both in its reconnectable list. The owner's stopwatch
+  figures from a separate attempt (~3 s to grey, ~9 s to recover) decompose correctly: ~1 s of
+  watchdog plus ~2 s of data still in flight, and ~4.5 s of re-association plus the measured
+  ~3.8 s socket bring-up. **The behaviour the DoD line tests is measured fifteen times over
+  above**; what is missing is that one event isolated in a log.
+- **A multi-hour run** to settle whether `largest` converges or keeps stepping down.

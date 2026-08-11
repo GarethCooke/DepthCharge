@@ -21,5 +21,10 @@ Thumbs.db
 /firmware/.pio/
 /firmware/include/secrets.h
 
+# Raw serial captures (`pio device monitor -f log2file`). Hundreds of KB each and
+# mostly the 1 Hz steady-state line; the bench records in hardware/ quote the
+# excerpts that matter, which is the precedent bench-2026-08-09-ws-reconnect.md set.
+/firmware/logs/
+
 # Full local captures are kept untracked; only sliced traces are committed.
 # (harness/replay/.gitignore also covers _local/ and *.full.ndjson explicitly.)

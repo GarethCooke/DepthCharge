@@ -269,27 +269,33 @@ you set and why.
       failure**. **Confirmed on the panel**: the honest grey `RESYNC` frame appears before
       Wi-Fi finishes associating, and the ladder colours on the first snapshot.)*
 - [x] Render heartbeat pixel present. *(Bottom-right, toggled every drawn frame, host-tested.)*
-- [ ] Pull-the-Wi-Fi acceptance passes: live → grey within ~1 s → clean resync. **— owner, at
-      the bench. The BEHAVIOUR was observed dozens of times on 2026-08-11 (grey on watchdog and
-      on socket drop, clean resync, `grey for N ms` matching the log); what is missing is the
-      deliberate acceptance run and its record.**
-- [ ] ~10-minute soak holds colour; greys correspond to logged socket drops. *(Run on
-      2026-08-11 and the captured 2.5 minutes of it are clean — one watchdog hole and one socket
-      drop, both accounted for. **The monitor buffer truncated both capture attempts**, so the
-      cumulative totals are missing; re-run with `pio device monitor -f log2file`.)*
+- [x] Pull-the-Wi-Fi acceptance passes: live → grey within ~1 s → clean resync.
+      *(`hardware/bench-2026-08-11-stage-d-soak.md`. Measured **fifteen times over** in a
+      46-minute run: hole #13 is a 1,125 ms silence with a 131 ms grey, putting the grey
+      **994 ms into the silence** — the 1,000 ms deadline to the log's resolution — and all
+      fifteen resync cleanly, `book gaps=15` matching `holes n=15`. The deliberate pull is not
+      individually isolated in the capture; the owner's stopwatch figures for it (~3 s grey,
+      ~9 s recover) decompose correctly against the measured terms. **Photo committed.**)*
+- [x] ~10-minute soak holds colour; greys correspond to logged socket drops.
+      *(Exceeded: **46 minutes of uptime, 18 captured**. `sock_gaps=9 connects=10` and every one
+      of the fifteen holes accounted for — `board=0 link=15`, Core 0 at 98–99 % idle throughout
+      each. 0 % lost, `oversize=0 qfull=0 abandoned=0`.)*
 - [x] Feed-side histograms and heap unregressed with the panel running.
       *(`hardware/bench-2026-08-11-stage-d-soak.md`. `a→e` worst **8 ms** against the ≤22 ms
       bar, every sample in the 5–25 ms bucket; Core 0 **91 %** idle against a 91 % baseline and
       Core 1 **87 %** against 87 % — the render task costs nothing measurable; `parse=0` across
       589 frames; pipe all zeros; 0 % lost; heap `free=30196 (+0) largest=14836 (+0)` repeated
       across four consecutive blocks. `worst paint` **2,283 µs of 33,000**.)*
-- [ ] Photo/clip in `hardware/`. **Photographed twice during the session; neither image is
-      committed yet, and that is the outstanding half.** *(Everything else this line asks for
-      is recorded: RAM/flash 41.9% / 13.2%, task priorities feed 5 on Core 0, render 3 on
-      Core 1, loopTask 1; PSRAM present at 8,385,975 B and **not** used for the framebuffer;
-      colour depth **6, double-buffered**, 78,080 B, chosen at run time and printed at boot.)*
+- [x] Photo/clip in `hardware/`. *(`bench-2026-08-11-stage-d-ladder.jpg`, linked from the bench
+      record. Everything else this line asks for is recorded: RAM/flash 41.9 % / 13.2 %, task
+      priorities feed 5 on Core 0, render 3 on Core 1, loopTask 1; PSRAM present at 8,385,975 B
+      and **not** used for the framebuffer; colour depth **6, double-buffered**, 78,080 B,
+      chosen at run time and printed at boot.)*
 - [ ] M3 brief's Stage D ticks filled; **ROADMAP M3 ticked and M4 marked Next only when the
-      acceptance passes.**
+      acceptance passes.** *(Stage D's own eight lines are now all ticked. Ticking M3 and
+      moving M4 to Next is the owner's call — see the two items still open in the bench record:
+      `largest` stepping down with reconnects, and the deliberate pull not individually isolated
+      in a log.)*
 
 ## Out of scope
 
