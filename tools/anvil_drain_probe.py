@@ -1,6 +1,34 @@
 #!/usr/bin/env python3
 """Does Anvil's per-socket cadence depend on how fast the client drains it?
 
+*** SUPERSEDED, 2026-08-11 — THE CONCLUSION BELOW IS WRONG, AND THE METHOD IS WHY.
+
+    Everything this tool MEASURES is still true. What it CONCLUDES from those
+    measurements — "Anvil sheds, and sheds smoothly", "only `book` frames are
+    shed, `summary` and `trade` arrive intact" — does not follow, because rate
+    and inter-message gap cannot tell shedding from queuing. A client draining
+    at 4/s receives something every ~250 ms whether the thing it receives is
+    current or ninety seconds stale. This never checked freshness.
+
+    `tools/anvil_freshness_probe.py` does check it, by matching wire `seq`
+    across a throttled socket and a simultaneous unthrottled one. At the same
+    250 ms drain delay used below, on 2026-08-11:
+
+        book     3.48/s of 13.66/s = 25.5%      lag rose LINEARLY to 111 s
+        summary  0.51/s of  2.01/s = 25.7%      over 150 s, with no plateau
+
+    So `summary` is thinned by exactly the same fraction as `book` — the
+    per-kind reading below is not reproducible — and the messages that do
+    arrive are stale by an amount that grows at 0.745 s per second, which is
+    1 minus the drain fraction to three decimal places. **Anvil queues. It does
+    not shed.** The implied per-socket application queue was ~12.4 MB after
+    150 s and still growing.
+
+    This file is kept, and its original text below is kept unedited, because the
+    method is a useful control and because the mistake is the point: a
+    measurement that answers a nearby question gets read as answering the one
+    that mattered. See ARCHITECTURE.md §9, 2026-08-11.
+
 Written for M3 to settle a question the board raised and a capture alone cannot
 answer. The ESP32 reads ~6 messages/s where a desk client on the same LAN reads
 ~17, and the firmware's RX watchdog was greying the panel on the difference. Two
