@@ -179,6 +179,8 @@ add_executable(dc_tests
   harness/tests/test_console_ladder.cpp
   harness/tests/test_frame_reassembler.cpp
   harness/tests/test_gap_histogram.cpp
+  harness/tests/test_ladder_render.cpp
+  harness/tests/test_panel_budget.cpp
   harness/tests/test_parser_equivalence.cpp
   harness/tests/test_reject_log.cpp
   harness/tests/test_replay_goldens.cpp
@@ -187,13 +189,21 @@ add_executable(dc_tests
   harness/tests/test_ws_supervisor.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
-# M3 stage C: the firmware's WebSocket reassembler, its gap histograms, the
-# stall probe that classifies a >1 s book-hole, the reject log that captures
-# what the parser threw away and the reconnect policy that decides how long the
-# panel stays grey are deliberately ESP-IDF-free so they can be tested here.
-# These are the ONLY firmware/ paths the host build knows about, and all five
-# are headers — no firmware .cpp is compiled on the host, so nothing in
+# M3 stages C and D: the firmware's WebSocket reassembler, its gap histograms,
+# the stall probe that classifies a >1 s book-hole, the reject log that captures
+# what the parser threw away, the reconnect policy that decides how long the
+# panel stays grey, and — from stage D — the 64x64 ladder renderer and the font
+# its row budget is computed from, are deliberately ESP-IDF-free so they can be
+# tested here. These are the ONLY firmware/ paths the host build knows about, and
+# all seven are headers — no firmware .cpp is compiled on the host, so nothing in
 # firmware/ can quietly become a host dependency.
+#
+# ladder_render.hpp is the one that most needed it. Stage D's claim is that a
+# stale book CANNOT be drawn in colour, and the panel is a bench instrument two
+# people can look at and disagree about; here it is a 64x64 grid of Ink and three
+# mechanical questions (test_ladder_render.cpp). The row budget — 27 levels a
+# side, a header, and 64 rows exactly — is likewise a static_assert on this desk
+# rather than a discovery on the bench.
 target_include_directories(dc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
 target_link_libraries(dc_tests PRIVATE
   dc_harness dc_engine_anvil dc_vendor dc_warnings Threads::Threads)

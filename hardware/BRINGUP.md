@@ -50,6 +50,35 @@ partly attributable to the 1× probe. Jumper interconnect **characterised and pr
   standalone object wants a tidier interconnect (shorter leads / ground plane / carrier)
   — an enclosure-era item, not an M2 gap. Re-scope CLK on a 10× probe if edge rate is
   ever suspect (M3 pixel-shift artifacts → look here first).
+  - **2026-08-11 (M3 stage D): the forward note came true, and the interconnect is now
+    a measured constraint rather than a tidiness preference.** With the ladder running,
+    the panel shows ghost pixels immediately beside header glyphs — a shifted copy of the
+    real data landing in adjacent shift-register positions. It tracks the *switching
+    activity* of the paired scan rows (1/32 scan: row y and row y+32 share a slot), not
+    their current: dimming the bars off the rail made it **worse**, because under BCM a
+    channel at 255 is DC-on for the whole frame while an intermediate value toggles
+    bit-planes several times per 9.5 ms frame. **The aggressor is edges, not amps.**
+  - **The two panel-timing options trade the artifact against the radio, and we cannot
+    have both on this interconnect.** `clkphase = false` (invert CLK) clears the ghosting
+    completely — and collapses inbound Wi-Fi from ~6 msg/s to **~2 msg/s** against Anvil's
+    17/s, with `sock_gaps=0`, `connects=1`, 0 % lost and both cores ~96 % idle. Reproduced
+    consistently in both directions. It cannot be firmware: `clkphase` reaches only
+    `esp_rom_gpio_connect_out_signal(CLK, LCD_PCLK_IDX, invert, false)`, a GPIO-matrix
+    inversion on one pin, with no change to DMA, data rate or CPU load. Inverting CLK
+    simply aligns its edge with the thirteen data/control lines beside it, so ~14 outputs
+    switch **simultaneously** down a ribbon with no ground plane, a hand's width from the
+    DevKit's 2.4 GHz antenna. The panel samples its own data better and jams its own radio.
+  - **Shipped setting: `clkphase = true` (library default).** The feed wins — a ghosted
+    header is cosmetic, a 2 msg/s feed greys the panel every few seconds. Recorded in
+    `firmware/src/panel.cpp` so it is not retried blind.
+  - **M6 requirement, stated with evidence:** the carrier PCB needs a ground plane under
+    the HUB75 run and short leads, and the roadmap's existing `2× 74HCT245` buffers and
+    bulk caps are load-bearing rather than nice-to-have. Re-test `clkphase = false` on the
+    carrier: if the noise argument evaporates, the ghosting fix is free.
+  - **Still owed: CLK on a 10× probe.** The 2026-08-11 finding is behavioural, not
+    measured — the signal-integrity survey above used a **1× probe** and recorded "edge
+    softening partly attributable to the probe", so the edge rate both symptoms turn on
+    has never actually been characterised.
 - **First-light sketch** kept in the M2 experiment area, out of `engine/`.
 
 ## Status

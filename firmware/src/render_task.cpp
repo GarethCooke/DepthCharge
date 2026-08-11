@@ -1,9 +1,7 @@
-// firmware/src/serial_console.cpp — see serial_console.hpp.
-#include "serial_console.hpp"
+// firmware/src/render_task.cpp — see render_task.hpp.
+#include "render_task.hpp"
 
 #include <cstdio>
-
-#include <depthcharge/decimal.hpp>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -37,38 +35,43 @@ const char* reason_name(GapReason r) noexcept {
     return "?";
 }
 
-// Integer ticks -> text, on the stack. See the header for why this is not
-// String and not %f.
-struct PriceText {
-    char buf[kMaxFormattedChars + 1]{};
-
-    PriceText(PriceTicks px, std::int32_t decimals) noexcept {
-        const std::size_t n = format_scaled(px, static_cast<int>(decimals), buf, sizeof buf - 1);
-        buf[n] = '\0';
-        if (n == 0) { buf[0] = '?'; buf[1] = '\0'; }
-    }
-};
+// Integer ticks -> text on the stack is ladder_render.hpp's TextField, and this
+// file no longer carries its own copy of it. The two were the same eight lines —
+// same buffer sized from kMaxFormattedChars, same format_scaled call, same '?'
+// fallback — which is two implementations of the display edge's one rule
+// (invariants #3 and #7: no String, no %f, no heap) inside a firmware whose
+// panel and whose log have to agree about what a price is.
 
 }  // namespace
 
-bool SerialConsole::start(std::uint32_t stack_bytes, UBaseType_t priority) noexcept {
-    const BaseType_t ok = xTaskCreatePinnedToCore(&SerialConsole::trampoline, "dc_panel",
+bool RenderTask::start(std::uint32_t stack_bytes, UBaseType_t priority) noexcept {
+    const BaseType_t ok = xTaskCreatePinnedToCore(&RenderTask::trampoline, "dc_panel",
                                                   stack_bytes, this, priority, nullptr, 1);
     return ok == pdPASS;
 }
 
-void SerialConsole::trampoline(void* self) noexcept {
-    static_cast<SerialConsole*>(self)->run();
+void RenderTask::trampoline(void* self) noexcept {
+    static_cast<RenderTask*>(self)->run();
 }
 
-void SerialConsole::run() noexcept {
-    ESP_LOGI(kTag, "console consumer up on core %d (stage D replaces this with HUB75)",
-             xPortGetCoreID());
+void RenderTask::run() noexcept {
+    ESP_LOGI(kTag, "render task up on core %d, %u ms frame period, panel %s",
+             xPortGetCoreID(), static_cast<unsigned>(kFramePeriodMs),
+             panel_.up() ? "UP" : "ABSENT (serial evidence only)");
 
+    // THE BOOT FRAME, BEFORE ANY DATA. `received_` is a value-initialised
+    // DisplaySnapshot, which is Stale{Resync} with no levels by construction —
+    // exactly what the feed task publishes as v1, and exactly what stage D
+    // requires on screen while the socket is coming up: an honest grey empty
+    // panel, not a black one. Painted here rather than waiting for the first
+    // consume() so the object is never dark while it is working.
+    paint(received_);
+
+    TickType_t wake = xTaskGetTickCount();
     for (;;) {
         // consume() reports nothing-new rather than blocking, which is what lets
-        // this task idle instead of spin. Stage D's render task will do the same
-        // and only touch the panel when a new version actually arrives.
+        // this task idle instead of spin, and it is what makes the redraw
+        // version-gated: the panel is only ever touched when the book moved.
         if (channel_.consume(received_)) {
             draw(received_);
         }
@@ -85,15 +88,52 @@ void SerialConsole::run() noexcept {
             print_stats();
         }
 
-        // 20 ms: far finer than Anvil's ~80 ms cadence, so no frame waits long,
-        // and coarse enough that the task is asleep almost all the time. Stage D
-        // will drive this off the panel's frame period instead.
-        vTaskDelay(pdMS_TO_TICKS(20));
+        // The panel's period, not a flat delay: an absolute deadline keeps the
+        // cadence honest when a statistics block has just cost this task a few
+        // milliseconds of UART. If it ever falls a whole period behind — which a
+        // long blocking call on this core would do — the deadline is re-based
+        // rather than chased, because catching up would mean several redraws
+        // back to back and the panel gains nothing from any but the last.
+        const TickType_t period = pdMS_TO_TICKS(kFramePeriodMs);
+        const TickType_t nowtick = xTaskGetTickCount();
+        if (static_cast<TickType_t>(nowtick - wake) > period) { wake = nowtick; }
+        vTaskDelayUntil(&wake, period);
     }
 }
 
-void SerialConsole::draw(const DisplaySnapshot& snap) noexcept {
+// THE ONE PALETTE SELECTION IN THE FIRMWARE (invariant #5).
+//
+// snap.status picks a Palette, the Palette goes into the canvas, and the
+// renderer downstream of it can only name an Ink. kStalePalette is proven
+// entirely grey at compile time (ladder_render.hpp), so there is no path from a
+// stale snapshot to a coloured pixel that this build would accept. Nothing else
+// in firmware/ reads status to choose a colour, and nothing needs to.
+void RenderTask::paint(const DisplaySnapshot& snap) noexcept {
+    if (!panel_.up()) { return; }
+
+    const std::int64_t started = esp_timer_get_time();
+
+    const Palette palette = palette_for(snap.status);
+    PanelCanvas canvas(panel_.driver(), palette);
+    view_.observe(snap);
+    view_.draw(snap, canvas);
+    panel_.present();
+
+    const std::uint32_t took =
+        clamp_us_to_u32(static_cast<std::uint64_t>(esp_timer_get_time() - started));
+    if (took > worst_paint_us_) { worst_paint_us_ = took; }
+}
+
+void RenderTask::draw(const DisplaySnapshot& snap) noexcept {
     ++frames_drawn_;
+
+    // THE PANEL FIRST. Everything below this line is a bench instrument that
+    // takes the UART mutex and blocks for milliseconds; the pixels are the
+    // deliverable and must not queue behind them. It also means the grey lands
+    // on the panel before the log line that explains it, which is the right way
+    // round for someone watching both.
+    paint(snap);
+
     const std::int64_t now = esp_timer_get_time();
 
     // --- the transitions, which are the acceptance evidence -----------------
@@ -122,9 +162,10 @@ void SerialConsole::draw(const DisplaySnapshot& snap) noexcept {
 
     // --- the steady-state line ----------------------------------------------
     if (snap.has_top()) {
-        const PriceText bid(snap.best_bid(), snap.symbol.price_decimals);
-        const PriceText ask(snap.best_ask(), snap.symbol.price_decimals);
-        const PriceText last(snap.last_px, snap.symbol.price_decimals);
+        const int dp = static_cast<int>(snap.symbol.price_decimals);
+        const TextField bid = TextField::scaled(snap.best_bid(), dp);
+        const TextField ask = TextField::scaled(snap.best_ask(), dp);
+        const TextField last = TextField::scaled(snap.last_px, dp);
         ESP_LOGI(kTag, "v%-6u seq=%-6llu %-5s  bid %s x%lld | ask %s x%lld  spread=%lld  last=%s  tape=%u",
                  static_cast<unsigned>(snap.version),
                  static_cast<unsigned long long>(snap.seq),
@@ -148,7 +189,7 @@ void SerialConsole::draw(const DisplaySnapshot& snap) noexcept {
     }
 }
 
-void SerialConsole::print_stats() noexcept {
+void RenderTask::print_stats() noexcept {
     const auto& a = feed_.adapter_stats();
     const auto& b = feed_.book_stats();
     const auto& f = feed_.stats();
@@ -202,11 +243,49 @@ void SerialConsole::print_stats() noexcept {
              // THIS is healthy consumer lag; `no_slot` above is inbound loss.
              static_cast<unsigned>(channel_.published_version() - frames_drawn_));
 
+    print_panel();
     print_rates(p, a.events_out);
     heap_.report("steady", frames_drawn_ - frames_at_baseline_);
 }
 
-void SerialConsole::print_distributions(const FeedTask::Stats& f,
+void RenderTask::print_panel() noexcept {
+    const PanelReport& r = panel_.report();
+    if (!r.up) {
+        ESP_LOGW(kTag, "-- panel  : NOT RUNNING — the ladder is serial-only this run");
+        return;
+    }
+
+    // The draw rate is the number the feed-side regression check pairs with.
+    // Anvil publishes ~13 frames/s and this task redraws once per published
+    // version, so `drawn` per window should track `-- rate`'s events/s. Well
+    // below it means the render task is not keeping up — a priority or placement
+    // question, not an engine one. `worst` against the 33,000 us frame period is
+    // the headroom: the paint is a fixed 64 hlines plus a header, so it should
+    // not move with book depth, and it moving is itself the finding.
+    const std::int64_t now = esp_timer_get_time();
+    const std::uint32_t drawn = frames_drawn_ - drawn_at_block_;
+    drawn_at_block_ = frames_drawn_;
+    const std::uint64_t window_ms = (panel_block_us_ != 0 && now > panel_block_us_)
+                                        ? static_cast<std::uint64_t>((now - panel_block_us_) / 1000)
+                                        : 0;
+    panel_block_us_ = now;
+    const std::uint64_t fps_x100 = (window_ms > 0) ? (drawn * 100000ull) / window_ms : 0;
+
+    ESP_LOGI(kTag,
+             "-- panel  : depth=%u %s bright=%u refresh=%d Hz fb=%u B (free %u -> %u)"
+             " | drew %u at %u.%02u/s worst paint %u us of %u us period",
+             static_cast<unsigned>(r.colour_depth),
+             r.double_buffered ? "double" : "SINGLE",
+             static_cast<unsigned>(r.brightness), r.refresh_hz,
+             static_cast<unsigned>(r.predicted_bytes),
+             static_cast<unsigned>(r.free_before), static_cast<unsigned>(r.free_after),
+             static_cast<unsigned>(drawn),
+             static_cast<unsigned>(fps_x100 / 100), static_cast<unsigned>(fps_x100 % 100),
+             static_cast<unsigned>(worst_paint_us_),
+             static_cast<unsigned>(kFramePeriodMs * 1000u));
+}
+
+void RenderTask::print_distributions(const FeedTask::Stats& f,
                                         const FramePipeStats& p) noexcept {
     // THE THREE LINES THIS WHOLE SESSION EXISTS TO PRINT (strain 12).
     //
@@ -251,7 +330,7 @@ void SerialConsole::print_distributions(const FeedTask::Stats& f,
              static_cast<unsigned>(p.messages_arrived));
 }
 
-void SerialConsole::print_rejects(const RejectLog& rejects) noexcept {
+void RenderTask::print_rejects(const RejectLog& rejects) noexcept {
     // SILENT ON A HEALTHY RUN, AND THAT IS NOT THE USUAL LAZINESS ABOUT ZEROES.
     // The `-- errors` line above already states "no frame was rejected", in the
     // `parse=0 price=0 ticker=0` it always prints; this line is the breakdown OF
@@ -270,7 +349,7 @@ void SerialConsole::print_rejects(const RejectLog& rejects) noexcept {
     ESP_LOGW(kTag, "-- reject : %s", line);
 }
 
-void SerialConsole::print_gap_line(const char* what, const GapHistogram& h) noexcept {
+void RenderTask::print_gap_line(const char* what, const GapHistogram& h) noexcept {
     // Both gap distributions print in exactly the same shape, deliberately:
     // reading them is a comparison, and a comparison between two lines with
     // different columns is a comparison someone gets wrong at 2 a.m.
@@ -283,7 +362,7 @@ void SerialConsole::print_gap_line(const char* what, const GapHistogram& h) noex
              GapHistogram::label(h.mode_from(GapScale::kFirstLong)));
 }
 
-void SerialConsole::print_stall(const FeedTask::Stats& f) noexcept {
+void RenderTask::print_stall(const FeedTask::Stats& f) noexcept {
     // THE THREE LINES THAT PICK THE NEXT BRIEF.
     //
     // Read `cpu` first and only then `holes`. The tally's board-bound /
@@ -337,7 +416,7 @@ void SerialConsole::print_stall(const FeedTask::Stats& f) noexcept {
     ESP_LOGI(kTag, "-- holes  : %s", line);
 }
 
-void SerialConsole::drain_holes(const StallProbe& stall) noexcept {
+void RenderTask::drain_holes(const StallProbe& stall) noexcept {
     // A record can be evicted from the ring before this task reaches it — it
     // cannot happen at two holes a minute against a 20 ms poll, but a silently
     // skipped verdict is exactly the sort of thing that gets noticed as "the
@@ -357,7 +436,7 @@ void SerialConsole::drain_holes(const StallProbe& stall) noexcept {
     }
 }
 
-void SerialConsole::drain_rejects(const RejectLog& rejects) noexcept {
+void RenderTask::drain_rejects(const RejectLog& rejects) noexcept {
     // Eviction is reported rather than skipped, for the same reason the hole ring
     // reports it: a payload that was captured and then quietly lost reads at the
     // bench as "the log only shows nine of them", which is a question about the
@@ -380,7 +459,7 @@ void SerialConsole::drain_rejects(const RejectLog& rejects) noexcept {
     }
 }
 
-void SerialConsole::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {
+void RenderTask::print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept {
     const std::int64_t now = esp_timer_get_time();
     const std::uint32_t attempted = p.frames_published + p.no_slot + p.oversize;
 

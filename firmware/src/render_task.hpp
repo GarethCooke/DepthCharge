@@ -1,8 +1,10 @@
-// firmware/src/serial_console.hpp — the Core 1 consumer, and stage C's evidence.
+// firmware/src/render_task.hpp — the Core 1 consumer. M3 stage D: it draws.
 //
-// This is a placeholder for the render task, and it is a deliberate one. Stage D
-// replaces the body with the HUB75 driver; what it must NOT change is the shape,
-// because the shape is what stage C is proving on real silicon:
+// This was serial_console.{hpp,cpp} through stage C, where its body was a
+// placeholder for exactly this. The name changed with the body because a file
+// called serial_console that drives a HUB75 panel is a lie the next session
+// reads; what did NOT change is the shape, which is the part stage C proved on
+// real silicon and which stage D was told not to break:
 //
 //   * it runs on Core 1, so SnapshotChannel is exercised as a genuine cross-core
 //     hand-off on the LX7 rather than as the same-core call it is on the desk;
@@ -11,11 +13,24 @@
 //   * it reads nothing but the DisplaySnapshot it was handed (invariant #8), so
 //     it cannot accidentally become a second reader of the book.
 //
-// The output is also the acceptance evidence for the pull-the-Wi-Fi test, so it
-// is shaped for a human reading a serial log rather than for a parser: every
-// Live<->Stale transition prints immediately and loudly, steady state prints at
-// about 1 Hz, and the statistics block prints every 10 s so a long run can be
-// read at a glance.
+// IT IS STILL THE SINGLE CONSUMER, and that is why the serial output stayed here
+// rather than moving to a task of its own. The panel and the bench log want the
+// same frame, so they get it from the same consume() in the same task; a second
+// reader would be a second participant at the one meeting point invariant #8
+// allows exactly two.
+//
+// THE SERIAL OUTPUT IS NOT DEBUG NOISE — IT IS THE ACCEPTANCE EVIDENCE. The
+// `*** STALE (reason) at vN ***` / `*** LIVE at vN ***` transitions and the 10 s
+// statistics block are the only way to read a bench run after the fact, and the
+// pull-the-Wi-Fi test is scored off them. They cost this task a few blocked
+// milliseconds; the HUB75 DMA refreshes from the framebuffer autonomously, so a
+// blocked render task is one skipped redraw, never a dark panel.
+//
+// PRIORITY 3, ABOVE loopTask's 1. loopTask is Core 1 too and runs
+// WsTransport::supervise(); the two-handle reconnect no longer calls the 2.5 s
+// blocking esp_websocket_client_stop() (ARCHITECTURE §9, 2026-08-10), but the
+// margin stays because the panel must keep drawing the grey through whatever
+// loopTask is doing. No supervisor work belongs on this task.
 //
 // PRICES ARE FORMATTED WITH depthcharge::format_scaled INTO A STACK BUFFER.
 // Not with String, not with printf("%f"), and not with the harness's
@@ -33,26 +48,49 @@
 #include "feed_task.hpp"
 #include "frame_pipe.hpp"
 #include "heap_probe.hpp"
+#include "ladder_render.hpp"
+#include "panel.hpp"
 
 namespace depthcharge::fw {
 
-class SerialConsole {
+// The panel's frame period. Stage C polled at a flat 20 ms; the brief asks for
+// the loop to be driven off the panel instead, at the concept's ~30 fps.
+// 33 ms is 30.3 Hz at Arduino-ESP32's 1000 Hz tick, it is 30x finer than the
+// 1000 ms watchdog deadline the acceptance test measures against, and it is
+// coarse enough that this task sleeps for almost all of it. Anvil publishes
+// ~13 frames/s, so most periods have nothing new and cost one consume() that
+// returns false.
+inline constexpr std::uint32_t kFramePeriodMs = 33;
+
+class RenderTask {
 public:
-    SerialConsole(SnapshotChannel& channel, const FeedTask& feed, const FramePipe& pipe,
-                  HeapProbe& heap, const CoreIdleProbe& idle, const LinkQuality& link) noexcept
-        : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap), idle_(idle), link_(link) {}
+    RenderTask(SnapshotChannel& channel, const FeedTask& feed, const FramePipe& pipe,
+               HeapProbe& heap, const CoreIdleProbe& idle, const LinkQuality& link,
+               Panel& panel) noexcept
+        : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap), idle_(idle), link_(link),
+          panel_(panel) {}
 
     // Creates the task pinned to Core 1 — the other half of the two-core split.
-    // Bytes, not words (see feed_task.hpp). The console formats several
-    // 64-bit values per line through vsnprintf, so it is not as small a task
-    // as it looks.
+    // Bytes, not words (see feed_task.hpp). The task formats several 64-bit
+    // values per line through vsnprintf, which is the greedy part; the renderer
+    // itself is a fixed ~600 B frame plus LadderView, which is a member of this
+    // object and not of the stack.
     bool start(std::uint32_t stack_bytes = 6144, UBaseType_t priority = 3) noexcept;
 
 private:
     static void trampoline(void* self) noexcept;
     void run() noexcept;
 
+    // Ladder to the panel, transitions and the 1 Hz line to the log — one
+    // consumed frame, both outputs, in that order so the panel is never waiting
+    // behind a UART.
     void draw(const DisplaySnapshot& snap) noexcept;
+
+    // THE ONE PALETTE SELECTION (invariant #5). Nothing else in this firmware
+    // reads snap.status to choose a colour, and ladder_render.hpp's renderer
+    // cannot express one.
+    void paint(const DisplaySnapshot& snap) noexcept;
+
     void print_stats() noexcept;
 
     // The arrival / event / latency distributions — M3's stall instrument.
@@ -61,6 +99,13 @@ private:
     // greppable out of a bench log as a unit.
     void print_distributions(const FeedTask::Stats& f, const FramePipeStats& p) noexcept;
     void print_gap_line(const char* what, const GapHistogram& h) noexcept;
+
+    // What the panel itself cost and what it is doing: the colour depth and
+    // double-buffer answer stage D was told to measure rather than assume, plus
+    // the draw rate and the worst single frame. The second pair is the feed-side
+    // regression check's twin — if the LCD_CAM DMA and the Wi-Fi/TLS stack are
+    // starving each other, it shows up as a draw rate below the publish rate.
+    void print_panel() noexcept;
 
     // The per-status breakdown of what the parser rejected. Prints nothing at
     // all on a healthy run — see the note at the definition for why that is
@@ -95,8 +140,13 @@ private:
     HeapProbe& heap_;
     const CoreIdleProbe& idle_;
     const LinkQuality& link_;
+    Panel& panel_;
 
     DisplaySnapshot received_{};
+
+    // The render side's own memory: the sparkline ring and the trade flash.
+    // Deliberately here and never a DisplaySnapshot field — see ladder_render.hpp.
+    LadderView view_{};
 
     // How far this task has got through the probe's finalised hole records, and
     // the per-core idle counters at the last statistics block so the block can
@@ -118,6 +168,17 @@ private:
     std::uint32_t frames_at_baseline_ = 0;
     std::int64_t last_line_us_ = 0;
     std::int64_t last_stats_us_ = 0;
+
+    // The panel's own cost, measured rather than assumed: the slowest single
+    // paint, and the draw count at the previous statistics block so the rate is
+    // a rate. worst_paint_us_ is the number that says whether a 30 fps target
+    // has headroom — at 33 ms a period, anything approaching 33,000 has not.
+    // Its own window clock rather than print_stall()'s: that one is re-stamped
+    // inside print_stall(), which runs first, so sharing it would report every
+    // panel window as zero milliseconds long and every draw rate as zero.
+    std::uint32_t worst_paint_us_ = 0;
+    std::uint32_t drawn_at_block_ = 0;
+    std::int64_t panel_block_us_ = 0;
 
     // Previous window's totals, so the stats block can report RATES rather than
     // running counts. The first bench run could only be compared against M0's

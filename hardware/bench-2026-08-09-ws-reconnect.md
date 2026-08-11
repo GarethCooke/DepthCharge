@@ -37,7 +37,17 @@ returns, so the missing 2545 ms is the teardown.
 Anvil's snapshot latency was the suspected tail and is the smallest term. The 2.5 s
 blocking `stop()` runs on loopTask, which is Core 1 — relevant to Stage D.
 
-### Open finding: the RX watchdog trips on healthy data
+### ~~Open finding~~ CLOSED 2026-08-10: the RX watchdog trips on healthy data
+
+> **Closed, and the threshold did not move.** The cause was **Deco mesh mis-association** — the
+> board had attached to a far node at −75 dBm; moving it to the near node (−34 dBm) removed the
+> mid-connection stalls (11-minute run: two ~130 ms blips, nothing else). The board-side holes
+> this section reports were real and the watchdog was reporting them honestly, so
+> `kRxWatchdogMs` stays at **1000 ms** and `ReplayOptions::disconnect_gap_ms` is untouched.
+> The premise that the *server* had slowed was already refuted by the 20-minute desk capture
+> (17.02 frames/s, worst gap 391 ms — ARCHITECTURE §9, 2026-08-09).
+> Full record: the 2026-08-10 entry in `docs/briefs/M3-live-anvil-on-the-panel.md`.
+> **The run data below is unedited and stands as taken.**
 
 Run C, first 30 s, `sock_gaps=0` and `connects=1` and no interference of any kind:
 `wd_gaps=2`, `worst_gap=1027 ms`. Two of the three greys in that run were watchdog trips

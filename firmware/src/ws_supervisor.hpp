@@ -276,4 +276,167 @@ private:
     bool wifi_holdoff_reported_ = false;
 };
 
+// =============================================================================
+// The association, which nothing was supervising at all.
+// =============================================================================
+//
+// WsSupervisor above holds an attempt while the station is down and waits for it
+// to come back. The 2026-08-10 bench found the case where it never does, and the
+// panel stayed grey for the rest of the run:
+//
+//   Reason: 1 - UNSPECIFIED      the AP deauthenticates (a Deco block)
+//   Reason: 202 - AUTH_FAIL      Arduino's one retry, rejected
+//   reconnect due but the station is not associated — holding
+//   ... nothing, forever. connects=2, rate 0.00/s, drew 0.
+//
+// THE CAUSE IS IN THE FRAMEWORK, READ OUT OF THE SHIPPED SOURCE.
+// `WiFiGeneric.cpp:1083` only calls `WiFi.begin()` again when
+// `_isReconnectableReason(reason)` is true, and that list (line 1177) contains
+// `WIFI_REASON_802_1X_AUTH_FAILED` but NOT `WIFI_REASON_AUTH_FAIL` (202). The
+// deauth reason 1 IS reconnectable, so Arduino retries exactly once; the AP is
+// still blocking, so that attempt returns 202; `first_connect` is already false;
+// `DoReconnect` stays false. Nothing calls `WiFi.begin()` ever again.
+//
+// So `connect_wifi()` being a one-shot at boot was a latent hole, and this is
+// the same lesson the reconnect rework already produced, applied one layer down:
+// SUPERVISE ON OBSERVED STATE, NOT ON THE LIBRARY'S POLICY. The observed state
+// here is `WiFi.status() == WL_CONNECTED`, and if it has been false for long
+// enough we stop waiting for Arduino and rejoin ourselves.
+//
+// Eighth time this precompiled vintage has decided a design, after
+// esp_crt_bundle, heap_trace_start, reconnect_timeout_ms,
+// CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS, the blocking stop(), the
+// self-leaking setupDMA() and the S3's non-blocking buffer flip.
+
+// How long the station may be down before we take the rejoin over.
+//
+// Arduino's own one-shot retry is fast — on the bench the deauth and the failed
+// retry were 28 ms apart — so this only has to be clear of it, not of a full
+// association. Five seconds is also longer than the ~2.5 s cold bring-up the
+// first bench run measured, so a genuine roam that Arduino IS handling completes
+// without us interrupting it.
+inline constexpr std::int64_t kWifiRejoinAfterUs = 5 * 1000 * 1000;
+
+// How often we retry once it is ours.
+//
+// FIVE SECONDS, NOT TEN, AND THE BENCH MOVED IT. The first version used ten on
+// the reasoning that an association is scan + auth + assoc + DHCP and the boot
+// one measured ~2.5 s, so ten was "a full attempt plus margin". That reasoning
+// only considered the attempt. It ignored the term that actually dominates once
+// the AP comes back: **the wait for the next attempt to be due.**
+//
+// The 2026-08-10 run made it visible — the rejoin that finally succeeded was
+// #15, and from the AP being unblocked to the panel going live measured 5-10 s,
+// of which the connect itself was 4,068 ms and the rest was this constant. Five
+// seconds still leaves 2x a measured association, halves the worst-case wait, and
+// costs nothing extra against an AP that is deliberately refusing us: a failed
+// association is a scan, not a handshake, and there is no handle to burn — which
+// is what makes this cheaper to retry than the socket cadence it sits under.
+inline constexpr std::int64_t kWifiRejoinCycleUs = 5 * 1000 * 1000;
+
+// Cold Wi-Fi association plus TLS, measured at the stage C bench: 2.5 s. It is a
+// strict OVER-estimate of the association alone, which is the quantity that
+// matters here, and that is the safe direction.
+inline constexpr std::int64_t kObservedAssociationUs = 2500 * 1000;
+
+// The real constraint on the retry cadence, and it took the assert firing to
+// state it correctly. The first version asserted
+// `kWifiRejoinCycleUs > kWifiRejoinAfterUs`, which is meaningless: the two are
+// measured from different instants — the threshold from when the station went
+// down, the cycle from the last rejoin — and neither bounds the other. Dropping
+// the cycle to 5 s made them equal and the assert failed, which is the only
+// reason anyone looked at what it was claiming.
+//
+// What must hold is that a retry does not land on top of an association that is
+// still in flight, exactly as kRetryCycleUs must not preempt a handshake above.
+static_assert(kWifiRejoinCycleUs >= kObservedAssociationUs,
+              "a rejoin must not preempt an association that could still succeed");
+
+// And the cadence when the last attempt has DEFINITIVELY failed, which is a
+// different question and was costing most of the recovery.
+//
+// kWifiRejoinCycleUs is sized so a retry cannot land on an association that is
+// still in flight. But an AP that is refusing us does not leave one in flight —
+// the 2026-08-10 bench measured the refusal coming back in **60 ms**:
+//
+//   23:02:10.419  rejoining (#1)
+//   23:02:10.473  Reason: 202 - AUTH_FAIL
+//
+// So for 4.9 of every 5 s we were waiting out a budget for an attempt that had
+// already been over for a moment, and when the AP finally opened we noticed up
+// to a full cycle late. That was the single largest tunable term left in the
+// recovery: 25.6 s of grey, of which 4,220 ms was the TLS connect (the
+// network's, and untouchable from here) and up to 5 s was this.
+//
+// Arduino latches the failure as WL_CONNECT_FAILED (WiFiGeneric.cpp:1065 on
+// AUTH_FAIL, :1088 on ASSOC_FAIL), so "the attempt is over and it lost" is
+// observable rather than inferred — the same principle as supervising the socket
+// on its state instead of on the library's events. One second is 16x the
+// measured refusal, so it cannot outrun a real answer.
+inline constexpr std::int64_t kWifiRefusedRetryUs = 1000 * 1000;
+
+static_assert(kWifiRefusedRetryUs < kWifiRejoinCycleUs,
+              "the refused-retry path exists to be faster than the in-flight one");
+
+class WifiSupervisor {
+public:
+    struct Decision {
+        // Call WiFi.disconnect() then WiFi.begin(ssid, password).
+        bool rejoin = false;
+        // How long the station has been down, for the log line. The number is
+        // the point: an association that comes back on its own never reaches
+        // kWifiRejoinAfterUs, so a non-empty rejoin log IS the evidence that
+        // the framework gave up.
+        std::int64_t down_us = 0;
+        std::uint32_t attempt = 0;
+    };
+
+    // `attempt_failed` is the station reporting that its last association
+    // attempt is over and lost — Arduino's WL_CONNECT_FAILED. It is not the same
+    // as "not associated", which is also true while an attempt is running, and
+    // the difference is worth up to a whole cycle of grey panel.
+    Decision poll(std::int64_t now_us, bool associated, bool attempt_failed = false) noexcept {
+        Decision out;
+
+        if (associated) {
+            down_open_ = false;
+            rejoins_ = 0;
+            return out;
+        }
+
+        // Same shape as the outage clock above: the first pass that sees the
+        // station down has no earlier timestamp than its own.
+        if (!down_open_) {
+            down_open_ = true;
+            down_since_us_ = now_us;
+            return out;
+        }
+
+        // A refused attempt is finished, so there is nothing to preempt and no
+        // reason to sit out the in-flight budget. Only after we have actually
+        // made an attempt of our own: before that, WL_CONNECT_FAILED is left
+        // over from the framework's own retry and says nothing about ours.
+        const std::int64_t retry_after =
+            (attempt_failed && rejoins_ > 0) ? kWifiRefusedRetryUs : kWifiRejoinCycleUs;
+        const std::int64_t due = (rejoins_ == 0) ? down_since_us_ + kWifiRejoinAfterUs
+                                                 : last_rejoin_us_ + retry_after;
+        if (now_us < due) { return out; }
+
+        ++rejoins_;
+        last_rejoin_us_ = now_us;
+        out.rejoin = true;
+        out.down_us = now_us - down_since_us_;
+        out.attempt = rejoins_;
+        return out;
+    }
+
+    std::uint32_t rejoins() const noexcept { return rejoins_; }
+
+private:
+    std::int64_t down_since_us_ = 0;
+    std::int64_t last_rejoin_us_ = 0;
+    std::uint32_t rejoins_ = 0;
+    bool down_open_ = false;
+};
+
 }  // namespace depthcharge::fw

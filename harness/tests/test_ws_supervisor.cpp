@@ -274,3 +274,221 @@ TEST_CASE("the holdoff line returns after the feed recovers") {
     }
     CHECK(second_run == 1);
 }
+
+// ---------------------------------------------------------------------------
+// The association supervisor — the 2026-08-10 permanent grey.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Same shape as Bench above: a clock and a boolean, stepped at the poll period.
+struct WifiBench {
+    depthcharge::fw::WifiSupervisor sup;
+    std::int64_t now = 1000;
+    bool associated = true;
+
+    depthcharge::fw::WifiSupervisor::Decision step() {
+        now += kSupervisePeriodUs;
+        return sup.poll(now, associated);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a station that comes back on its own is never touched") {
+    // The common case, and the one that must stay silent: Arduino's own retry
+    // handles a roam or a transient deauth well inside the takeover threshold.
+    // A rejoin here would interrupt an association that was already succeeding.
+    using depthcharge::fw::kWifiRejoinAfterUs;
+    WifiBench b;
+    b.step();
+
+    b.associated = false;
+    int rejoins = 0;
+    const std::int64_t from = b.now;
+    while (b.now < from + kWifiRejoinAfterUs - kSupervisePeriodUs) {
+        if (b.step().rejoin) { ++rejoins; }
+    }
+    CHECK(rejoins == 0);
+
+    b.associated = true;
+    while (b.now < from + 4 * kWifiRejoinAfterUs) {
+        if (b.step().rejoin) { ++rejoins; }
+    }
+    CHECK(rejoins == 0);
+    CHECK(b.sup.rejoins() == 0u);
+}
+
+TEST_CASE("a station that stays down is rejoined, and keeps being rejoined") {
+    // THE BENCH CASE. Deco blocks the board, the AP answers Arduino's one retry
+    // with AUTH_FAIL, and the framework gives up permanently. Before this class
+    // the panel stayed grey for the rest of the run; the property that matters
+    // is not "it retries once" but "it never stops".
+    using depthcharge::fw::kWifiRejoinAfterUs;
+    using depthcharge::fw::kWifiRejoinCycleUs;
+    WifiBench b;
+    b.step();
+    b.associated = false;
+
+    const std::int64_t from = b.now;
+    int rejoins = 0;
+    std::int64_t first_at = 0;
+    std::int64_t previous_at = 0;
+    // Ten cycles of wall clock, whatever a cycle currently is. The first draft
+    // of this asserted a hardcoded `rejoins >= 5`, which was really a statement
+    // about kWifiRejoinCycleUs being 10 s; halving that constant turned a
+    // correct implementation red for no reason. What is being tested is the
+    // CADENCE, so measure the cadence.
+    while (b.now < from + 10 * kWifiRejoinCycleUs) {
+        const auto d = b.step();
+        if (!d.rejoin) { continue; }
+        ++rejoins;
+        CHECK(d.attempt == static_cast<std::uint32_t>(rejoins));
+        CHECK(d.down_us >= kWifiRejoinAfterUs);
+        if (first_at == 0) {
+            first_at = b.now;
+        } else {
+            // Never faster than the cycle — a retry landing on an association
+            // still in flight is the one way this could make an outage worse.
+            CHECK(b.now - previous_at >= kWifiRejoinCycleUs);
+            CHECK(b.now - previous_at < kWifiRejoinCycleUs + 2 * kSupervisePeriodUs);
+        }
+        previous_at = b.now;
+    }
+
+    // First one a takeover threshold after the station went down, then one per
+    // cycle for as long as it stays down — and the point is that it never stops.
+    CHECK(first_at - from >= kWifiRejoinAfterUs);
+    CHECK(first_at - from < kWifiRejoinAfterUs + 2 * kSupervisePeriodUs);
+    CHECK(rejoins >= 8);
+    CHECK(b.sup.rejoins() == static_cast<std::uint32_t>(rejoins));
+}
+
+TEST_CASE("the rejoin counter resets once the station is back") {
+    // So a later outage is reported as attempt #1 rather than #37, and so the
+    // log line says how bad THIS outage is rather than how long the board has
+    // been up.
+    using depthcharge::fw::kWifiRejoinCycleUs;
+    WifiBench b;
+    b.step();
+    b.associated = false;
+    while (b.now < 3 * kWifiRejoinCycleUs) { b.step(); }
+    CHECK(b.sup.rejoins() > 0u);
+
+    b.associated = true;
+    b.step();
+    CHECK(b.sup.rejoins() == 0u);
+
+    b.associated = false;
+    const std::int64_t from = b.now;
+    std::uint32_t first_attempt = 0;
+    while (b.now < from + 2 * kWifiRejoinCycleUs) {
+        const auto d = b.step();
+        if (d.rejoin && first_attempt == 0) { first_attempt = d.attempt; }
+    }
+    CHECK(first_attempt == 1u);
+}
+
+TEST_CASE("the two supervisors compose: rejoin brings the station back, then the socket") {
+    // The end-to-end shape of the fix. While the station is down the WS
+    // supervisor holds (one line, no wasted handles); the Wi-Fi supervisor
+    // rejoins; and the moment association returns the held socket attempt goes
+    // out on the very next poll rather than a retry cycle later.
+    using depthcharge::fw::kWifiRejoinAfterUs;
+    Bench ws;
+    depthcharge::fw::WifiSupervisor wifi;
+
+    ws.socket = true;
+    ws.step();
+
+    ws.socket = false;
+    ws.wifi = false;
+    int holdoffs = 0;
+    int rejoins = 0;
+    const std::int64_t from = ws.now;
+    while (ws.now < from + 3 * kWifiRejoinAfterUs) {
+        const auto d = ws.step();
+        if (d.wifi_holdoff) { ++holdoffs; }
+        if (d.action == SupervisorAction::StartAttempt) { FAIL("attempted with no station"); }
+        if (wifi.poll(ws.now, ws.wifi).rejoin) { ++rejoins; }
+    }
+    CHECK(holdoffs == 1);
+    CHECK(rejoins >= 1);
+
+    // Station back. The next poll fires the socket attempt.
+    ws.wifi = true;
+    const auto d = ws.step();
+    CHECK(d.action == SupervisorAction::StartAttempt);
+    CHECK(wifi.poll(ws.now, true).rejoin == false);
+}
+
+TEST_CASE("a refused attempt is retried in a second, not a cycle") {
+    // THE 2026-08-10 RECOVERY TERM. An AP that is refusing answers in ~60 ms, so
+    // waiting out kWifiRejoinCycleUs before trying again means noticing that it
+    // has stopped refusing up to a whole cycle late. That was worth more of the
+    // 25.6 s grey than anything else still under this file's control.
+    using depthcharge::fw::kWifiRefusedRetryUs;
+    using depthcharge::fw::kWifiRejoinAfterUs;
+    using depthcharge::fw::kWifiRejoinCycleUs;
+
+    depthcharge::fw::WifiSupervisor sup;
+    std::int64_t now = 1000;
+    const auto step = [&](bool associated, bool failed) {
+        now += kSupervisePeriodUs;
+        return sup.poll(now, associated, failed);
+    };
+
+    step(true, false);
+
+    // Station down, and the framework's own WL_CONNECT_FAILED is already
+    // latched. That must NOT shorten the first takeover: it is left over from
+    // the framework's retry and says nothing about an attempt of ours.
+    std::int64_t first_at = 0;
+    const std::int64_t from = now;
+    while (first_at == 0) {
+        if (step(false, true).rejoin) { first_at = now; }
+        REQUIRE(now - from < 2 * kWifiRejoinAfterUs);
+    }
+    CHECK(first_at - from >= kWifiRejoinAfterUs);
+
+    // From here every attempt is refused, so retries come at the fast cadence.
+    std::int64_t previous = first_at;
+    for (int k = 0; k < 5; ++k) {
+        std::int64_t at = 0;
+        while (at == 0) {
+            if (step(false, true).rejoin) { at = now; }
+        }
+        CHECK(at - previous >= kWifiRefusedRetryUs);
+        CHECK(at - previous < kWifiRejoinCycleUs);
+        previous = at;
+    }
+}
+
+TEST_CASE("an attempt that is merely still running is never preempted") {
+    // The other side of the same gate, and the one that could do harm: while
+    // WL_CONNECT_FAILED is NOT set the attempt may still be in flight, and a
+    // retry on top of it is how this code could turn a recoverable outage into a
+    // permanent one. That case keeps the full cycle.
+    using depthcharge::fw::kObservedAssociationUs;
+    using depthcharge::fw::kWifiRejoinCycleUs;
+
+    depthcharge::fw::WifiSupervisor sup;
+    std::int64_t now = 1000;
+    const auto step = [&](bool failed) {
+        now += kSupervisePeriodUs;
+        return sup.poll(now, false, failed);
+    };
+
+    std::int64_t previous = 0;
+    int seen = 0;
+    while (seen < 4) {
+        if (step(false).rejoin) {
+            if (previous != 0) {
+                CHECK(now - previous >= kWifiRejoinCycleUs);
+                CHECK(now - previous >= kObservedAssociationUs);
+            }
+            previous = now;
+            ++seen;
+        }
+    }
+}
