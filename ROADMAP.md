@@ -56,6 +56,13 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
   is a note on their backlog. The downstream rule stands and is now sharper: never assume a
   thinned stream is a fresh one, and M4/M5 delta venues cannot tolerate either shape without
   gap+resync.
+- **DepthCharge: own the websocket client** — brief written and ready to schedule
+  (`docs/briefs/M3-transport-own-the-websocket-client.md`). The 2026-08-13 bench convicted
+  `esp_websocket_client` of the recurring socket deaths with labelled evidence (17/17
+  errno-silent, off-by-one framing corruption caught in the act) while a minimal owned
+  client held one socket 3.7 h / 534 MB / zero deaths pinned to the worst node in the
+  house (ARCHITECTURE §9, 2026-08-13; `hardware/bench-2026-08-13-wifi-drop-diagnosis.md`).
+  Independent of, and compatible with, the framework-rebuild lever above.
 - DepthCharge: Crucible post — book structures under fire (flat_map vs dense window,
   driven by Anvil's *trend* workload).
 - Optional **live web mirror** of the panel's `DisplaySnapshot` feed (a browser twin of

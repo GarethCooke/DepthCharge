@@ -2062,3 +2062,81 @@ lag-versus-uptime run, owner-driven, one connection, serial captured to a file, 
 `--reference-only` probe running as the control, and the board's own `-- age` line recorded beside
 each stopwatch figure. That pairing is the calibration, and **E2 is gated on it**: pulling levers
 before the meter is trusted is how this milestone lost two evenings already.
+
+
+### 2026-08-13 · Fable 5 + owner at the bench · the drops were named — a client-layer defect wearing the weather as a disguise
+
+**The day opened as "why does the Wi-Fi keep failing" and closed with the Wi-Fi acquitted.**
+The morning log (`device-monitor-260813-095512.log`) showed the panel greying on a ~7 s cycle,
+attempt #159 by 10:09, at rssi −78…−85 — the far-node signature, so the mesh mis-association of
+2026-08-10 looked recurred. Three facts pulled out of the capture broke that reading: the 802.11
+association **never dropped** (74 socket deaths, zero `Reason:` lines, zero rejoins, with those
+lines demonstrably printable on this rig); **74/74 TLS handshakes succeeded at normal speed** on
+the same "unusable" link; and the storm **ended by itself** mid-run at 10:09:42 with RSSI still
+−80s, after which one socket held for minutes draining a 227 s Anvil backlog. A link that fails
+established flows every ~2 s does not clear 74 consecutive multi-RTT handshakes. Full evidence
+chain, all six captures, in `hardware/bench-2026-08-13-wifi-drop-diagnosis.md` — the short form:
+
+1. **Two boards, one BSSID, one afternoon.** Board B ran `firmware/diag/link_autopsy.cpp` — a
+   minimal owned client (esp-tls + hand-rolled WS) — **pinned to the same sick node** the main
+   firmware was dying on (`EE:D3:62:AE:81:F9`, −71…−80). Result: the production stack died
+   continuously beside it (36 connects by 20:25); B held **one socket 3.7 h, 534 MB, zero
+   deaths**, surviving measured fades of 0.5–3.9 s throughout.
+2. **Every captured death is errno-silent.** A two-line errno capture in `on_event()` labelled
+   **17/17 deaths `errno=119 (EINPROGRESS)`** — stale from the connect phase; the failing read
+   set no socket error. Half arrived via `event 4`, the library's *clean-close* path. Zero
+   ECONNRESET, zero ETIMEDOUT: nothing beyond the board ever killed a flow.
+3. **The corruption was caught in the act.** 85 rejects co-timed with deaths, recurring
+   signature `SPLIT@1` — exactly one stray byte (the previous message's tail) glued ahead of
+   clean JSON, plus mid-JSON fragments delivered as whole messages. Post-decryption, so inside
+   the client's buffer path: the parked 2026-08-10 "parse-burst truncation" finding, now
+   co-located with the deaths and both attributed to `esp_websocket_client`'s offset accounting.
+4. **The strong-node "accepted residual" is the same defect.** Deaths at −39 dBm at ~1 per
+   6–10 min (climbing with household load) — the 2026-08-10 "occasional drops on a strong
+   association" were never weather.
+5. **The boot lottery, mechanised.** With `bssid=`/`ch=` now printed at association, four boots
+   drew `…:9A` −40 / `…:B3` −76 / `…:F9` −76 / `…:9A` −39: three same-SSID Deco siblings on one
+   channel, half the draws −76 with −40 available. Framework default `WIFI_FAST_SCAN` = first
+   probe response wins, and the ESP32 never roams off its draw. The 2026-08-10 mesh fix was
+   never a fix; it was a re-roll.
+6. **The 2026-08-09 §9 open defect closes.** B's per-window worst-gap instrument: ~1,140
+   windows on the sick node, mean worst-fade ~580 ms, max 3,914 ms, none fatal. The 1–2.5 s
+   stalls-with-socket-up are real RF fades, honestly reported by the watchdog, amplified by
+   weak-node draws.
+
+**Done.** Two diagnostic firmwares (`-e wifi-diag`: per-BSSID survey, STA reason codes,
+pin-to-strongest; `-e link-autopsy`: the owned-client prototype with per-death rc/errno/close
+autopsy, worst-fade tracking, sick-node pin). Main firmware: `bssid=/ch=` on the association
+line, `errno` on every `ws down`, the `depthcharge-nopp` arm (built, unused — evidence moved off
+ping/pong before it was needed), `[platformio] default_envs = depthcharge` (a bare `pio run -t
+upload` was flashing all envs, last one winning). Bench record written. **The association fix
+applied in-tree:** `WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN)` + `setSortMethod(
+WIFI_CONNECT_AP_BY_SIGNAL)` in `connect_wifi()` — builds green, **not yet flashed/bench-proven**.
+
+**Decisions, with why.**
+
+- **The client layer gets replaced, by brief, not by tonight's hands** —
+  `docs/briefs/M3-transport-own-the-websocket-client.md`. The evidence convicts the library, the
+  prototype proves the replacement shape on this exact vintage, and the soak numbers above are
+  the acceptance bars. Not attempted in-session because it crosses four invariants and the
+  house method is host-first with a work order; improvising it at 20:00 is how transport
+  sessions have been lost before.
+- **The scan-method fix went in directly** — two lines, evidence in hand, reversible, and every
+  boot until it lands is a coin-flip onto a −76 node.
+- **`depthcharge-nopp` is kept but demoted** to a negative-result run if ever wanted.
+- **Stage E interaction, recorded:** during storms the book lagged to 171 s+ and each socket
+  death "rescued" it via fresh-snapshot backlog skip (`seq+113984` ≈ 11 min in one hole).
+  Killing the deaths removes that accidental un-lagging — E's staleness work gets *more*
+  visible, not less. Also: one workstation sleep (~17:45–19:50) gapped the captures; board-side
+  cumulative counters bridge it, noted in the bench record.
+
+**State of the tree.** Host workflow untouched by today (no `engine/`/`harness/` change).
+Firmware: `depthcharge`, `depthcharge-ps`, `depthcharge-nopp`, `wifi-diag`, `link-autopsy` all
+build green. Everything uncommitted; **run the owner code-review skill over the diff before
+committing** (diag sketches + `ws_transport` edits + `platformio.ini` + docs).
+
+**Exact next step.** Flash the scan-fix `depthcharge` build and power-cycle five times: every
+boot must land ≥ −45 dBm on `…:9A` (the acceptance for the two-line fix). Then the E-gated bench
+run above resumes as written — with the caveat that its lag measurements should be read knowing
+socket deaths no longer reset the backlog once the client brief lands. The client brief is ready
+to schedule as its own sitting.
