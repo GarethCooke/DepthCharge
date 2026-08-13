@@ -3,6 +3,9 @@
 
 #include <WiFi.h>
 
+#include <cerrno>
+#include <cstring>
+
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -27,6 +30,17 @@ bool WsTransport::connect_wifi(const char* ssid, const char* password,
     password_ = password;
 
     WiFi.mode(WIFI_STA);
+    // Scan every channel and join by SIGNAL, not by whoever answers first.
+    // The framework default is WIFI_FAST_SCAN: first probe response wins. On a
+    // mesh where every node broadcasts the same SSID that is a lottery, and the
+    // 2026-08-13 bench measured it drawing a −76 dBm sibling in half its boots
+    // while a −40 dBm node stood beside it (bssid history in
+    // hardware/bench-2026-08-13-wifi-drop-diagnosis.md). The board never roams
+    // off its draw, so the boot-time choice is the association for the run.
+    // Ordered before begin() like setSleep(), and for the same reason: applied
+    // at STA start, so it must be cached before the association is queued.
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     // Modem sleep off by default. The power-save mode parks the radio between
     // DTIM beacons and can add hundreds of milliseconds of RX latency — which on
     // a feed whose worst healthy inter-frame gap is 391-594 ms against a 1000 ms
@@ -62,9 +76,15 @@ bool WsTransport::connect_wifi(const char* ssid, const char* password,
     // presence of a `setSleep` call three lines up.
     wifi_ps_type_t ps = WIFI_PS_NONE;
     const esp_err_t ps_err = esp_wifi_get_ps(&ps);
-    ESP_LOGI(kTag, "wifi up: ip=%s rssi=%d dBm | power-save requested=%s driver ps=%d%s"
-                   " (0=NONE 1=MIN_MODEM 2=MAX_MODEM)",
-             WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()),
+    // bssid= names WHICH mesh node this association landed on — every Deco
+    // broadcasts the same SSID, so rssi without bssid is unattributable, and
+    // the 2026-08-13 storm was undiagnosable for exactly that reason: −78 dBm
+    // could not say "far node" without the node's address beside it. Boot-time
+    // only; a mid-run re-association is not reprinted here.
+    ESP_LOGI(kTag, "wifi up: ip=%s bssid=%s ch=%d rssi=%d dBm | power-save requested=%s"
+                   " driver ps=%d%s (0=NONE 1=MIN_MODEM 2=MAX_MODEM)",
+             WiFi.localIP().toString().c_str(), WiFi.BSSIDstr().c_str(),
+             static_cast<int>(WiFi.channel()), static_cast<int>(WiFi.RSSI()),
              kWifiPowerSave ? "ON" : "OFF", static_cast<int>(ps),
              (ps_err == ESP_OK) ? "" : " (read failed)");
     return true;
@@ -129,8 +149,12 @@ bool WsTransport::start() noexcept {
     // two — it fires on the *data* stopping, not on the socket dying — but both
     // paths exist because a half-open TCP connection can outlive a feed.
     cfg.disable_auto_reconnect = true;
-    cfg.ping_interval_sec = 10;
-    cfg.pingpong_timeout_sec = 20;
+    // The experiment knob — see kWsPingPong in the header for why the OFF arm
+    // needs BOTH the day-long interval and the explicit disable flag (zeroing
+    // either field substitutes a default in this vintage).
+    cfg.ping_interval_sec = kWsPingPong ? 10 : 86400;
+    cfg.pingpong_timeout_sec = kWsPingPong ? 20 : 0;
+    cfg.disable_pingpong_discon = !kWsPingPong;
 
     // The client creates its own task, which this IDF vintage gives no way to
     // pin (there is no task_core_id field). That is acceptable precisely because
@@ -316,7 +340,7 @@ void WsTransport::on_event(std::int32_t id, esp_websocket_event_data_t* data) no
 
         case WEBSOCKET_EVENT_DISCONNECTED:
         case WEBSOCKET_EVENT_CLOSED:
-        case WEBSOCKET_EVENT_ERROR:
+        case WEBSOCKET_EVENT_ERROR: {
             // These three are reported to the feed task and drive NOTHING else,
             // and that is a correction rather than an omission.
             //
@@ -341,6 +365,19 @@ void WsTransport::on_event(std::int32_t id, esp_websocket_event_data_t* data) no
             // Whatever half-written message we held is gone with the socket;
             // drop it before telling the feed task, so the next connection
             // starts from a clean slot.
+            // The last socket errno on this task — NOT necessarily the failing
+            // call's. This handler runs on the client's own task and newlib
+            // errno is per-task, so the value is from the right task; but the
+            // library's abort path closes the transport (close_notify write +
+            // close(fd)) BEFORE dispatching this event, and either can
+            // overwrite errno — usually with a correlated value, not always.
+            // Read it as evidence, not verdict: 104=ECONNRESET (something
+            // reset the flow), 116=ETIMEDOUT (retransmission gave up),
+            // 119=EINPROGRESS-stale (the read set no error at all — the
+            // 2026-08-13 signature). For CLOSED events it is whatever the
+            // task last set. Calibrated against link_autopsy ground truth
+            // before trusting a novel value.
+            const int sock_errno = errno;
             reassembler_.reset();
             (void)pipe_.post_status(FeedMessage::Kind::Disconnected);
             // Here to settle which event id this library really raises, since
@@ -358,8 +395,10 @@ void WsTransport::on_event(std::int32_t id, esp_websocket_event_data_t* data) no
             // task, once, on a socket that has already stopped carrying data, so
             // there is no frame for it to delay. Anything that ever logs from
             // this handler on a LIVE socket has to re-open that argument.
-            ESP_LOGW(kTag, "ws down: event %d", static_cast<int>(id));
+            ESP_LOGW(kTag, "ws down: event %d errno=%d (%s)", static_cast<int>(id),
+                     sock_errno, strerror(sock_errno));
             break;
+        }
 
         case WEBSOCKET_EVENT_DATA: {
             if (data == nullptr) { break; }

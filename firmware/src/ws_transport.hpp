@@ -70,6 +70,27 @@ inline constexpr char kAnvilPortText[] = "443";
 #endif
 inline constexpr bool kWifiPowerSave = (DC_WIFI_POWER_SAVE != 0);
 
+// WebSocket ping/pong: ON here, OFF in the `depthcharge-nopp` build environment.
+//
+// The second experiment run through a two-arm build, after power save. The
+// 2026-08-13 pinned A/B run showed this stack dying on a weak node while a
+// minimal client (no pings, no pong deadline — firmware/diag/link_autopsy.cpp)
+// streamed beside it untouched on the same BSSID at the same RSSI. The client's
+// ping/pong machinery is the loudest difference, so it gets the same treatment
+// power save got: both arms buildable without editing a line, and the result
+// read off the bench rather than argued from the library source.
+//
+// The OFF arm cannot simply zero either field — this vintage substitutes
+// defaults for both, read out of the shipped archive rather than the docs:
+// ping_interval_sec 0 becomes 10 s (init+0x54f), and pingpong_timeout_sec 0
+// becomes 120 s (init+0x58a), NOT disabled. The honest spellings are a
+// day-long ping interval and `disable_pingpong_discon = true`, which the
+// object code honours (init+0x545 stores a zero deadline only on that flag).
+#ifndef DC_WS_PINGPONG
+#define DC_WS_PINGPONG 1
+#endif
+inline constexpr bool kWsPingPong = (DC_WS_PINGPONG != 0);
+
 // The client's own RX buffer, deliberately smaller than an Anvil book frame.
 //
 // It could be set past 8,726 bytes so that most messages arrive in a single
