@@ -26,6 +26,16 @@ lever on the panel's honesty and freshness.
 
 ## Deliverables
 
+0. **First and separable: the association fallback — small, and proven necessary.** The
+   two-line scan/sort fix failed its five-boot acceptance on 2026-08-13 21:38–21:40:
+   draws were `9A −59 / B3 −86 / 9A −64 / 9A −67 / F9 −73` — two of five on weak siblings
+   with `ALL_CHANNEL_SCAN` + `BY_SIGNAL` demonstrably active (bench record, closing
+   section). Replace the driver's join with an explicit one in `connect_wifi()`: scan,
+   log every same-SSID BSSID with channel and dBm (the `wifi_diag` survey, productized),
+   `begin(ssid, pass, channel, bssid)` on the strongest. Keep the scan/sort calls as
+   belt-and-braces for the rejoin paths that go through plain `begin()`. Acceptance,
+   restated relative because sibling levels move ~20 dB across a day: five consecutive
+   boots each join the strongest sibling visible in their own boot scan.
 1. **`firmware/src/ws_frame.hpp` — the frame layer, ESP-IDF-free and host-tested.**
    Server→client WS frame state machine (opcode, 7/16/64-bit lengths, control frames,
    close-code capture, ping payload capture), byte-in/callback-out, no allocation
@@ -96,6 +106,8 @@ lever on the panel's honesty and freshness.
 
 ## Definition of done
 
+- ☐ Association joins the strongest visible sibling on every boot (five-boot check,
+  relative bar — deliverable 0).
 - ☐ `ws_frame.hpp` host-tested; `SPLIT@1` regression case in the suite; ctest green from
   clean clone.
 - ☐ Owned transport streams the live feed on the bench through `WsSupervisor` unchanged.

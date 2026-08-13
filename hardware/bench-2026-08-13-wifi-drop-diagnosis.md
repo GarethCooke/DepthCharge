@@ -169,9 +169,17 @@ Two independent faults, compounding:
 
 Fixed and pending:
 
-- **Applied in-tree (unflashed):** `WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN)` +
-  `WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL)` in `connect_wifi()` — every boot joins
-  the strongest sibling. Acceptance: five consecutive boots land ≥ −45 dBm on `…:9A`.
+- **Applied, flashed, and FAILED its acceptance** (21:38–21:40): `WiFi.setScanMethod(
+  WIFI_ALL_CHANNEL_SCAN)` + `setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL)` in `connect_wifi()`.
+  Five resets drew `9A −59 / B3 −86 / 9A −64 / 9A −67 / F9 −73` — **two of five on weak
+  siblings with by-signal demonstrably active** (boot 2 joined −86 with a ~−60 node up).
+  Two lessons recorded: the driver's sorted join is not reliable across mesh siblings on
+  this vintage, so the fallback — an explicit scan + strongest-BSSID `begin()`, the
+  `wifi_diag` survey productized — is promoted into the owned-client brief as its first
+  deliverable; and every sibling read ~20 dB below its afternoon figure at 21:40 (even
+  `9A` at −59…−67 vs −39), so absolute-dBm acceptance bars are the wrong shape — the
+  restated bar is *relative*: every boot joins the strongest sibling visible in its own
+  scan.
 - **Brief written, not attempted tonight:** replace the websocket client layer with an
   owned minimal WS client over esp-tls — `docs/briefs/M3-transport-own-the-websocket-client.md`.
   Board B is its working prototype and today's soak numbers are its acceptance bars.

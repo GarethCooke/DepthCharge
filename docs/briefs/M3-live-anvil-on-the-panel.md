@@ -2140,3 +2140,14 @@ boot must land ≥ −45 dBm on `…:9A` (the acceptance for the two-line fix). 
 run above resumes as written — with the caveat that its lag measurements should be read knowing
 socket deaths no longer reset the backlog once the client brief lands. The client brief is ready
 to schedule as its own sitting.
+
+**Addendum, 21:40 — the five-boot acceptance ran, and FAILED.** Draws:
+`9A −59 / B3 −86 / 9A −64 / 9A −67 / F9 −73` — two of five on weak siblings with
+`ALL_CHANNEL_SCAN` + `BY_SIGNAL` demonstrably in the running build (boot 2 joined −86 with a
+~−60 node up). The driver''s sorted join is not reliable across mesh siblings on this vintage;
+the explicit scan-then-join fallback is promoted into
+`M3-transport-own-the-websocket-client.md` as its deliverable 0, with the bar restated
+*relative* (join the strongest sibling visible in your own scan) because every sibling read
+~20 dB below its afternoon figure at 21:40 — absolute-dBm bars are the wrong shape. The
+**exact next step** above amends accordingly: the five-boot check is done and failed; the
+next session starts at the brief, deliverable 0 first.
