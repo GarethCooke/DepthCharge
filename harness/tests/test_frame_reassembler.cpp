@@ -341,16 +341,101 @@ TEST_CASE("a binary frame is reassembled like a text one") {
 TEST_CASE("a server-fragmented message is counted so the assumption is observable") {
     // Anvil has never done this — the counter exists so that if it ever starts,
     // the bench log says so rather than the ladder just misbehaving.
+    //
+    // THIS IS THE OLD CLIENT'S WORLD, and it is kept because that build arm is
+    // kept: esp_websocket_client's DATA event carries no FIN bit, so every chunk
+    // reaches here saying `fin = true` (the field's default) and a fragment is
+    // indistinguishable from a whole frame. The first fragment therefore
+    // publishes on its own and the parser rejects the partial JSON — the
+    // documented limitation, pinned so that deleting the arm is a deliberate act
+    // rather than a silent one. The case below is the same stream through the
+    // frame layer this project now owns.
     Fixture f;
     f.re.on_chunk(WsChunk{kOpText, 0, 4, "abcd", 4});          // fragment 1, "complete"
     f.re.on_chunk(WsChunk{kOpContinuation, 0, 4, "efgh", 4});  // server continuation
 
     CHECK(f.slots.continuation == 1);
-    // The first fragment published on its own; that is the documented
-    // limitation (no FIN bit in this IDF vintage), and the parser rejects the
-    // partial JSON rather than the firmware inventing a message boundary.
     CHECK(f.slots.published.size() >= 1);
     CHECK(f.slots.published[0] == "abcd");
+    CHECK(f.slots.free_count == kSlots);
+}
+
+TEST_CASE("with FIN on the chunk a fragmented message is held and published whole") {
+    // What ws_frame.hpp delivers: the frame layer reads FIN off the wire, so a
+    // non-final fragment says so and the message stays open across it. Same two
+    // fragments as the case above, same counter, one message instead of two
+    // halves and a parse error.
+    Fixture f;
+    WsChunk first{kOpText, 0, 4, "abcd", 4};
+    first.fin = false;
+    f.re.on_chunk(first);
+    CHECK(f.slots.published.empty());   // held, not published
+    CHECK(f.re.holding());
+
+    WsChunk last{kOpContinuation, 0, 4, "efgh", 4};   // FIN set: the message ends here
+    f.re.on_chunk(last);
+
+    CHECK(f.slots.continuation == 1);
+    REQUIRE(f.slots.published.size() == 1);
+    CHECK(f.slots.published[0] == "abcdefgh");
+    CHECK(f.slots.free_count == kSlots);
+    CHECK_FALSE(f.re.holding());
+}
+
+TEST_CASE("fragments that together outgrow the slot are dropped whole, counted, recovered from") {
+    // The 2026-08-15 review's finding: the FIN gate makes cross-frame
+    // accumulation reachable on a WELL-FORMED stream for the first time, so the
+    // capacity check in write() is now all that stands between a fragmented
+    // 17 KB message and a 16 KiB slot — and nothing drove it. Two 40-byte
+    // fragments against the 64-byte test capacity: the second crosses the line,
+    // the message dies whole (never truncated, never published), the counter
+    // names it, the slot comes back, the arrival is still noted (the
+    // instrument rule in finish()), and the next message is untouched.
+    Fixture f;
+    const std::string part(40, 'x');
+    WsChunk first{kOpText, 0, 40, part.data(), 40};
+    first.fin = false;
+    f.re.on_chunk(first);
+    CHECK(f.re.holding());
+
+    WsChunk last{kOpContinuation, 0, 40, part.data(), 40};   // FIN: the message ends here
+    f.re.on_chunk(last);
+
+    CHECK(f.slots.oversize == 1);
+    CHECK(f.slots.published.empty());
+    CHECK(f.slots.free_count == kSlots);
+    CHECK_FALSE(f.re.holding());
+    CHECK(f.slots.arrivals.size() == 1);
+
+    f.deliver("ok", 2);
+    REQUIRE(f.slots.published.size() == 1);
+    CHECK(f.slots.published[0] == "ok");
+    CHECK(f.slots.oversize == 1);   // the drop did not echo
+}
+
+TEST_CASE("a fragment that is itself chunked still completes only at FIN") {
+    // The two splits compose: the server fragments the message and the socket
+    // delivers each fragment in pieces. Only the read that carries the last byte
+    // of the FIN fragment may publish.
+    Fixture f;
+    const std::string a = "0123456789";
+    const std::string b = "abcdefghij";
+    for (std::size_t off = 0; off < a.size(); off += 4) {
+        const std::size_t n = (off + 4 <= a.size()) ? 4 : a.size() - off;
+        WsChunk c{kOpText, static_cast<std::uint32_t>(off), 10, a.data() + off,
+                  static_cast<std::uint32_t>(n)};
+        c.fin = false;
+        f.re.on_chunk(c);
+    }
+    CHECK(f.slots.published.empty());
+    for (std::size_t off = 0; off < b.size(); off += 3) {
+        const std::size_t n = (off + 3 <= b.size()) ? 3 : b.size() - off;
+        f.re.on_chunk(WsChunk{kOpContinuation, static_cast<std::uint32_t>(off), 10, b.data() + off,
+                              static_cast<std::uint32_t>(n)});
+    }
+
+    REQUIRE(f.slots.published.size() == 1);
+    CHECK(f.slots.published[0] == a + b);
     CHECK(f.slots.free_count == kSlots);
 }
 

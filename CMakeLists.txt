@@ -187,10 +187,12 @@ add_executable(dc_tests
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
   harness/tests/test_staleness.cpp
+  harness/tests/test_ws_frame.cpp
   harness/tests/test_ws_supervisor.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
-# M3 stages C, D and E: the firmware's WebSocket reassembler, its gap histograms,
+# M3 stages C, D, E and the transport rebuild: the firmware's WebSocket frame
+# parser and reassembler, its gap histograms,
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
 # what the parser threw away, the reconnect policy that decides how long the
 # panel stays grey, the 64x64 ladder renderer and the font its row budget is
