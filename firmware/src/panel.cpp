@@ -136,40 +136,34 @@ bool Panel::begin() noexcept {
     cfg.double_buff = choice.double_buffered;
     cfg.setPixelColorDepthBits(static_cast<std::uint8_t>(choice.depth));
 
-    // CLOCK PHASE: LEFT AT THE LIBRARY DEFAULT, AND THIS IS THE DECISION NOT TO
-    // CHANGE IT. Do not try `false` again without reading the next paragraph.
+    // CLOCK PHASE: INVERTED — RE-TESTED 2026-08-14 ON THE OWNED CLIENT, AND THE
+    // 2026-08-11 TRADE IS GONE. Two experiments, one per transport, both kept
+    // here because they disagree and the disagreement is the finding:
     //
-    // `clkphase = false` FIXES the ghosting and BREAKS the feed. Both were
-    // established on the bench on 2026-08-11, consistently, either way round:
+    //   2026-08-11, esp_websocket_client: `false` cleared the header ghosting
+    //   and collapsed inbound from ~6 msg/s to ~2 msg/s (sock_gaps=0, both
+    //   cores ~96% idle), reproduced both directions — read as the panel
+    //   jamming its own radio, so `true` shipped and the ghosting was accepted.
     //
-    //   true  (default)  ghost pixels beside the header glyphs; feed healthy
-    //   false            glyphs clean; inbound collapses to ~2 msg/s against
-    //                    Anvil's 17/s, with sock_gaps=0, connects=1, 0% lost,
-    //                    both cores ~96% idle and every hole classified
-    //                    LINK-BOUND. The panel greys on the watchdog every few
-    //                    seconds because the book genuinely stops advancing.
+    //   2026-08-14, owned transport, same divider 24, same desk, RSSI -38..-47:
+    //   A/B/A at ~10 min per arm against the same morning's 25-min baseline —
+    //     true   6.58 msg/s median (25 min)      connects=1 sock_gaps=0
+    //     false  6.78 msg/s median, 46.7 KB/s    connects=1 sock_gaps=0
+    //     true   6.48 msg/s median, 47.8 KB/s    connects=1 sock_gaps=0
+    //   No collapse; every arm sits at the TCP-window byte ceiling
+    //   (ARCHITECTURE §9 2026-08-11). The glyph fix is free, so `false` ships.
+    //   Logs device-monitor-260814-{151322,154752,155929}.log, analysed with
+    //   tools/board_log_lag.py.
     //
-    // IT CANNOT BE SOFTWARE, WHICH IS WHAT MAKES THE MECHANISM READABLE.
-    // `clkphase` reaches exactly one thing: `bus_cfg.invert_pclk`, which becomes
-    // `esp_rom_gpio_connect_out_signal(pin_wr, LCD_PCLK_IDX, invert, false)` — a
-    // GPIO-matrix inversion on the CLK pin alone. No change to the DMA
-    // descriptors, the data rate, the memory bandwidth or any CPU work. (Checked
-    // too: FM6124 does not override it — only MBI5124 and DP3246 force it true.)
-    //
-    // So inverting CLK only moves WHEN the clock edge falls relative to the
-    // thirteen data and control lines beside it. At the default the two are
-    // staggered; inverted, they transition together, and ~14 outputs switching
-    // simultaneously down a bare-jumper ribbon with no ground plane is a far
-    // larger di/dt on a shared return, a hand's width from the DevKit's 2.4 GHz
-    // antenna. The panel samples its data better and jams its own radio.
-    //
-    // THE FEED WINS, and it is not close. A ghosted header is cosmetic; a feed at
-    // 2 msg/s makes the object grey every few seconds and useless. The artifact
-    // is an interconnect defect, exactly where hardware/BRINGUP.md's forward note
-    // said to look, and it is M6's to fix with short leads and a ground plane —
-    // at which point this setting is worth re-testing, because on a proper
-    // carrier the noise argument may simply evaporate.
-    cfg.clkphase = true;
+    // Which 2026-08-11 variable was real — the old client's socket path or that
+    // week's mesh weather — is unresolved and does not block the setting. The
+    // mechanism note stands: `clkphase` reaches exactly one thing,
+    // `bus_cfg.invert_pclk`, a GPIO-matrix inversion on the CLK pin alone
+    // (FM6124 does not override it — only MBI5124 and DP3246 force it true).
+    // If inbound ever collapses to ~2 msg/s on a healthy link again, flip this
+    // first and put a ten-minute capture through board_log_lag.py before
+    // believing any other theory.
+    cfg.clkphase = false;
 
     report_.colour_depth = static_cast<std::uint8_t>(choice.depth);
     report_.double_buffered = choice.double_buffered;

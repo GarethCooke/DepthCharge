@@ -127,3 +127,210 @@ investigation. Multi-ticker.
 
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
+
+### 2026-08-14 · Opus 5 · deliverables 0–4 written and green on the desk; 5 is the bench's
+
+**Done.** The client is ours. `firmware/src/ws_frame.hpp` (frame layer, ESP-IDF-free),
+`harness/tests/test_ws_frame.cpp` (18 cases, 8 subcases), `WsTransport` rebuilt on esp-tls with an owned
+RX task pinned to Core 0, the death autopsy, the explicit scan-then-join association, and
+four build arms that all compile. Host: `cmake --workflow --preset host-mingw` green, 11/11.
+Target: `depthcharge`, `depthcharge-espws`, `depthcharge-ping`, `depthcharge-nopp` all build.
+**Nothing has been flashed.** Every claim below is a desk claim.
+
+**The SPLIT@1 regression bites, and that was verified rather than asserted.** The suite was
+run against a deliberately re-introduced copy of the library's bug — the first chunk of each
+frame emitted with its data pointer one byte early — and it reported exactly the bench
+signature: `m.find(R"({"type":)", 1)` returning **1** instead of `npos`, on both messages of
+the case. Mutation reverted, suite green. A regression test for a bug nobody can reproduce
+on demand is worth what it catches, so it was made to catch it once.
+
+**Decisions, with why.**
+
+1. **`WsChunk` gains `fin`, and `FrameReassembler::complete()` requires it.** The reassembler
+   published each server fragment separately and let the parser reject the partial JSON — a
+   documented limitation whose stated cause was "this IDF vintage does not surface the FIN
+   bit". We read FIN off the wire now, so the cause is gone. The field defaults to `true`, so
+   every existing construction (the espws path, all 23 existing tests) means exactly what it
+   did and **no existing test moved**; two new cases pin the fixed behaviour and the old case
+   is kept, relabelled as the espws arm's world. This is the only change to a seam the brief
+   said stays, and it is additive.
+2. **One esp-tls connection, not two.** Deliverable 2 says the two-handle design "collapses
+   to two esp-tls contexts"; it reads either way and one is right. The second handle existed
+   for exactly one reason (ARCHITECTURE §9, 2026-08-10): the library's task slept 5 s inside
+   every abort and `esp_websocket_client_stop()` blocked for whatever was left of it, so the
+   only route to a live socket inside 5 s was to already own one. `esp_tls_conn_destroy()` is
+   ours and returns at once. **Flag for the owner: if two contexts were meant literally, say
+   so — it is a small change.** What the collapse deletes: ~10 KiB of heap for the spare's
+   buffers, its 6 KiB task stack, `disable_auto_reconnect`, the `live_` atomic, the
+   retired-handle DATA guard, and the whole of DESIGN strain 14.
+3. **`WsSupervisor` and `WifiSupervisor` are untouched**, per the brief. `kClientSelfExitUs`
+   and the `kReconnectBackoffUs + kRetryCycleUs > kClientSelfExitUs` assert now describe a
+   library the default build does not contain — deliberately left, because the espws control
+   still needs them and editing the supervisor would edit the control. They go in the same
+   commit the arm does.
+4. **The RX task owns the whole socket lifecycle; `supervise()` only decides.**
+   `StartAttempt` sets a flag. loopTask no longer blocks on the network at all — the DNS warm
+   and the ~4 s `esp_tls_conn_new_sync` are on the RX task. A request that lands *during* a
+   slow connect is cleared on success, so it cannot survive to reconnect the next death with
+   no backoff and no association gate.
+5. **`Sec-WebSocket-Accept` is verified against a compile-time constant.** The key is fixed
+   (`ZGVwdGhjaGFyZ2Utd3MwMQ==`), so the accept value is too, so the check costs one string
+   compare and brings no SHA1 dependency onto the board. §4.1 wants a random key; what that
+   defends against is a canned response from a non-WebSocket intermediary, and this is TLS to
+   one pinned host with a pinned root. The prototype skipped the check entirely; this is
+   strictly more, at zero runtime cost.
+6. **No client ping by default**, with `depthcharge-ping` (60 s) as the other arm — the
+   brief's known unknown, converted from an argument into a flashable measurement.
+7. **A close frame is deliberately NOT counted in `control`.** The reassembler has always
+   treated close as a no-op, and the only reason the espws arm exists is to have its counters
+   compared against these. Counter parity between the arms is load-bearing.
+8. **The arrival stamp moved one hop upstream for free** — it is now the instruction after
+   the read that produced the bytes, on a task we created and pinned, so the `esp_event`
+   dispatch hop and the unpinnable library task are out of the measurement. DESIGN §05 says
+   so; the "the arrival stamp is not the wire" caveat still stands, it is just closer to it.
+
+**Measured, statically:** owned arm 141,728 B RAM / 872,721 B flash against the espws arm's
+137,348 / 871,045 — **+4,380 B RAM, +1,676 B flash**. The RAM is the 4 KiB read buffer moving
+out of the library's heap and into our BSS, which is the direction invariant #7 prefers. At
+runtime the owned arm should show *more* free heap (no spare handle's buffers, one task stack
+instead of two); `heap_probe` on the bench is the check, and the prediction is written down
+before the run rather than after.
+
+**Not done, and why.** Deliverable 5 is the bench and owner-driven. ARCHITECTURE §9 is
+deliberately unwritten: the brief asks for "the removal decision **with the acceptance
+numbers**", and the numbers do not exist yet. DESIGN.html was updated only for what is true
+today — §01's diagram box, §05's arrival-stamp paragraph, strain 14 **closed** (the binary
+its three `objdump` facts describe is gone from the default build) and strain 18 **opened**:
+the framing is ours now and so is every bug in it, with the four things that changed hands
+(a parser on the hot path, a fixed upgrade key, no client ping, two task constants that are
+still estimates) and the mitigation each one has.
+
+**Exact next step.** Flash `depthcharge` and run the deliverable-0 check first — it is five
+minutes and gates nothing else: five consecutive boots, each joining the strongest sibling in
+its own boot survey (`wifi: sibling …` lines, then `wifi: joining …`). Then the deliverable-5
+soaks. Read the first `socket up: dns N ms, connect+upgrade N ms` line; a failed upgrade now
+says `upgrade accept mismatch` or `upgrade refused` with the server's own words, and a
+`SPLIT@` in the reject log would now be **ours**. On any death the `socket end #N [label]`
+block is the instrument the old client made impossible, and `stack_free` on its third line is
+what lowers `kRxTaskStack` on evidence. If the acceptance passes: delete `depthcharge-espws`
+and `depthcharge-nopp`, the `DC_OWNED_WS` switch and every `#if` arm behind it,
+`kClientWaitTimeoutMs`/`kClientSelfExitUs` and their assert; then write ARCHITECTURE §9 with
+the numbers and tick the boxes here and in `ROADMAP.md`.
+
+---
+
+### 2026-08-14 · Claude Fable 5 · bench: clkphase A/B/A on the owned client; lag reasserted
+
+**Done.**
+
+- **The 2026-08-11 clkphase verdict is superseded on this client.** A/B/A at ~10 min per arm
+  (same divider 24, RSSI −38…−47, same desk): `true` 6.58 msg/s median (25 min baseline,
+  `device-monitor-260814-151322.log`) → `false` 6.78 (`…-154752.log`) → `true` 6.48
+  (`…-155929.log`). No collapse in any arm; byte rate 46–48 KB/s at the TCP-window ceiling
+  throughout; `connects=1 sock_gaps=0` in all three runs. **`clkphase = false` now ships** —
+  the header-ghosting fix is free. `panel.cpp`, `BRINGUP.md` and ARCHITECTURE §9 all updated;
+  the old entries left standing per §9's rule.
+- **The growing lag is reasserted, from the serial log alone** (`tools/board_log_lag.py` —
+  no Anvil pause/resume, no stopwatch): slope **+0.572…+0.589 s/s** (drain f = 0.41–0.43)
+  across all three runs, slope-vs-summary-counter cross-check agreeing to three decimals,
+  no plateau. Peak age **873 s after 25 min** on a single clean connection — with the
+  socket deaths gone, nothing "un-lags" the book by accident (2026-08-13 §9 entry), so
+  staleness is now the dominant defect, on schedule.
+- Incidental soak evidence for this brief's acceptance: three boots, ~45 min total, zero
+  errno-silent deaths, zero `SPLIT@` rejects, `connects=1` per run. Not the 3 h bar; noted.
+
+**Decisions, with why.**
+
+- Ship `clkphase = false`: the only cost it ever had (the 2 msg/s collapse) does not
+  reproduce on the owned client, and the benefit (clean header glyphs) is visible at the
+  desk. Which 2026-08-11 variable was real is left open deliberately — the separating
+  experiment needs the old client this brief is deleting.
+- Lag fix direction (owner to choose, recorded here so the options don't get re-derived):
+  **(a) the real fix** — raise the TCP receive window past the 9.7 KiB bandwidth-delay
+  product (2× = 11,488 B → 131 KiB/s ceiling clears the 110.4 KiB/s wire; §9 2026-08-11
+  pre-authorises the framework rebuild as milestone-weight — pioarduino/IDF-from-source or
+  lib-builder; budget the extra window RAM against `kReserveInternalBytes`, which may cost
+  the panel a colour-depth rung, the designed direction of that trade);
+  **(b) the firmware stopgap** — an age-bounded resync: when integrated age exceeds a
+  threshold, deliberately drop the socket for a fresh snapshot, turning the 2026-08-13
+  "accidental un-lag" into policy. Host-testable in `ws_supervisor.hpp`; costs one honest
+  ~4 s grey per cycle; bounds age at threshold + reconnect;
+  **(c) the venue wish** (Anvil backlog, not modified from here): the sequenced incremental
+  L2 feed §9 already promoted — a delta stream at a tenth the bytes fits inside today's
+  window and makes (a) unnecessary.
+
+**Exact next step.** Unchanged from the entry above (deliverable-0 five-boot check, then the
+soaks) — plus: the owner picks a lag-fix lane from the three above; (b) is a one-session
+brief if chosen as the interim.
+
+---
+
+### 2026-08-14 (late) · Claude Fable 5 · the TCP-window rebuild — built, verified, and the ceiling did not move
+
+The owner chose lane (a) and it was executed the same evening. The result is a
+supersession of this repo's own 2026-08-11 root-cause verdict, and it was found only
+because the rebuild was measured rather than declared done.
+
+**Done.**
+
+- **`liblwip.a` rebuilt from the exact shipped vintage** (esp-idf tag v4.4.6 =
+  `3572900934`, the commit the package's `versions.txt` names; lib-builder's single
+  release/v4.4 patch touches only i2s HAL — skipped as irrelevant; same GCC 8.4
+  esp-2021r2-patch5 generation; the package's own `tools/sdk/esp32s3/sdkconfig` as the
+  base, which IS the config all 98 archives were built from). Built in WSL Ubuntu after
+  Docker Desktop proved dead on this machine. Verified before flashing: 564 global
+  symbols identical, 87 members, the only member size delta `tcp.c.obj` +4 B, and
+  `tcp_alloc`'s packed `rcv_wnd/rcv_ann_wnd` literal pair `0x1670,0x1670` → `0x4350,0x4350`
+  (the adjacent `TCP_SND_BUF` word untouched — note: the 2026-08-11 §9 row's
+  "`.literal.tcp_alloc+4`" was actually pointing at SND_BUF; the window pair is at +8).
+- **A hazard found and mapped: `CONFIG_LWIP_TCP_RECVMBOX_SIZE` must stay 6 on this
+  vintage.** Kconfig's own guidance (WND/MSS + 2 = 14) was applied in the first cut and
+  the board could not complete one WebSocket upgrade — TCP connect fine, TLS handshake
+  fine, HTTP 101 never arrives, while the desk and stock firmware connected in the same
+  minute. Four archives from one pipeline flashed A/B: 5744/6 healthy, 17232/6 healthy,
+  5744/14 connects then watchdog-greys within 25 s, 17232/14 never completes an upgrade.
+  Mechanism formally open (the constant reaches one `xQueueCreate` in netconn alloc, read
+  from source); recorded as measured-bad in the package README. **Do not "fix" the mbox
+  to match the window without a soak.**
+- **The window arm shipped as `[env:depthcharge-wnd]`** — a local package copy at
+  `C:\local\framework-arduinoespressif32-wnd17232` (symlink platform_packages override,
+  README with full provenance) with ONE change: `CONFIG_LWIP_TCP_WND_DEFAULT` 5744 → 17232.
+  Package sdkconfig records edited to match the binary, both directions, both times.
+- **The acceptance run refutes the window as the binding constraint: nothing moved.**
+  9.5 min on the strong node: 6.78 msg/s median, 44.0 KB/s median (max 49.6), lag slope
+  +0.571 s/s, drain 43% — inside the noise of every 5744 baseline, with 17232 verified in
+  the flashed binary. The 2026-08-11 arithmetic (5744/87 ms = 65.5 KiB/s) named A ceiling,
+  not THE ceiling: the board was running at 44 — *below* the old window cap — both before
+  and after.
+- **Where the ceiling actually lives, measured with the repo's own diag**
+  (`link-autopsy-wnd`, same rebuilt lwIP, driven over serial): raw **tcp-bulk 213 KB/s**
+  sustained for 95 s — on the *weak* node at −78 dBm, through mbox=6; diag **anvil-ws
+  (TLS+WS, no parser, no book) ~79 KB/s** in catch-up on that same weak node; production
+  firmware **44 KB/s**. Stack, radio and window all exonerated; the ~44 KiB/s pin is in
+  the production RX path (read → reassemble → parse → apply → publish, serialized).
+  Caveat recorded: tcp-bulk's server is UK (~20 ms RTT) and cannot exercise the
+  transatlantic BDP, so the 17232 window remains **necessary** for anything past
+  65.5 KiB/s from Anvil — it is just not sufficient. (Side observation, parked: the
+  diag's tls-bulk to speed.cloudflare.com now dies in <100 ms per attempt on the weak
+  node, `connect-fail`; it worked on 2026-08-13. DNS/anycast on the sick node suspected.)
+
+**Decisions, with why.**
+
+- The board is left running `depthcharge-wnd` (17232/6): indistinguishable from stock
+  today, required tomorrow, and every additional hour is soak evidence for the swap.
+- The lag-fix lane list from the earlier entry is revised: **(a) alone cannot deliver.**
+  The path to a live book is now (1) find and break the ~44 KiB/s serialization in the
+  RX path — instrument the loop's per-stage budget first, then likely decouple socket
+  reads from parse/apply across tasks/cores; (2) keep the 17232 window so the transport
+  can use the headroom; (3) the Anvil delta-feed wish stands and would still moot both.
+  A DESIGN §08 strain entry for the RX-path ceiling is owed next session, with the
+  instrumentation numbers to draw it from — and the same DESIGN pass owes two smaller
+  corrections the 2026-08-15 review caught: strain 11 still describes the esp_event
+  dispatch path in the present tense (it left with the old client), and the statusbar
+  still stamps the 2026-08-11 source hash.
+
+**Exact next step.** Instrument the owned client's RX loop: time each stage (tls read,
+reassembler feed, parse, book apply, publish) per message over a 10-minute run, printed
+in the stats block. The stage that eats the frame period is the next brief's target. Then
+the deliverable-0/soak sequence from the entries above still applies to whichever build
+ships.
