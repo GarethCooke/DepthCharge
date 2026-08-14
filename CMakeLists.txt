@@ -184,6 +184,7 @@ add_executable(dc_tests
   harness/tests/test_parser_equivalence.cpp
   harness/tests/test_reject_log.cpp
   harness/tests/test_replay_goldens.cpp
+  harness/tests/test_rx_budget.cpp
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
   harness/tests/test_staleness.cpp

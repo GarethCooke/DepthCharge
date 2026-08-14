@@ -70,7 +70,8 @@ namespace {
     WsTransport g_transport(g_pipe, g_link);
     HeapProbe g_heap;
     Panel g_panel;
-    RenderTask g_render(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link, g_panel);
+    RenderTask g_render(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link,
+                        g_transport.rx_budget(), g_panel);
 
     [[noreturn]] void halt(const char* what) {
         ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);

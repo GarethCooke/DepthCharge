@@ -315,6 +315,7 @@ void RenderTask::print_distributions(const FeedTask::Stats& f,
     //
     print_gap_line("arrive", p.arrival_gaps);
     print_gap_line("event ", f.event_gaps);
+    print_rx();
 
     // 208 bytes: seven labelled counts, the longest of which is
     // "1.5-2.5k:4294967295". Truncation is defined and harmless, and this task
@@ -328,6 +329,32 @@ void RenderTask::print_distributions(const FeedTask::Stats& f,
              static_cast<unsigned>(f.max_ready_backlog),
              static_cast<unsigned>(kReadyQueueDepth),
              static_cast<unsigned>(p.messages_arrived));
+}
+
+void RenderTask::print_rx() noexcept {
+    // THE LINE THE 2026-08-14 CEILING VERDICT ASKED FOR (rx_budget.hpp): how
+    // the RX task's window divided between waiting for bytes, decrypting them
+    // and feeding them onward. Printed beside `arrive`/`event` because the
+    // three are one reading — those two say the silence pattern, this says
+    // what the loop was doing through it. `no reads` is stated rather than a
+    // row of zeros, which would read as a broken instrument: it is the espws
+    // arm (whose budget nothing updates) or a socket that was down all window.
+    const std::int64_t now = esp_timer_get_time();
+    const RxBudget snap = rx_;   // one copy; the RX task keeps writing
+    if (rx_block_us_ != 0 && now > rx_block_us_) {
+        if (snap.reads == rx_prev_.reads && snap.waits == rx_prev_.waits) {
+            ESP_LOGI(kTag, "-- rx     : no reads this window (socket down, or the espws arm)");
+        } else {
+            // 160 bytes: four percentages, five counts, none past ten digits.
+            char line[160];
+            (void)render_rx_budget(snap, rx_prev_,
+                                   static_cast<std::uint64_t>(now - rx_block_us_), line,
+                                   sizeof line);
+            ESP_LOGI(kTag, "-- rx     : %s", line);
+        }
+    }
+    rx_prev_ = snap;
+    rx_block_us_ = now;
 }
 
 void RenderTask::print_rejects(const RejectLog& rejects) noexcept {

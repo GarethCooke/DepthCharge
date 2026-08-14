@@ -52,6 +52,7 @@
 
 #include "frame_pipe.hpp"
 #include "frame_reassembler.hpp"
+#include "rx_budget.hpp"
 #include "stall_probe.hpp"
 #include "ws_supervisor.hpp"
 
@@ -407,6 +408,15 @@ private:
     // autopsy() then close_socket(), in that order, structurally — the autopsy
     // reads state the teardown destroys. Every death path goes through here.
     void die(const char* what, int rc, int saved_errno) noexcept;
+
+public:
+    // The RX loop's stopwatch (rx_budget.hpp): written only by the RX task,
+    // diffed by the statistics block. Const access only — the budget is an
+    // instrument, and instruments are read, never steered.
+    const RxBudget& rx_budget() const noexcept { return budget_; }
+
+private:
+    RxBudget budget_;
 
     // Writes `len` bytes or reports failure; esp_tls_conn_write may take fewer.
     bool write_all(const void* data, std::size_t len) noexcept;

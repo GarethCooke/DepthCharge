@@ -334,3 +334,34 @@ reassembler feed, parse, book apply, publish) per message over a 10-minute run, 
 in the stats block. The stage that eats the frame period is the next brief's target. Then
 the deliverable-0/soak sequence from the entries above still applies to whichever build
 ships.
+
+---
+
+### 2026-08-15 (00:24) · Claude Fable 5 · the instrument's first reading revises the verdict again
+
+`rx_budget.hpp` (host-tested, `-- rx` line beside `arrive`/`event`) went on the board at
+00:15 and its first 8.5 minutes rewrote the suspect list:
+
+- **13.89 msg/s median (peak 17.6), 100–116 KiB/s, lag slope +0.117 s/s, drain 88%**,
+  age flat at ~60 s with windows at 100–105% drain, `wd_gaps=0 sock_gaps=0 connects=1`,
+  same −43 dBm node as every 6.78 msg/s run. The first near-wire-rate run this project
+  has ever logged (`device-monitor-260815-001531.log`).
+- The rate is **above the stock window's hard 65.5 KiB/s ceiling**, so the wnd17232
+  rebuild is load-bearing, not decorative — the evening's "moved nothing" verdict was
+  true only of the congested path it was measured on.
+- The budget reads **wait 0% / read 99% / feed ~0%**: the loop is io-bound and the
+  parse/apply pipeline is effectively free at full rate. The previous entry's
+  "serialized RX path" hypothesis is refuted by its own instrument; with identical
+  firmware at 44 KiB/s (23:36) and ~100 KiB/s (00:20), the ~44 pin was upstream —
+  **UK-evening transatlantic congestion is the lead suspect**, and §9's 2026-08-14 row's
+  "the binding limit is in the firmware's own RX path" sentence is now under test.
+- Instrument caveat, stated before anyone reads too much into `read 99%`: the `read`
+  bucket is time inside `esp_tls_conn_read` that eventually returned bytes — kernel
+  wait and decrypt together. Splitting those needs a different probe; at 0% `feed`
+  it does not matter yet.
+
+**Next.** A soak through a full day decides it: if ~44 KiB/s returns at UK peak hours
+with `wait/read` still dominating and `feed` still ~0%, the ceiling is the path and the
+fix conversation moves to (c) — the Anvil delta feed — plus acceptance that the object
+runs behind at peak; if it does not return, tonight was the fix landing late. Then write
+the §9 correction from the soak's numbers, not from one midnight run.

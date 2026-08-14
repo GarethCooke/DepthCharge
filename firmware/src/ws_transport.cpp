@@ -639,6 +639,7 @@ void WsTransport::rx_main() noexcept {
             continue;
         }
 
+        const std::int64_t read_began_us = esp_timer_get_time();
         const int rc = static_cast<int>(esp_tls_conn_read(tls_, rx_buf_, sizeof(rx_buf_)));
         // Read before anything else can touch it. newlib's errno is per-task and
         // this is the failing call's own task, so this is the strongest version
@@ -652,11 +653,15 @@ void WsTransport::rx_main() noexcept {
         // which is already downstream of an esp_event dispatch hop — so the
         // arrival-vs-event split (strain 12) got sharper for free, and a hole on
         // the arrival side can no longer be that library's scheduling.
+        // It doubles as the budget's read stopwatch (rx_budget.hpp): the same
+        // two stamps that bound the read bound its cost.
         const std::int64_t at_us = esp_timer_get_time();
 
         if (rc > 0) {
+            budget_.on_read(at_us - read_began_us, static_cast<std::uint32_t>(rc));
             socket_bytes_ += static_cast<std::uint64_t>(rc);
             parser_.feed(rx_buf_, static_cast<std::uint32_t>(rc), at_us);
+            budget_.on_feed(esp_timer_get_time() - at_us);
             if (parser_.failed()) {
                 // The stream is no longer a WebSocket stream. A desynced parser
                 // cannot resynchronise by reading further, so the socket goes.
@@ -674,6 +679,7 @@ void WsTransport::rx_main() noexcept {
             // 3.9 s on a weak association that never dropped a socket. What
             // greys the panel for silence is the feed task's 1 s RX watchdog,
             // which is a statement about DATA and belongs there.
+            budget_.on_wait(at_us - read_began_us);
             if (!maybe_ping(at_us)) { continue; }
         } else {
             // Unless the floor moved: the association can fall inside the
