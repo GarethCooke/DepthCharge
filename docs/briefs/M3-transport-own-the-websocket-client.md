@@ -450,3 +450,21 @@ soak behind it, and it deserves its own edit-and-review with the transport at re
 **Exact next step.** Add the data-silence recovery to `WsSupervisor` (input `last_rx_us`,
 constant `kSilenceRecycleUs = 15 s`, test: silent-socket → StartAttempt after the
 threshold, never before it, never on a socket that is receiving). Then re-run a soak.
+
+**00:16 addendum — the outage ended, and the held socket was the RIGHT call.** Anvil resumed
+at 00:15:20 **on the same TCP connection**, 2 min 56 s after going silent: no death, no
+autopsy, no reconnect — the board went LIVE the instant bytes flowed, and pulled a
+catch-up burst at 18–19 msg/s / 103–107 KiB/s. This was a server-side stall on a healthy
+socket, not a half-open one, and a 15 s silence-recycle would have torn down a good
+connection and paid a reconnect + fresh-snapshot cycle for nothing.
+
+So the decision above is refined, not reversed: **the recycle threshold must be measured
+against server stalls, not just RF fades, and 15 s is too eager.** The two failure modes
+now have one data point each — a real Anvil stall recovers in ~3 min on the held socket;
+a true half-open (peer gone, no FIN) never recovers — and the threshold sits between them:
+**recycle a silent-but-open socket after ~5 minutes**, which costs a genuine half-open five
+minutes of grey instead of forever, and costs a stall like tonight's nothing. Whether
+Anvil stalls like this often is now something the log will show (`wait 99% / 0 reads`
+windows on a live socket are the signature), and the number can move on evidence.
+
+The board's held-socket behaviour tonight is exactly what the brief's design promised.
