@@ -365,3 +365,49 @@ with `wait/read` still dominating and `feed` still ~0%, the ceiling is the path 
 fix conversation moves to (c) — the Anvil delta feed — plus acceptance that the object
 runs behind at peak; if it does not return, tonight was the fix landing late. Then write
 the §9 correction from the soak's numbers, not from one midnight run.
+
+
+---
+
+### 2026-08-16 (00:30) · Claude Fable 5 · the day soak: the ceiling was the path, the window is load-bearing, and the age clock had a ceiling of its own
+
+The 23.6-hour soak (`device-monitor-260815-002728.log`, 26 MB, one continuous monitor;
+four brownouts at 06:41 / 11:13 / 13:15 ×2 are the owner switching the panel's independent
+5 V supply, 1:1 correlated, and are excluded from every figure) — hourly medians:
+
+| hour | msg/s | KiB/s | rx wait/read/feed/other | drain |
+| --- | --- | --- | --- | --- |
+| 00 | 12.7 | **87** | 0 / 99 / 0 / 0 | 80% |
+| 01–02 | 9.3–10.8 | 66–74 | 0 / 99 / 0 / 0 | 60–70% |
+| 07–10 | 8.3–8.8 | **56–60** | 0 / 98–99 / 0 / 0 | 50–55% |
+| 11–15 | 10.0–11.4 | 70–78 | 0 / 99 / 0 / 0–1 | 65–70% |
+| 16–20 | 9.4–10.1 | 65–71 | 0 / 99 / 0 / 0 | 60–65% |
+| 21–23 | 10.5–11.0 | 73–76 | 0 / 99 / 0 / 0–1 | 65–70% |
+
+**Findings.**
+
+- **The 44 KiB/s did not come back at any hour, peak included.** The day's floor is 56
+  (mid-morning), the ceiling 87 (midnight); the whole day sits above the stock window's
+  65.5 KiB/s hard cap for most hours. So: the wnd17232 window is **load-bearing** and stays;
+  the previous entry's "serialized RX path" was wrong; the 2026-08-14 evening's 44 was the
+  transatlantic path at UK peak on *that* evening. §9 has a 2026-08-16 row correcting the
+  2026-08-14 row, with the rule this cost: **a WAN throughput comparison across time is not
+  an A/B unless the hour is controlled.**
+- **`-- rx` read wait 0 / read 98–99 / feed 0 in every hour.** The socket always had bytes
+  when asked; deframe+reassemble+pipe cost nothing; the loop is bound by how fast bytes
+  come off the wire into the board. Nothing left to optimise in the RX path.
+- **Lag still grows, slower.** Per-connection slopes +0.243, +0.294, +0.323, and **+0.083
+  over the final 10.9 h segment** (13:15–00:06) — against +0.57–0.59 on every 5744 run. The
+  residual is path bandwidth (60–80% of a 110 KiB/s wire); the sized fix is still Anvil's
+  delta feed, and until then the object runs behind at peak and says so.
+- **The staleness clock saturated at 4294.9 s** — `SecondsText` and the whole
+  `lag_us/window_us/worst_*` chain were uint32 µs (71.6 min), so `age`, `worst`, `run` and
+  `over` all printed the ceiling for eleven straight hours; three of four segments hit it,
+  and the true peak age is unrecoverable from this log. **Fixed this session:** the chain is
+  64-bit end to end, `test_staleness.cpp` pins a 72-minute age printing as itself; host 11/11.
+  `board_log_lag.py`'s slopes above were fitted before saturation and stand.
+
+**Exact next step.** Flash the widened clock (it is built), and let the object run. The lag
+work now belongs to the Anvil backlog (delta feed) — DepthCharge's side is instrumented,
+windowed and honest. Remaining owed items from the 2026-08-15 review are unchanged (DESIGN
+strain 11 text, statusbar hash, the fake-slot-pool extraction).

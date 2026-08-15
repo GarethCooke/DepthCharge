@@ -252,11 +252,19 @@ inline std::uint32_t drain_percent(std::uint32_t summaries, std::uint64_t window
 // The same argument the histogram renderer is written from, applied to the same
 // hazard one level down. With `%s` there is one argument per value and the
 // mispairing is not expressible.
+// 64-BIT, AND THE 2026-08-15 SOAK IS WHY. The first version took uint32
+// microseconds, which is 71.6 minutes, and every `age`, `worst`, `run` and
+// `over` field on the age line inherited that ceiling: a day-long soak printed
+// `4294.9 s` for eleven straight hours while the true age climbed past it, and
+// three of four connection segments hit the wall. `%llu` here and 64-bit
+// arithmetic in every accessor below cost nothing on the LX7 and buy the only
+// thing an age instrument owes — that a big number is a big number.
 struct SecondsText {
-    char buf[16]{};
-    explicit SecondsText(std::uint32_t us) noexcept {
-        std::snprintf(buf, sizeof buf, "%u.%01u", static_cast<unsigned>(us / 1000000u),
-                      static_cast<unsigned>((us / 100000u) % 10u));
+    char buf[24]{};
+    explicit SecondsText(std::uint64_t us) noexcept {
+        std::snprintf(buf, sizeof buf, "%llu.%01u",
+                      static_cast<unsigned long long>(us / 1000000ull),
+                      static_cast<unsigned>((us / 100000ull) % 10ull));
     }
 };
 
@@ -302,7 +310,7 @@ public:
         const std::uint64_t elapsed = static_cast<std::uint64_t>(at_us - anchor_us_);
         const std::uint64_t delivered = delivered_us();
         if (elapsed >= delivered) {
-            bank_peak(clamp_us_to_u32(elapsed - delivered));
+            bank_peak(elapsed - delivered);
         } else {
             // DELIVERED MORE STREAM TIME THAN THE CLOCK ALLOWS — the instrument
             // checking its own premise. A socket cannot receive summaries faster
@@ -353,11 +361,11 @@ public:
     // panel is ten seconds older than the last summary said, whatever the reason.
     // It is also what makes the number a sawtooth on a healthy socket — see the
     // header.
-    std::uint32_t lag_us(std::int64_t now_us) const noexcept {
+    std::uint64_t lag_us(std::int64_t now_us) const noexcept {
         if (anchor_us_ == 0 || now_us <= anchor_us_) { return 0; }
         const std::uint64_t elapsed = static_cast<std::uint64_t>(now_us - anchor_us_);
         const std::uint64_t delivered = delivered_us();
-        return (elapsed >= delivered) ? clamp_us_to_u32(elapsed - delivered) : 0u;
+        return (elapsed >= delivered) ? (elapsed - delivered) : 0ull;
     }
 
     // How many summaries the broadcast should have produced since the anchor —
@@ -377,19 +385,19 @@ public:
 
     // How long this estimate has been accumulating. A 2 s lag over 4 s of
     // connection and a 2 s lag over four minutes are different diagnoses.
-    std::uint32_t window_us(std::int64_t now_us) const noexcept {
+    std::uint64_t window_us(std::int64_t now_us) const noexcept {
         if (anchor_us_ == 0 || now_us <= anchor_us_) { return 0; }
-        return clamp_us_to_u32(static_cast<std::uint64_t>(now_us - anchor_us_));
+        return static_cast<std::uint64_t>(now_us - anchor_us_);
     }
 
     std::uint32_t received() const noexcept { return received_; }
     std::uint64_t summaries_total() const noexcept { return summaries_total_; }
     std::uint32_t connections() const noexcept { return connections_; }
-    std::uint32_t worst_lag_us() const noexcept { return worst_lag_us_; }
+    std::uint64_t worst_lag_us() const noexcept { return worst_lag_us_; }
     // Retained across connects: the headline number for a whole run, which the
     // per-connection figure destroys every time the socket blinks. That erasure
     // is exactly how the 86-minute run of 2026-08-09 looked healthy.
-    std::uint32_t worst_lag_ever_us() const noexcept { return worst_lag_ever_us_; }
+    std::uint64_t worst_lag_ever_us() const noexcept { return worst_lag_ever_us_; }
     std::uint32_t worst_ahead_us() const noexcept { return worst_ahead_us_; }
     std::uint32_t worst_ahead_permille() const noexcept { return worst_ahead_permille_; }
     std::uint32_t disconnects() const noexcept { return disconnects_; }
@@ -459,7 +467,7 @@ private:
     // pair was written out twice, and a future third caller that updated only
     // one of them would produce a `worst` that is quietly smaller than a `run`
     // it is supposed to bound.
-    void bank_peak(std::uint32_t lag) noexcept {
+    void bank_peak(std::uint64_t lag) noexcept {
         if (lag > worst_lag_us_) { worst_lag_us_ = lag; }
         if (lag > worst_lag_ever_us_) { worst_lag_ever_us_ = lag; }
     }
@@ -476,8 +484,8 @@ private:
     std::uint64_t summaries_total_ = 0;
     std::uint32_t connections_ = 0;
 
-    std::uint32_t worst_lag_us_ = 0;
-    std::uint32_t worst_lag_ever_us_ = 0;
+    std::uint64_t worst_lag_us_ = 0;
+    std::uint64_t worst_lag_ever_us_ = 0;
     std::uint32_t worst_ahead_us_ = 0;
     std::uint32_t worst_ahead_permille_ = 0;
     std::uint32_t disconnects_ = 0;

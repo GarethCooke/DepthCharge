@@ -150,7 +150,7 @@ TEST_CASE("the 2026-08-11 bench reproduced: 41% of a 2 Hz broadcast over 210 s")
     CHECK(est.received() == kSummaries - 1);  // the first one anchors
 
     const std::int64_t now = t0 + kSpanUs;
-    const std::uint32_t lag = est.lag_us(now);
+    const std::uint64_t lag = est.lag_us(now);
     // ~124 s, against the stopwatch's ~96-98 s: the estimator over-reads that
     // one paired point by ~26%, which is recorded in the header and is what
     // deliverable 1 exists to explain rather than something to tune away.
@@ -167,7 +167,7 @@ TEST_CASE("a connect resets the estimate — the backlog dies with the socket") 
 
     const std::int64_t before = 1'000'000 + 196 * kPeriod;
     CHECK(est.lag_us(before) > 70'000'000);
-    const std::uint32_t peak = est.worst_lag_ever_us();
+    const std::uint64_t peak = est.worst_lag_ever_us();
     CHECK(peak > 70'000'000);
 
     // A fresh socket: Anvil sends a new snapshot and whatever was queued behind
@@ -282,7 +282,7 @@ TEST_CASE("the peak backlog is banked at the DROP, and survives the reconnect th
     est.note_connect(0);
     feed_fraction(est, 1'000'000, 120, 2);      // 60 s of clock at half rate
     const std::int64_t last_summary = 1'000'000 + 118 * kPeriod;
-    const std::uint32_t at_last = est.worst_lag_us();
+    const std::uint64_t at_last = est.worst_lag_us();
     CHECK(at_last == 29'500'000);
 
     // Four more seconds pass with nothing arriving, then the socket drops. The
@@ -349,7 +349,7 @@ TEST_CASE("PROPERTIES: the invariants hold over a swept space, not just at the w
             feed_fraction(est, 1'000'000, slots, divisor);
             if (!est.anchored()) { continue; }
 
-            std::uint32_t prev_lag = 0;
+            std::uint64_t prev_lag = 0;
             std::uint32_t prev_run = 0;
             for (int t = 0; t <= slots + 20; ++t) {
                 const std::int64_t now = 1'000'000 + static_cast<std::int64_t>(t) * kPeriod;
@@ -392,7 +392,7 @@ TEST_CASE("PROPERTY: a connect always erases the per-connection state, whatever 
         feed_fraction(est, 1'000'000, slots, 3);
         const std::int64_t drop = 1'000'000 + static_cast<std::int64_t>(slots + 5) * kPeriod;
         est.note_disconnect(drop);
-        const std::uint32_t banked = est.worst_lag_ever_us();
+        const std::uint64_t banked = est.worst_lag_ever_us();
 
         est.note_connect(drop + 1'000'000);
         CHECK_FALSE(est.anchored());
@@ -427,4 +427,29 @@ TEST_CASE("render truncates rather than overruns, and always terminates") {
         }
     }
     CHECK(est.render(now, nullptr, 32) == 0);
+}
+
+TEST_CASE("an age past 71.6 minutes prints as itself, not as 4294.9 s") {
+    // THE 2026-08-15 SOAK'S OWN BUG. Every age field went through a uint32 of
+    // microseconds, so a day-long run printed `age 4294.9 s (worst 4294.9 s,
+    // run 4294.9 s) | ... over 4294.9 s` for eleven hours while the real age
+    // kept climbing — three of four connection segments hit the wall and the
+    // peak became unreadable. Two hours of connection at 40% drain is a
+    // 72-minute age: past the old ceiling, and it must say so.
+    StalenessEstimator est;
+    est.note_connect(0);
+    constexpr std::int64_t kTwoHours = 7200ll * 1000000ll;
+    const int slots = static_cast<int>(kTwoHours / kPeriod);
+    feed_fraction(est, 1'000'000, slots, 5);   // one summary in five: 20% drain
+
+    const std::int64_t now = 1'000'000 + kTwoHours;
+    const std::uint64_t lag = est.lag_us(now);
+    CHECK(lag > 4295ull * 1000000ull);           // past the old uint32 ceiling
+    CHECK(est.window_us(now) >= static_cast<std::uint64_t>(kTwoHours));
+    CHECK(est.worst_lag_ever_us() > 4295ull * 1000000ull);
+
+    const std::string line = rendered(est, now);
+    CHECK(line.find("4294.9") == std::string::npos);
+    CHECK(line.find("age 57") != std::string::npos);      // ~5760 s at 20% drain
+    CHECK(line.find("over 7200.") != std::string::npos);
 }
