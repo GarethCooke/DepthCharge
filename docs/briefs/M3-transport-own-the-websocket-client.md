@@ -411,3 +411,42 @@ four brownouts at 06:41 / 11:13 / 13:15 ×2 are the owner switching the panel's 
 work now belongs to the Anvil backlog (delta feed) — DepthCharge's side is instrumented,
 windowed and honest. Remaining owed items from the 2026-08-15 review are unchanged (DESIGN
 strain 11 text, statusbar hash, the fake-slot-pool extraction).
+
+
+---
+
+### 2026-08-16 (00:15) · Claude Fable 5 · the half-open unknown answered itself, live, on the acceptance flash
+
+Flashing the widened age clock at 00:11: the board came up, pulled **103 KiB/s for twenty
+seconds** (`-- rx` 276 reads / 0 waits, `feed 0%`), then at 00:12:24 the server went
+silent mid-stream. From that instant `-- rx` reads **wait 99% / 0 reads / 10 waits** every
+window — a live TCP socket, every 1 s read timing out clean, no death, no autopsy — and the
+RX watchdog greyed the panel within a second (`STALE (disconnect) at v238`). The desk
+confirms it is Anvil, not us: `capture_anvil.py` times out on the WebSocket handshake while
+plain HTTPS to the same host answers 200 in 0.5 s. Anvil's WS server is wedged or
+restarting; the widened clock touched only a printer and is not a suspect.
+
+**This is the "half-open TCP with a held association" known-unknown, and it now has its
+evidence.** `WsSupervisor` gates on `socket_connected`, and a silent-but-open socket reads
+as connected, so the transport holds this socket **indefinitely** — the panel is honestly
+grey, but nothing will ever try a fresh connect while the server keeps the TCP session
+alive without speaking. Tonight the socket may eventually get a FIN when Anvil restarts;
+on a true half-open (peer host gone, no FIN, no RST) it never would, and the object would
+sit grey with a "healthy" transport for the rest of the run. The RX watchdog covers
+*honesty*; it does not cover *recovery*.
+
+**Decision, from evidence rather than assumption:** the transport needs a data-silence
+recovery — the supervisor should treat "socket up, no bytes for N seconds" as a death and
+recycle the socket, with N well above Anvil's measured healthy silence (~600 ms worst;
+2026-08-13 fades to 3.9 s) and above the 1 s RX watchdog: **~15 s** is the first number,
+long enough that no weather ever trips it, short enough that a wedged server costs one
+grey quarter-minute rather than an evening. That subsumes the client-ping question — a
+ping's only job was to *provoke* the silence into an error, and the RX loop can simply act
+on the silence directly, which is cheaper and needs no server cooperation. Host-testable in
+`ws_supervisor.hpp` (add a `last_rx_us` to `SupervisorInput`), one constant, one test.
+It is not done tonight: it is a policy change to a supervisor that has hours of clean
+soak behind it, and it deserves its own edit-and-review with the transport at rest.
+
+**Exact next step.** Add the data-silence recovery to `WsSupervisor` (input `last_rx_us`,
+constant `kSilenceRecycleUs = 15 s`, test: silent-socket → StartAttempt after the
+threshold, never before it, never on a socket that is receiving). Then re-run a soak.
