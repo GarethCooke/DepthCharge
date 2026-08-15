@@ -56,7 +56,8 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
   is a note on their backlog. The downstream rule stands and is now sharper: never assume a
   thinned stream is a fresh one, and M4/M5 delta venues cannot tolerate either shape without
   gap+resync.
-- **DepthCharge: own the websocket client** — brief written and ready to schedule
+- **DepthCharge: M3 close-out (transport brief closes, docs catch up, Anvil ask rewritten)** — brief written and ready for an Opus session: `docs/briefs/M3-closeout-transport-and-docs.md`. It is the hand-off from the 2026-08-14..16 Fable sessions and supersedes the item below as the next thing to run.
+- **DepthCharge: own the websocket client** — SHIPPED 2026-08-15 (`c52b268`, day-soak proven); brief was
   (`docs/briefs/M3-transport-own-the-websocket-client.md`). The 2026-08-13 bench convicted
   `esp_websocket_client` of the recurring socket deaths with labelled evidence (17/17
   errno-silent, off-by-one framing corruption caught in the act) while a minimal owned
