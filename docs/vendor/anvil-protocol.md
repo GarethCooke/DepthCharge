@@ -3,22 +3,105 @@ DepthCharge vendored snapshot of Anvil's wire protocol.
 
   Wire version : 1
   Source       : Anvil repo, PROTOCOL.md
-  Source commit: e8d313f2dc71bc39adeb66c0e30a35cdfdcaa13e  (2026-07-26)
-  Vendored on  : 2026-08-16  (M3 close-out follow-on)
-  Supersedes   : d501652e7b205e36e0c9e647ef3e720559e9f82d  (2026-07-07),
+  Source commit: b4d31c207b16627f19f22209c2b4a63de904f4de  (2026-08-16)
+  Vendored on  : 2026-08-16  (A7 integration + the A1-A7 hand-back)
+  Supersedes   : e8d313f2dc71bc39adeb66c0e30a35cdfdcaa13e  (2026-07-26),
+                 vendored 2026-08-16 at the M3 close-out
+                 d501652e7b205e36e0c9e647ef3e720559e9f82d  (2026-07-07),
                  vendored 2026-07-23 at M0
 
 Canonical source remains the Anvil repository; this pinned copy records exactly
 what DepthCharge was built against. Do not edit here — re-vendor from Anvil to
 update, and bump the commit/date above. See ARCHITECTURE.md "Boundaries".
 
-WHAT MOVED IN THIS RE-PIN, AND WHY NOTHING IN engine/ MOVES WITH IT.
-Exactly one Anvil commit touched PROTOCOL.md between the two pins — `e8d313f`,
-"reconcile PROTOCOL.md `seq`" — and it is documentation only: §1's "single global
-line" note, the Envelope note, §3.1's description of the `seq` field, §3.4 and §4.
-No field, type, name, unit, frame shape, endpoint or handshake behaviour changed.
-No adapter, trace, golden or firmware constant is affected by the re-pin; the
-three notes below are what actually needed correcting, and two of them close.
+WHAT MOVED IN THIS RE-PIN. Unlike the last one, this is not documentation only:
+the wire gained a parameter and DepthCharge now sends it. Anvil's hand-back is
+`docs/anvil-handback-2026-08-16.md`, answering `docs/anvil-handover-2026-08-16.md`.
+
+  §2 `GET /api/book`  `depth` is now honoured. It was previously ACCEPTED AND
+                      SILENTLY IGNORED — which corrects a premise in DepthCharge's
+                      own ask, where the existing parameter was cited as proof
+                      that "the name, concept and validation already exist". The
+                      name existed; the validation did not. Both routes now share
+                      one parser.
+  §3 `depth`          NEW, and the reason this file moved: a per-socket book
+                      depth on `/ws`. Absent or 0 is every published level, so
+                      the web client is untouched.
+  §3 Keepalive        NEW. Client pings are always answered, and the pong is
+                      queued behind whatever is already waiting for that socket.
+                      See the note below — this closes an open DepthCharge item.
+  §4 Slow consumers   NEW. The server queues, it does not shed; unbounded in v1.
+                      This closes the note this file has been carrying since
+                      2026-08-11 — see below.
+
+WHAT MOVES IN engine/ WITH IT: nothing, and that was the design goal of the ask.
+The adapter already accepts 83-126 levels a side and truncates above
+`kMaxSnapshotLevels` (256) with the truncation counted, so a 30-level book is
+trivially in contract. No field, type, name, unit, frame shape or handshake
+behaviour changed; `depth` only ever truncates a prefix of an already-sorted
+ladder. What DID change is one firmware constant (`kAnvilPath` gains
+`&depth=27`) and one new committed trace.
+
+NOTE (A7, 2026-08-16) — DEPTH IS SERVED IN TIERS, AND THIS IS THE ONE CONTRACT
+FACT A READER OF §3 MUST NOT SKIM. A request rounds **UP** to the next supported
+value — 1,2,3,5,8,10,15,20,30,40,50,75,100,150,200,300,500,1000, then unlimited
+— and never down, so a client is guaranteed at least what it asked for and must
+truncate locally for an exact count. **DepthCharge asks for 27 and is served 30.**
+The tiering is not in DepthCharge's ask; it came out of Anvil's own review, and
+the reason is sound: `depth` arrives from an unauthenticated query string, and
+free-form depth would have cost the broadcaster one serialisation per distinct
+depth in use, per ticker, per tick. Tiering bounds that by a constant.
+
+Measured on this side rather than taken on trust, because the ask's whole lesson
+was that a nearby measurement gets read as answering the question that mattered.
+`harness/replay/anvil_101_depth27_20260816.ndjson` — 90 s, 1,399 frames, priced
+by `tools/anvil_frame_economics.py`:
+
+    book frame mean   8,428 B  ->  2,471 B   (Anvil's deployed figure: 2,476 B)
+    levels per frame  ~205     ->  60.0      (30 a side — the tier, confirmed)
+    90 s of wire      10.4 MB  ->  2.84 MB   = 27.3% of the 2026-08-09 baseline
+    sustained         112.6    ->  30.8 KiB/s
+
+against the 23.6 h soak's worst measured hour of 56 KiB/s: **1.8x headroom where
+there was 0.5x.** DepthCharge's own pre-measurement predicted 27.8%; this is
+27.3%. The tier's cost is real and worth stating precisely because Anvil sized it
+as "a few percent": 30 served against 27 rendered is **9.7% of book bytes** the
+panel never draws.
+
+NOTE (M3, 2026-08-11) — CLOSED 2026-08-16 BY §4 "Slow consumers". This header
+used to carry, at length, what the deployed server does to a slow consumer —
+**it queues, without bound** — precisely because §3 and §4 did not say so. They
+say so now, in Anvil's own words, with DepthCharge's measured figures cited in
+the text: every frame kind thinned by the same fraction, lag rising linearly to
+111 s over 150 s with no plateau, ~12.4 MB implied for one socket. The client
+rule DepthCharge asked for is now contract rather than folklore: **measure
+freshness against your own clock, never infer it from message rate.** The two
+consequences that outlive this pin are unchanged and still binding on M4/M5:
+(1) that rule itself, and (2) this venue is lossless-but-stale ONLY because
+§3.1/§3.2 are idempotent full replaces — the delta feed DepthCharge is still
+asking for (backlog A1) would make the same queue lossy, so A1 and A3 part 2 have
+to be answered together. Anvil's hand-back agrees and goes further: it warns that
+if A3 part 2 is resolved by DROPPING `book` frames, end-to-end gap detection
+breaks — benign under full replaces, fatal under deltas — so **A3 must be
+decided before A1**, not alongside it. Bounding the queue remains open (A3 pt 2).
+
+NOTE (A2, 2026-08-16) — THE PONG ORDERING IS MEASURED NOW, NOT READ FROM SOURCE,
+and DepthCharge's D5 instrument rests on it. §3 Keepalive states that a client
+ping is always answered and that the pong is queued behind whatever is already
+waiting for that socket. DepthCharge had accepted that from reading Anvil's
+vendored Crow and had recorded, in ROADMAP D5, that it was "never captured under
+induced backpressure — read the number as evidence rather than as a guarantee".
+It has now been captured: Anvil's `tests/tools/pong_ordering_probe.py` stops
+reading until frames back up in the send queue, then sends one ping and reports
+the pong's POSITION in the byte stream rather than its RTT — because a slow
+reader inflates the round-trip whether or not the server reordered anything, so
+timing alone cannot separate a server-side queue from a client-side one. Result:
+425,890 bytes drained as 149 frames, **the pong at index 148 — last, with zero
+frames after it.** Read it as a guarantee. Two things would still silently break
+it and are "please don't change" rather than defects: a ping arriving after a
+two-way close handshake is never ponged, and the behaviour depends on
+`max_payload` staying default with `CROW_ENFORCE_WS_SPEC` undefined. §3 now says
+to re-run the probe on a Crow upgrade rather than assume it survived.
 
 NOTE (M0, 2026-07-23) — CLOSED. This header used to say that §1/§4's "monotonic
 seq" was not what the deployed server does, the wire `seq` being a single global
@@ -27,9 +110,9 @@ document on 2026-07-26** (`e8d313f`, brief:
 `Anvil/docs/briefs/anvil-protocol-seq-reconciliation.md`, raised by this finding)
 and the text below now says it directly, in §1 and §4, going further than the ask:
 §4 additionally states that ring-overflow loss is not signalled on the wire at all
-in v1. The correction stopped being DepthCharge's to carry three weeks before this
-re-pin; that it sat here unnoticed is the argument for re-vendoring on a schedule
-rather than on a symptom. Background: `harness/replay/NOTES.md`.
+in v1. The correction stopped being DepthCharge's to carry three weeks before the
+2026-08-16 re-pin; that it sat here unnoticed is the argument for re-vendoring on
+a schedule rather than on a symptom. Background: `harness/replay/NOTES.md`.
 
 NOTE (M3, 2026-08-09) — **WITHDRAWN 2026-08-11.** This header used to assert that
 the deployed server sheds to a slow consumer — `book` frames coalesced per socket,
@@ -39,39 +122,11 @@ cadence rather than a queue of stale ones. That conclusion is retracted
 measurement of rate or of inter-message gap cannot distinguish a shed stream from a
 queued one.** The numbers under it (16.95/s at full drain, 8.32/s at a 120 ms
 drain, 4.01/s at 250 ms) are all still true; the sentence written under them was
-not. Replaced by the note below.
-
-NOTE (M3, 2026-08-11) — WHAT THE DEPLOYED SERVER ACTUALLY DOES TO A SLOW CONSUMER,
-which §3 still does not document. **It queues, without bound.** Measured with
-`tools/anvil_freshness_probe.py` — two sockets from one process, one drained flat
-out and one sleeping 250 ms per message, matched on the wire `seq` so staleness is
-a subtraction against a real clock rather than an inference from a rate: every
-frame kind is thinned by the *same* fraction (`book` 25.5%, `summary` 25.7% of full
-rate — so not per-kind coalescing but a delayed byte stream), and lag rises
-**linearly to 111 s over 150 s with no plateau**, +0.745 s/s measured and +0.745 s/s
-predicted from the drain fraction alone. Implied queue for that one socket at
-disconnect: **~1,746 messages, ≥12.4 MB, still growing** — a floor, because each
-queued frame exists as a copy per subscriber and can be counted twice (posted
-handler, then buffer).
-
-Confirmed in Anvil's own source on 2026-08-16, so this is construction rather than
-weather: `server/ws_registry.hpp`'s `CrowWsSubscriber::deliver()` calls
-`conn.send_text()`, which posts onto the connection's io_context and appends to
-Crow's per-connection `write_buffers_` (`std::vector<std::string>`,
-`server/third_party/crow_all.h`) — no cap, no drop policy and no size test anywhere
-on that path. Keep both halves straight: Anvil **does** coalesce, on its 70 ms
-publish tick, which bounds the **rate** it produces; nothing bounds the **total**
-once a socket stalls. Nor is growth activity-gated — a new `seq` is stamped every
-tick, so a stalled socket accrues ~14 book + ~2 summary frames a second even on a
-completely idle market.
-
-Two consequences that outlive this pin. (1) **Measure freshness against a reference
-clock; never infer it from cadence** — binding on M4/M5, where a stale delta stream
-is not idempotent and cannot be papered over by the next full replace. (2) This
-venue is lossless-but-stale *only* because §3.1/§3.2 frames are idempotent full
-replaces; the delta feed DepthCharge is asking Anvil for (ROADMAP backlog A1) would
-make the same queue lossy, so A1 and A3 have to be answered together.
-See `docs/anvil-handover-2026-08-16.md`.
+not. Anvil's §4 now carries the correct version, and its own backlog retires the
+bullet DepthCharge had put there — with the record of what it claimed, when it was
+withdrawn and why, rather than by deletion. It also names the distinction the
+original conflated: coalescing DOES exist, but it is the ~14 Hz book tick, which is
+upstream and global, not per socket.
 
 NOTE (M3, 2026-08-10) — CLOSED 2026-08-15, client-side, and Anvil is exonerated.
 This header used to hold open a single wire-level hypothesis for the board's
@@ -172,11 +227,17 @@ Liveness + contract check. Never requires a body.
 
 ### `GET /api/book?ticker=<id>&depth=<n>`
 
-Current top-N book for one ticker, as a **snapshot-shaped** body (the same parser
-handles it as a `snapshot` WS frame). `ticker` selects the book (default
-`ANVIL_DEFAULT_TICKER`); `depth` is optional (default top-5 levels per side, matching
-the CLI dump). An unknown or quiescent ticker returns empty `bids`/`asks` (not a 404)
-— idempotent and simpler for the client.
+Current book for one ticker, as a **snapshot-shaped** body (the same parser handles it
+as a `snapshot` WS frame). `ticker` selects the book (default `ANVIL_DEFAULT_TICKER`).
+`depth` is optional and caps the levels per side; **absent or `0` means every level the
+server publishes** (`ANVIL_BOOK_DEPTH`, itself `0` = all resting levels by default). An
+unknown or quiescent ticker returns empty `bids`/`asks` (not a 404) — idempotent and
+simpler for the client.
+
+`depth` only ever **truncates** the published book — see
+[§3 `depth`](#depth--per-socket-book-depth) for the full semantics, which are identical
+on both surfaces. A value larger than the published depth returns what exists rather
+than an error, and a negative or unparseable value is treated as absent.
 
 ```json
 { "type": "snapshot", "seq": 42, "ticker": 101,
@@ -324,13 +385,119 @@ Viewer control for the server-side dummy-order feeder.
 
 ### Handshake
 
-Connect with `GET /ws?ticker=<id>&since=<seq>` (HTTP upgrade). `ticker` selects the
-subscribed ticker (v1: required, single ticker). `since` is **reserved** for
-sequence-based replay; v1 has no replay buffer, so the server always resyncs by
-sending a fresh `snapshot` regardless of `since`.
+Connect with `GET /ws?ticker=<id>&depth=<n>&since=<seq>` (HTTP upgrade). `ticker`
+selects the subscribed ticker (v1: required, single ticker). `depth` is optional and
+caps this socket's book depth (below). `since` is **reserved** for sequence-based
+replay; v1 has no replay buffer, so the server always resyncs by sending a fresh
+`snapshot` regardless of `since`.
 
 On connect the server sends exactly one **`snapshot`** (establishing the `seq`
 baseline and the full visible book), then streams `book` and `trade` frames live.
+
+#### `depth` — per-socket book depth
+
+`depth` caps the price levels per side in **this socket's** `snapshot` and `book`
+frames. It is negotiated once, on the upgrade request, and cannot be changed without
+reconnecting.
+
+| `?depth=` | Levels per side served |
+| --------- | ---------------------- |
+| absent, or `0` | every level the server publishes — **the default, unchanged** |
+| `n` ≤ published depth | **at least** `n`, best-first — `n` rounded up to the next supported tier |
+| `n` > published depth | every published level (no error, no padding) |
+| negative / unparseable | treated as absent |
+
+**Depth is served in tiers, so you may receive slightly more than you asked for.** The
+request is rounded **up** to the next supported depth — `1, 2, 3, 5, 8, 10, 15, 20, 30,
+40, 50, 75, 100, 150, 200, 300, 500, 1000`, then unlimited. A client asking for 27 is
+served 30. A client needing exactly `n` must truncate locally; you will never be served
+*fewer* than you asked for (except where the book simply has fewer levels).
+
+This exists to bound server work: the fan-out formats one frame per *distinct depth in
+use*, so free-form depths would let unauthenticated clients dictate how many distinct
+frames the server formats per tick. Tiers cap that at a constant no matter how many
+sockets connect.
+
+- **It only ever truncates.** The server publishes each ticker at `ANVIL_BOOK_DEPTH`
+  (`0` = all resting levels, the deployed default) and a socket slices that published
+  view at serialise time. A socket therefore **cannot ask for more depth than the
+  server publishes** — deepening would require re-aggregating against live engine
+  state, which happens only on the engine thread.
+- **It changes the payload, not the stream.** Frame types, cadence, `seq` values and
+  the `trade`/`summary` frames are identical on every socket regardless of `depth`; a
+  shallow socket receives the same frame *sequence* as a deep one, carrying fewer
+  levels. `trade` frames have no depth. The `summary` frame is cross-ticker and
+  unaffected.
+- **Truncation is a prefix**, so the levels a shallow socket receives are exactly the
+  first `n` a deep socket receives — the two views never disagree about a level they
+  both carry, and `book` frames stay idempotent full replaces *of the depth requested*
+  ([§4](#4-reconnect--idempotency)).
+- **Same semantics on `GET /api/book?depth=`**, deliberately: one parameter, one
+  meaning, whichever surface you read the book from.
+
+> **Why it exists.** The `book` frame dominates this stream — on the deployed feed it
+> is ~98% of all bytes sent, at ~8.4 KB per frame carrying ~200 levels, ~14 times a
+> second. A client that renders a shallow ladder (an embedded display, a mobile view, a
+> tile) otherwise pays for ~200 levels and discards most of them on arrival. At
+> `depth=27` the frame falls to ~2.2 KB — the stream to roughly 28% of its full-depth
+> size.
+>
+> Server-side, the **formatting** work is shared: a ticker's book is serialised once per
+> distinct depth in use (in practice one or two — full-depth browsers, one shallow tier
+> for boards), not once per socket. Delivery is not shared — each connection still
+> receives its own copy of the frame into its own send buffer — so this bounds
+> serialisation cost, not bytes on the wire or per-socket memory.
+
+#### Keepalive — client pings are answered, and they measure stream freshness
+
+**The server never initiates a ping, a heartbeat, or any other unsolicited liveness
+traffic in v1.** A client must not wait for one, and must not treat a quiet socket as a
+dead one — a genuinely idle book produces no frames.
+
+Client-initiated pings are always answered:
+
+- A **ping (opcode `0x9`) is answered with a pong** carrying the same payload,
+  unconditionally. No application code is involved, there is no rate limit, and no
+  maximum payload size is configured.
+- **The pong is queued behind whatever is already waiting for that socket.** It is
+  appended to the same per-connection send buffer as `book` and `trade` frames and does
+  not jump the queue.
+
+That second property is the useful one, and it makes a client ping the **recommended
+way to measure freshness**. Because a pong cannot overtake queued frames, a ping
+round-trip measures *true end-to-end stream freshness* rather than mere TCP liveness: a
+socket that is 110 seconds behind ([§4](#4-reconnect--idempotency)) gets its pong back
+110 seconds late. A transport-level keepalive would answer promptly on a badly
+backlogged stream and tell the client nothing — which is exactly the trap the
+[slow-consumer note](#slow-consumers--the-server-queues-it-does-not-shed) warns about.
+
+The server does **not** use pongs to detect dead clients, and applies no
+application-level idle timeout. The only upper bound on an idle connection is nginx's
+`proxy_read_timeout` (3600s in the deployed configuration).
+
+**The ordering is measured, not merely read from the source.** `tests/tools/pong_ordering_probe.py`
+opens a raw socket, completes the WebSocket handshake, then deliberately **stops reading**
+so the kernel receive buffer fills and frames genuinely back up in the server's
+per-connection send queue. It then sends one ping and reports the pong's *position in the
+byte stream* — which round-trip timing alone cannot do, since a slow reader inflates the
+RTT whether or not the server reordered anything. Captured against the Crow build:
+
+```
+not reading for 6.0s to induce backpressure...
+drained 425,890 bytes -> 149 frames
+pong found at frame index 148
+  data frames delivered BEFORE the pong: 148  (425,364 payload bytes)
+  frames delivered AFTER the pong:       0
+```
+
+The pong arrived **last**, behind every frame queued ahead of it. Re-run it after any
+change to the egress path.
+
+> **Implementation note for whoever upgrades Crow.** This behaviour comes from the
+> vendored Crow build — its frame handler answers opcode `0x9` directly — not from
+> Anvil's own code. The build pins `crow_all.h` by SHA256, so it cannot change silently,
+> but a Crow upgrade is an upgrade of a **documented wire promise**: re-run the probe
+> above rather than assuming it survived.
 
 ### Envelope
 
@@ -376,6 +543,12 @@ same shape.
 > level's FIFO. The engine's `Level` stores **no** running total — a deliberate
 > omission documented in the engine README; the snapshot helper is exactly the kind
 > of consumer that would justify adding one later.
+>
+> **"top-N" is per socket.** N is `min(?depth=, ANVIL_BOOK_DEPTH)`, where `0` on either
+> means "no limit from this one" — see [`depth`](#depth--per-socket-book-depth). Two
+> sockets on the same ticker can legitimately receive different-length `bids`/`asks`
+> for the same publish generation; both are correct and agree level-for-level as far as
+> the shallower one goes.
 
 ### 3.2 `book`
 
@@ -458,6 +631,54 @@ when absent.
   is the wire shape held for making this explicit; the v1 server does not emit it.
 - v1 has no server-side replay buffer; resync = a fresh `snapshot`. A bounded replay
   window keyed by `seq` is a natural later addition that needs no protocol change.
+
+### Slow consumers — the server queues, it does not shed
+
+A client that consumes slower than the server publishes gets **every frame, late**. It
+does *not* get a thinned, sampled or per-socket-coalesced stream. State this plainly
+because the opposite is the intuitive guess and it is wrong:
+
+- **There is no per-socket backpressure policy of any kind.** `Broadcaster::deliver()`
+  calls Crow's `conn.send_text()`, which posts the frame onto that connection's
+  io_context and appends it to the connection's private `write_buffers_`
+  (`std::vector<std::string>`), drained by `do_write()`. On that path there is **no
+  cap, no drop rule, no coalescing and no disconnect threshold**. The queue is
+  **unbounded in v1** — it grows for as long as the client stays connected and behind.
+- **The coalescing that does exist is upstream and global, not per socket.** The
+  ~14 Hz book tick ([§3.2](#32-book)) collapses many book changes into one frame *for
+  everybody*; that is what bounds egress independent of match rate. A slow socket is
+  offered exactly the same frame sequence as a fast one and simply falls behind in it.
+- **Therefore lag is unbounded and grows linearly, with no plateau.** A client draining
+  at a fraction *f* of full rate accumulates staleness at `(1 − f)` seconds per second
+  for as long as it is connected. Measured externally against a matched wire `seq`: a
+  socket drained at ~25% of full rate reached **111 s of lag over 150 s (+0.745 s/s,
+  linear, no plateau)** with an implied server-side backlog of ~1,746 messages /
+  ~12.4 MB still growing at disconnect. Every frame kind thinned by the *same* fraction
+  — a delayed byte stream, not per-kind coalescing.
+
+**Client rule: measure freshness against your own clock, never infer it from message
+rate.** A reduced arrival rate with roughly-preserved inter-frame cadence is exactly
+what a *delayed* stream looks like, so rate and gap statistics cannot distinguish a
+shed stream from a queued one — only a comparison against local time can. A client that
+cares about freshness must timestamp on arrival and act on the delta itself. (An
+application-level ping whose reply the client times works too, and measures true
+end-to-end stream freshness rather than TCP liveness: a WebSocket pong is appended to
+the *same* per-connection buffer as data, so during a backlog it arrives *behind* the
+queued frames rather than jumping them.)
+
+**Why this is currently safe, and what it is coupled to.** The stream is
+lossless-but-stale rather than lossy *only* because `snapshot` and `book` are
+idempotent full replaces: a client that falls behind and reconnects heals completely
+from the next baseline, so lateness never becomes corruption. That property is
+load-bearing for two future changes and neither is free:
+
+- **Bounding the queue** (dropping frames or closing the socket past a threshold)
+  trades staleness for loss, which is safe *today* — the next full replace heals a
+  dropped `book` — but is not safe against a delta stream.
+- **A delta / incremental feed** over this same unbounded queue would be **lossy**, not
+  merely late: unlike a full replace, a missed delta never heals. A delta mode
+  therefore has to arrive with its own gap detection and resync path, and with a slow
+  consumer disconnected or snapshot-reset rather than queued indefinitely.
 
 ---
 

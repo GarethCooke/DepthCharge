@@ -334,7 +334,14 @@ def _connect_with_origin_probe(url: str, origin: str | None, timeout: float):
 def capture(args) -> int:
     _install_sigint()
     captured_at = datetime.now(timezone.utc).isoformat()
+    # `depth` is omitted entirely when 0 rather than sent as `&depth=0`, because
+    # those are the same request to the server and the shorter one is what every
+    # trace captured before 2026-08-16 was taken with. Keeping the URL
+    # byte-identical in the default case is what lets a new capture be compared
+    # against the committed ones without the URL itself being a variable.
     url = f"{args.url}?ticker={args.ticker}"
+    if args.depth > 0:
+        url += f"&depth={args.depth}"
 
     frame_count = 0
     kind_counts: collections.Counter[str] = collections.Counter()
@@ -456,6 +463,18 @@ def main(argv=None) -> int:
     p.add_argument("--url", default="wss://anvil.garethcooke.com/ws",
                    help="WS base URL (ticker query is appended)")
     p.add_argument("--ticker", type=int, default=101, help="ticker id to subscribe")
+    # A7, live on the deployed server 2026-08-16. The board asks for 27 — its
+    # kDisplayLevels — and this tool has to be able to ask for the same thing, or
+    # a captured trace stops being a recording of what the firmware subscribes to
+    # and the goldens quietly describe a different stream.
+    #
+    # DEPTH IS SERVED IN TIERS: 1,2,3,5,8,10,15,20,30,40,50,75,100,150,200,300,
+    # 500,1000,unlimited. A request rounds UP, never down, so `--depth 27` is
+    # served 30 levels a side. That is the server's contract, not this tool's
+    # rounding, and it is why the trace a `--depth 27` capture produces carries 30.
+    p.add_argument("--depth", type=int, default=0,
+                   help="per-socket book depth (A7); 0 or absent = every published level. "
+                        "Rounded UP server-side to a supported tier, so 27 is served 30.")
     p.add_argument("--out", required=True, help="output NDJSON path")
     p.add_argument("--duration", type=float, default=300.0,
                    help="capture seconds (single-connection baseline)")

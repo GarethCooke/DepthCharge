@@ -34,13 +34,24 @@
 //   * The ordering is one-sided: a data frame posted concurrently with the
 //     ping's arrival may land either side of the pong. That is noise of one
 //     frame, not of one queue.
-//   * It is read from Anvil's source and has never been captured under induced
-//     backpressure. ROADMAP A2 asks Anvil to treat the ordering as a contract —
-//     they never claimed it, it is stock vendored Crow, and two things would
-//     silently break it (a ping after a two-way close handshake is never
-//     ponged; the behaviour depends on `max_payload` staying default with
-//     `CROW_ENFORCE_WS_SPEC` undefined). Until that sentence exists, read this
-//     number as evidence and not as a guarantee.
+//   * **It WAS read from Anvil's source rather than measured, and that caveat is
+//     now discharged — 2026-08-16, by Anvil, on the wire.** This file used to
+//     end the paragraph with "read this number as evidence and not as a
+//     guarantee". Read it as a guarantee. `tests/tools/pong_ordering_probe.py`
+//     in the Anvil repo opens a raw socket, completes the handshake and then
+//     **stops reading** so frames genuinely back up in the server's send queue,
+//     then sends one ping and reports the pong's *position in the byte stream* —
+//     position rather than RTT, because a slow reader inflates the round-trip
+//     whether or not the server reordered anything, so timing alone cannot
+//     separate a server-side queue from a client-side one. Result: 425,890 bytes
+//     drained as 149 frames, **the pong at index 148 — last, behind all 148 data
+//     frames queued ahead of it, with none after it.** `PROTOCOL.md` §3
+//     Keepalive now states it as contract, and says to re-run the probe on a
+//     Crow upgrade rather than assume the behaviour survived.
+//   * Two things would still silently break it, so they are "please don't
+//     change" rather than defects: a ping arriving after a two-way close
+//     handshake is never ponged, and the behaviour depends on `max_payload`
+//     staying default with `CROW_ENFORCE_WS_SPEC` undefined.
 //
 // SO THE INSTRUMENT IS A PAIR, AND THE PAIR IS THE DIAGNOSIS. Read the `-- ping`
 // line beside `-- age`:

@@ -2555,6 +2555,23 @@ classDiagram
       subscription takes a depth; Binance's stream name encodes one. The ask is
       <code>docs/anvil-handover-2026-08-16.md</code> (ROADMAP A7).
     </p>
+    <p class="verdict">
+      <b>Resolved 2026-08-16, the same day, and the paragraph above is now history rather than
+      a plan.</b> Anvil shipped <code>depth</code> and deployed it; this object subscribes with
+      <code>&amp;depth=27</code> and that one constant was the whole integration —
+      <code>engine/</code> did not move. <b>Measured here, not taken on trust</b>
+      (<code>harness/replay/anvil_101_depth27_20260816.ndjson</code>, 90 s, committed with three
+      ctest cases): the <code>book</code> frame falls <b>8,428 → 2,471 B</b>, the stream to
+      <b>27.3%</b> of the 2026-08-09 baseline, <b>112.6 → 30.8 KiB/s</b>. Against the soak's
+      worst measured hour of 56 KiB/s that is <b>1.8× headroom where there was 0.5×</b>. The
+      prediction above said 27.8%; Anvil's independent deployed figure agrees to 0.2%.
+      <b>So "every lever left is on the venue's side" was true, and the venue pulled it.</b>
+      One new contract fact binds M4/M5: <b>depth is served in tiers</b>
+      (1,2,3,5,8,10,15,20,30,…), rounding <em>up</em> — ask 27, receive 30, truncate locally.
+      A venue's depth parameter is a <em>request</em>, not a contract. The residual is now the
+      tier's own waste (9.7% of <code>book</code> bytes the panel never draws) and the delta
+      feed's remaining 4% — neither of which is a staleness problem any more.
+    </p>
     <p>
       The card exists because this is the first constraint in the project that is neither a
       bug nor a design choice, and because the rule that produced it cost two sessions:

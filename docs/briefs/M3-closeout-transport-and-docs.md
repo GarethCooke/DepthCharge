@@ -544,7 +544,7 @@ without that the other three would pass vacuously against the enabled render.
 by the 128 B of `char ping[128]` beside the existing `char age[208]` — ~2%, on a task whose
 documented greedy consumer is `vsnprintf` rather than these buffers.
 
-*The one thing that stays unfixed, because it is a limit rather than a defect:* no host test can
+*The one limit rather than a defect:* no host test can
 catch a future session repointing `last_data_us` back at byte-arrival. `WsTransport` is the
 ESP-IDF half and is not host-buildable, and a strong typedef would not help either — both
 quantities are `esp_timer_get_time()` results of the same type, differing only in *where* they
@@ -569,3 +569,78 @@ coverage for more than it is.
    `KiB`-computed / `"KB/s"`-printed mislabel as the one instance standing, because it "could not
    be compiled or flashed in this session". It can be compiled now. It is a one-line fix and it
    is the owner's call whether it rides with this change or its own.
+
+---
+
+### 2026-08-16 (A7) · Opus 5 · Anvil answered the same day, and the staleness problem is closed
+
+**Context.** [`docs/anvil-handback-2026-08-16.md`](../anvil-handback-2026-08-16.md) arrived
+answering the A1–A7 ask: **A7, A2, A3 part 1 and A6 are done, pushed and deployed.** Two
+integration tasks landed here and both are done.
+
+**1. `&depth=27`, and it is the entire A7 integration.** `kAnvilPath` is now
+`/ws?ticker=101&depth=27`. `engine/` did not move — the adapter already accepted 83–126 levels a
+side and truncated above `kMaxSnapshotLevels`, exactly as the ask predicted it would.
+
+**Measured here rather than taken on trust, because that is this milestone's whole scar tissue.**
+`tools/capture_anvil.py` gained a `--depth` argument (it could not otherwise capture what the
+board subscribes to, and a trace that does not match the firmware is a golden describing a
+different stream). A 90-second capture is committed as
+`harness/replay/anvil_101_depth27_20260816.ndjson` with three ctest cases — `dc_replay`,
+`dc_replay_streaming` and `dc_ladder` — kept **alongside** the full-depth traces rather than
+replacing them, because the shallow book is the new normal and the deep one is what every golden
+before today was derived from. Priced by `tools/anvil_frame_economics.py`:
+
+| | 2026-08-09 baseline | `depth=27` |
+|---|---|---|
+| `book` mean | 8,428 B | **2,471 B** |
+| levels / frame | ~205 | **60.0** (30 a side — the tier, confirmed from outside) |
+| 90 s of wire | 10.4 MB | **2.84 MB = 27.3%** |
+| sustained | 112.6 KiB/s | **30.8 KiB/s** |
+
+Against the soak's worst measured hour of 56 KiB/s: **1.8× headroom where there was 0.5×.** This
+repo predicted 27.8%; Anvil's independent deployed-server figure of 2,476 B agrees to 0.2%.
+
+**The one contract fact that binds M4/M5: depth is served in TIERS** — 1,2,3,5,8,10,15,20,30,…,
+rounding **up** and never down. Ask 27, receive 30. Anvil's reason is sound (`depth` arrives from
+an unauthenticated query string, so free-form depth would cost one serialisation per distinct
+depth in use, per ticker, per tick). The generalisation is in §9: **a venue's depth parameter is
+a request, not a contract, and an adapter must not assume it got what it asked for.** The tier's
+cost, stated because Anvil sized it as "a few percent": 9.7% of `book` bytes the panel never draws.
+
+**2. `docs/vendor/anvil-protocol.md` re-pinned at `b4d31c2`** — Anvil flagged it stale and it was.
+It gains §3 `depth` (with the tier ladder), §3 **Keepalive**, §4 **Slow consumers**, and the
+`/api/book?depth=` fix. **Two notes this file has been carrying for weeks now close**: the
+2026-08-11 slow-consumer note (§4 documents it in Anvil's own words, citing our figures, and the
+client rule is now contract — *measure freshness against your own clock, never infer it from
+message rate*), and the A2 pong-ordering caveat.
+
+**3. A correction we owed ourselves.** `ws_ping.hpp` said the pong ordering was "read from
+Anvil's source and has never been captured under induced backpressure — read this number as
+evidence and not as a guarantee". Anvil captured it: their probe stops reading until frames back
+up, then sends one ping and reports the pong's **position in the byte stream** rather than its
+RTT — because a slow reader inflates the round-trip whether or not the server reordered anything.
+**425,890 bytes as 149 frames; the pong at index 148, last, zero after it.** D5 now rests on a
+measured property, and the correction is made in the header, ROADMAP and §9 rather than left to
+rot the way the age-clock "fix owed" sentence did.
+
+**4. A premise in our own ask was wrong.** We cited `GET /api/book?depth=` as proof that "the
+name, concept and validation already exist". It took the parameter and **silently ignored it** —
+there was no validation to reuse, and Anvil fixed the REST surface as part of A7. Recorded in §9:
+arguing from a parameter's existence is not arguing from its behaviour.
+
+**What changed in the backlog.** A7/A2/A6 closed; A3 part 1 closed, part 2 open and sized M;
+**A2b is new** (the 2 min 56 s stall, split out of A2 — Anvil's leading hypothesis is fan-out
+head-of-line blocking driven by A3, which would free spontaneously when the stalled socket
+disconnected, matching our unexplained recovery). **A1 gained an ordering constraint we had not
+seen:** the per-ticker sequence is gap-detectable *because* the queue is unbounded and lossless,
+so if A3 part 2 is resolved by dropping `book` frames that property dies — benign under full
+replaces, fatal under deltas. **A3 must be decided before A1**, not alongside it.
+
+**Green.** Host 15/15 (three new replay cases). `depthcharge` builds.
+
+**Not done / next.** Still nothing flashed — and the flash is now more interesting than it was
+this morning, because the board should come up on a third of the bytes. The bench readings to
+take on the first run: `-- age` should stop climbing, and `-- ping` should sit near **87 ms**.
+A7 is the fix for the staleness that three sessions attributed to this firmware; nobody has yet
+seen it work on the panel.

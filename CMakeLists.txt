@@ -290,6 +290,15 @@ add_test(NAME dc_replay_reconnect
 add_test(NAME dc_replay_baseline_20260809
   COMMAND dc_replay
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline_20260809.ndjson)
+# A7's wire, captured the day it went live (2026-08-16). The board now subscribes
+# with `&depth=27` and is served 30 levels a side by Anvil's tier ladder, so this
+# is the ONLY committed trace that records what the firmware actually receives —
+# the other three are full-depth history. Kept alongside them rather than
+# replacing them: the shallow book is the new normal, the deep one is what every
+# golden before today was derived from, and both must keep parsing.
+add_test(NAME dc_replay_depth27
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_depth27_20260816.ndjson)
 add_test(NAME dc_replay_streaming_baseline
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
@@ -299,6 +308,12 @@ add_test(NAME dc_replay_streaming_baseline_20260809
 add_test(NAME dc_replay_streaming_reconnect
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
+# The shallow book through the parser that actually links into the firmware —
+# which is the one that matters for A7, since the streaming parser is what will
+# meet a 30-level frame on the board.
+add_test(NAME dc_replay_streaming_depth27
+  COMMAND dc_replay_streaming
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_depth27_20260816.ndjson)
 # The ladder runs end-to-end on both traces: a clean exit means the whole chain
 # (parse -> adapt -> adopt -> publish -> draw) survived every committed frame.
 add_test(NAME dc_ladder_baseline
@@ -306,6 +321,12 @@ add_test(NAME dc_ladder_baseline
           --no-color)
 add_test(NAME dc_ladder_reconnect
   COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson
+          --no-color)
+# The whole chain against the shallow book. This is the one that would catch a
+# depth the ladder cannot fill: the panel renders 27 a side and Anvil now serves
+# 30, so the margin is three levels rather than the ~175 it used to be.
+add_test(NAME dc_ladder_depth27
+  COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_depth27_20260816.ndjson
           --no-color)
 # One second of the real two-thread race, uninstrumented. The TSan run in
 # harness/tsan.sh is the same binary with the sanitiser on; this keeps the
