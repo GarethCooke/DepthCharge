@@ -1,6 +1,8 @@
 # M3-transport — own the websocket client
 
-**Track:** Agentic, with a bench acceptance · **Status:** Not started
+**Track:** Agentic, with a bench acceptance · **Status:** ✅ **Closed 2026-08-16** — every
+DoD box ticked except the weak-node 1 h soak, which is named as owed rather than faked.
+The old client is deleted from the tree (`66e2f77`); acceptance numbers in ARCHITECTURE §9.
 **Read first:** `ARCHITECTURE.md` §6 + the 2026-08-13 §9 entry, `ROADMAP.md`,
 `hardware/bench-2026-08-13-wifi-drop-diagnosis.md` (the evidence this brief stands on),
 `firmware/diag/link_autopsy.cpp` (the working prototype), `firmware/src/ws_supervisor.hpp`
@@ -106,16 +108,34 @@ lever on the panel's honesty and freshness.
 
 ## Definition of done
 
-- ☐ Association joins the strongest visible sibling on every boot (five-boot check,
-  relative bar — deliverable 0).
-- ☐ `ws_frame.hpp` host-tested; `SPLIT@1` regression case in the suite; ctest green from
-  clean clone.
-- ☐ Owned transport streams the live feed on the bench through `WsSupervisor` unchanged.
-- ☐ Death-autopsy line on every socket end.
-- ☐ Strong-node 3 h soak: zero errno-silent deaths, zero rejects.
-- ☐ Weak-node 1 h soak: fades grey, nothing dies.
-- ☐ Old client env deleted after acceptance; DESIGN.html + ARCHITECTURE §9 + session log
-  updated; ROADMAP updated.
+- ☑ Association joins the strongest visible sibling on every boot (five-boot check,
+  relative bar — deliverable 0). **Passed on sixteen boots, not five.** Every boot from
+  `device-monitor-260814-151322.log` through `…-260816-001152.log`, plus the four inside
+  the 23.6 h soak (`…-260815-002728.log`), drew `EE:D3:62:AE:81:9A` at −39…−47 dBm against
+  siblings at −64…−86, and each boot's `wifi up: … bssid=` line confirms the association
+  landed on the BSSID that boot's own scan named. The 2026-08-13 failure (two of five on
+  weak siblings) does not recur on the explicit scan-then-join.
+- ☑ `ws_frame.hpp` host-tested; `SPLIT@1` regression case in the suite; ctest green from
+  clean clone. Done 2026-08-14 (18 cases, 8 subcases, verified against a deliberately
+  re-introduced copy of the library's bug); the regression now calls `reject_log.hpp`'s own
+  `find_second_frame_header` rather than re-spelling the signature (`447522a`).
+- ☑ Owned transport streams the live feed on the bench through `WsSupervisor` unchanged.
+  23.6 h, `connects=1` across the final 10.9 h segment, `sock_gaps=0`
+  (`device-monitor-260815-002728.log`).
+- ☑ Death-autopsy line on every socket end. Both socket ends in the whole 26 MB soak carry
+  the full three-line block (`upgrade-timeout`, rc/errno/so_error/esp_tls, rssi/assoc/
+  `stack_free=1932 B`).
+- ☑ Strong-node 3 h soak: zero errno-silent deaths, zero rejects. **10.9 h on one
+  connection** at −41…−51 dBm on the `:9A` node: zero `errno=119`, zero `SPLIT` anywhere in
+  the log, `parse=0 price=0 ticker=0 unknown=0 trunc=0`, `a→e worst 19 ms` against the
+  ≤22 ms bar, heap `+452 B` after 331,682 frames. The two `socket end` lines in the day are
+  both 0-byte `upgrade-timeout` failed *connects* during the reconnect after a bench-power
+  brownout, not deaths of an established socket.
+- ☐ Weak-node 1 h soak: fades grey, nothing dies. **NOT RUN on the final build, and owed.**
+  The −7x siblings were visible in every boot scan but nothing was ever pinned to one after
+  2026-08-13. This is the one acceptance bar the transport rewrite has not cleared.
+- ☑ Old client env deleted after acceptance; DESIGN.html + ARCHITECTURE §9 + session log
+  updated; ROADMAP updated. (`66e2f77`, and the docs commit that follows it.)
 
 ## Out of scope
 
@@ -468,3 +488,75 @@ Anvil stalls like this often is now something the log will show (`wait 99% / 0 r
 windows on a live socket are the signature), and the number can move on evidence.
 
 The board's held-socket behaviour tonight is exactly what the brief's design promised.
+
+---
+
+### 2026-08-16 · Claude Opus 5 · the brief closes: the library is deleted, and the held socket gets a five-minute clock
+
+**Done.** The acceptance the espws control existed for is read off the 23.6 h soak and it
+passes, so the control is gone and this brief is closed except for one owed bar.
+
+- **The arms are deleted** (`66e2f77`). `depthcharge-espws`, `depthcharge-nopp`,
+  `DC_OWNED_WS`, `DC_WS_PINGPONG`, every `#if` arm in `ws_transport.hpp/.cpp`, and —
+  as the 2026-08-14 entry promised, in the same commit — `kClientWaitTimeoutMs`,
+  `kClientSelfExitUs` and the two-handle `static_assert`. `test_ws_supervisor.cpp`'s
+  "a retry never returns to a handle that is still dying" went with them: it asserted a
+  property of how long the library's task slept, which nothing now obeys.
+- **The window build is THE build.** `platform_packages` moved to `[env]`, not to
+  `[env:depthcharge]`, so no arm can differ from the daily driver by more than its own
+  flag — `link-autopsy-wnd` folds into `link-autopsy` for exactly that reason, since a
+  throughput discriminator running on a different lwIP from the firmware it discriminates
+  for is answering a question nobody asked. Stated cost: no firmware env now builds
+  without `C:\localramework-arduinoespressif32-wnd17232`.
+- **The silence recycle** (`e281df9`), five minutes, host-tested, with the 2m56s Anvil
+  stall pinned as a named regression case and a `static_assert` holding the constant above
+  it. ARCHITECTURE §9 has the full row; the short version is that §6 #5 protects honesty
+  and had nothing to say about recovery.
+- **Two owed review items** (`447522a`): one `FakeSlotPool` shared by both reassembler
+  suites, and the `SPLIT@` test calling `find_second_frame_header` instead of re-spelling
+  the bench signature. The third — collapsing the endpoint constants — landed with the arm
+  deletion: five became four, `kAnvilUri` deleted, the `wss://` spelling composed at the one
+  `printf` a human reads.
+
+**Decisions, with why.**
+
+1. **The five-boot bar is ticked on sixteen boots.** The 2026-08-13 failure was two of five
+   on weak siblings; every boot since the explicit scan-then-join has drawn `:9A` at
+   −39…−47 against siblings at −64…−86, and the `wifi up: bssid=` line proves the
+   association landed where the scan pointed rather than where the driver preferred. Read
+   relatively, as the brief asks: the bar is "strongest in *your own* scan", not a dBm.
+2. **The weak-node hour is left unticked and named as owed.** It would have been trivially
+   easy to read the −78 dBm stretches inside the day soak as satisfying it. They do not:
+   the board was never pinned to a weak sibling on the final build, so there is no
+   controlled weak-node arm and saying otherwise would be exactly the "measurement that
+   answers a nearby question" §9 keeps convicting.
+3. **`depthcharge-ping` survives the brief that created it, but its question does not.**
+   The half-open unknown is closed by the silence recycle, which needs no server
+   cooperation and no write into a fade. The arm still builds; deleting it is the owner's
+   call and it is flagged in `platformio.ini` and `ws_transport.hpp` as a candidate.
+4. **`last_rx_us_` is a 64-bit atomic and that was priced, not assumed.** `nm` on the
+   linked image shows `__atomic_load_8`/`__atomic_store_8` — ESP-IDF's newlib
+   implementations, a short critical section apiece, taken ~40 times a second on the RX
+   task against a read path measured at `feed 0%`. The lock-free alternative was a 32-bit
+   millisecond stamp wrapping at 49.7 days, which is the exact class of ceiling the age
+   clock was widened out of this week.
+5. **Two defects were caught by the review and fixed before the commit landed**, both the
+   same rule and both recorded in §9: the RX task now checks the silence itself rather
+   than trusting what a `connect_requested_` on a live socket implies (a slow-but-
+   successful connect could land a stale request and kill a socket that had just come up),
+   and `silence_recycle` reports the live reading rather than a latched one (the latched
+   version labelled every retry after a recycle, so attempt #2 would have printed
+   "socket up but silent" over a socket that was definitively gone).
+
+**Measured, statically:** `depthcharge` is 141,888 B RAM / 874,597 B flash, against the
+2026-08-14 owned arm's 141,728 / 872,721 — **+160 B RAM, +1,876 B flash** for the recycle,
+the supervisor's two new members and the second log line.
+
+**Not done.** The weak-node hour (above). No board was used this session — the object was
+off and COM7 free throughout, and every claim here is read from committed logs or from the
+desk build.
+
+**Exact next step.** Nothing in this brief. The weak-node soak is owner-driven and belongs
+to whatever bench session comes next; the remaining M3 work is the pull-the-Wi-Fi
+acceptance photo, also owner-driven. See `docs/briefs/M3-closeout-transport-and-docs.md`
+for this session's own hand-off.

@@ -23,7 +23,7 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
 | M0 | A     | Trace + harness               | Live Anvil WS traces captured & vendored; replay harness parses them; golden-test + CMake skeleton; ctest green.    | —          | ✅ Done (2026-07-23), in-tree green — brief: `docs/briefs/M0-trace-and-harness.md` |
 | M1 | A     | Console ladder off replay     | `FeedEvent` types real; Anvil adapter (frames→events); phase-1 book (adopt snapshot + trade ring); console ladder renders a replay; goldens green. | M0 | ✅ Done (2026-07-26), in-tree green — brief: `docs/briefs/M1-console-ladder-off-replay.md` |
 | M2 | B     | Panel smoke test              | ESP32-S3 DevKit + 64×64 HUB75 + PSU wired; HUB75 DMA library demo runs; photo in `hardware/`.                        | —          | ✅ Done (2026-07-26), in-tree green — brief: `docs/briefs/M2-bench-bringup.md` (bench; owner-driven). Agentic sessions have no blocking software work until M3 — MP stage 1 is available in parallel. |
-| M3 | A+B   | Live Anvil on the panel       | Firmware net task (TLS WS, nominated `Origin` header) + render task; engine unchanged from M1; live ladder on the panel; pull-the-Wi-Fi test shows grey stale state then clean resync. | M1, M2 | ☐ **Next** — stage A ✅ (2026-08-07, wait-free `SnapshotChannel`), stage B ✅ (2026-08-08, streaming allocation-free parser, goldens unchanged), stage C ✅ (2026-08-09, feed proven on the board). Stage D written and host-proven 2026-08-10 but **not flashed**: the 64×64 ladder renders in `dc_tests` as a grid of `Ink`, and "stale carries no hue" is a `static_assert`. **The pull-the-Wi-Fi acceptance on the panel is the only thing left in M3**, and it is owner-driven at the bench. |
+| M3 | A+B   | Live Anvil on the panel       | Firmware net task (TLS WS, nominated `Origin` header) + render task; engine unchanged from M1; live ladder on the panel; pull-the-Wi-Fi test shows grey stale state then clean resync. | M1, M2 | ☐ **Next** — stages A ✅ (2026-08-07, wait-free `SnapshotChannel`), B ✅ (2026-08-08, streaming allocation-free parser, goldens unchanged), C ✅ (2026-08-09, feed proven on the board), **D ✅ (flashed and long since proven — the 23.6 h soak of 2026-08-15/16 ran the panel continuously; the "not flashed" note this cell carried until 2026-08-16 was stale by a week)**. The transport rewrite is **done and accepted** (owned WS client over esp-tls; 10.9 h on one connection, zero errno-silent deaths, zero framing rejects — brief closed 2026-08-16), the TCP window is rebuilt and is now the default build, and the supervisor recycles a silent socket after five minutes. **What is left for M3's ✅ is exactly one thing: the pull-the-Wi-Fi acceptance on the panel** — grey stale state, then clean resync, photo or video — and it is owner-driven at the bench. Two smaller items are owed but do not gate the tick: the weak-node 1 h soak (transport brief DoD), and the ghosting re-check with `clkphase = false` (`hardware/BRINGUP.md`). *Owner: if the pull-the-Wi-Fi test has already been done, tick this row and mark M4 **Next** — this session had no board and could not check.* |
 | M4 | A     | Kraken adapter                | Delta application + CRC32 verification; dense-window book lands here; Kraken traces + goldens; panel switches venue. | M3 | ☐ |
 | M5 | A     | Binance adapter               | Partial-depth easy mode, then full diff stream with REST-snapshot bracketing and gap recovery; traces + goldens.     | M4 | ☐ |
 | M6 | B     | Carrier PCB                   | KiCad carrier (WROOM-1-N16R8, 2× 74HCT245, HUB75 IDC, USB-C 5 V/3 A with CC pulldowns, bulk caps, EC11); DRC clean; fabbed & bring-up. | M3 | ☐ |
@@ -34,12 +34,27 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
 
 - Anvil-side (lives on Anvil's backlog, cross-referenced only): chaos flag for
   deterministic gap testing; **sequenced incremental L2 feed — promoted 2026-08-11 from
-  a nice-to-have to the thing that makes the hardware work at all.** A 5,744-byte TCP
-  receive window across the measured **87 ms** RTT to `52.204.246.224` (AWS us-east-1)
-  caps the board at **65.5 KiB/s** against Anvil's **110.4 KiB/s** full-book stream, so
-  the panel falls permanently behind — 328 s measured — and no firmware lever reaches it
-  (ARCHITECTURE §9, 2026-08-11). A delta feed at a tenth the bytes fits inside the
-  existing window; the alternative is a rebuilt ESP-IDF. Still must ship a
+  a nice-to-have to the thing that makes the hardware work at all, and still promoted
+  after the firmware side did everything it could.** *Rewritten 2026-08-16: the three
+  claims this bullet used to make — that a 5,744-byte window caps the board at
+  65.5 KiB/s, that no firmware lever reaches it, and that the alternative is a rebuilt
+  ESP-IDF — are all superseded, because the rebuild happened.* `liblwip.a` was rebuilt
+  from the shipped esp-idf v4.4.6 vintage with `TCP_WND` 5744 → 17232 and now ships as the
+  default build, and a 23.6-hour soak says it is load-bearing: **56–87 KiB/s at every hour
+  of the day** (floor 56 mid-morning, ceiling 87 at midnight) against Anvil's
+  110.4 KiB/s wire — 60–80% of it, and most hours *above* the stock window's hard cap. The
+  RX loop is instrumented and exonerated: `wait 0 / read 98–99 / feed 0` in every hour, so
+  the board is bound by how fast bytes come off the wire into it and there is nothing left
+  to optimise on this side. Lag slope fell from +0.57 s/s on every stock-window run to
+  **+0.083 s/s over the final 10.9 h**. **The residual is path bandwidth on the
+  transatlantic hop, and the sized fix is still the delta feed** — a tenth the bytes closes
+  it completely — so this stays promoted; until then the object runs tens of seconds behind
+  at UK peak and honestly says so (ARCHITECTURE §9, 2026-08-16). **New Anvil-side
+  observation, 2026-08-16 00:12:** the WS endpoint went silent mid-stream for **2 min 56 s**
+  on a live TCP connection and then resumed on the same connection, while plain HTTPS to
+  the same host answered 200 in 0.5 s throughout — so the WS server wedged or restarted
+  while the rest of the box was fine. Worth a look at Anvil's WS server, and it gives the
+  heartbeat/keepalive item below a second reason. Still must ship a
   heartbeat/keepalive, or DepthCharge's ~80 ms-republish liveness watchdog false-greys a
   quiet-but-live book (strain 10). DepthCharge is its future test client; feeder realism
   (Hawkes arrivals / mirror mode / FrontierView execution-algo participant); TLS-chain
@@ -56,14 +71,21 @@ M1 and M2 share no dependencies: software sessions and bench time run in paralle
   is a note on their backlog. The downstream rule stands and is now sharper: never assume a
   thinned stream is a fresh one, and M4/M5 delta venues cannot tolerate either shape without
   gap+resync.
-- **DepthCharge: M3 close-out (transport brief closes, docs catch up, Anvil ask rewritten)** — brief written and ready for an Opus session: `docs/briefs/M3-closeout-transport-and-docs.md`. It is the hand-off from the 2026-08-14..16 Fable sessions and supersedes the item below as the next thing to run.
-- **DepthCharge: own the websocket client** — SHIPPED 2026-08-15 (`c52b268`, day-soak proven); brief was
-  (`docs/briefs/M3-transport-own-the-websocket-client.md`). The 2026-08-13 bench convicted
-  `esp_websocket_client` of the recurring socket deaths with labelled evidence (17/17
-  errno-silent, off-by-one framing corruption caught in the act) while a minimal owned
-  client held one socket 3.7 h / 534 MB / zero deaths pinned to the worst node in the
-  house (ARCHITECTURE §9, 2026-08-13; `hardware/bench-2026-08-13-wifi-drop-diagnosis.md`).
-  Independent of, and compatible with, the framework-rebuild lever above.
+- **DepthCharge: M3 close-out (transport brief closes, docs catch up, Anvil ask rewritten)**
+  — DONE 2026-08-16 (`66e2f77`…`79c1867` plus the docs commit):
+  `docs/briefs/M3-closeout-transport-and-docs.md` is executed and its session log is the
+  hand-off. The old client's build arms are deleted, the rebuilt-window framework is the
+  default build, `WsSupervisor` recycles a silent socket after five minutes, and the
+  transport brief's DoD is ticked except the weak-node hour.
+- **DepthCharge: weak-node 1 h soak** — the one transport-brief acceptance bar never run on
+  the final build. Owner-driven at the bench: pin or re-roll the association to a −7x
+  sibling, hold it an hour, and check that the fades grey the panel without killing the
+  socket (board B's `…:F9` record is the comparison). Small, and it is the last thing
+  standing between the transport rewrite and a fully ticked DoD.
+- ~~**DepthCharge: own the websocket client**~~ — SHIPPED. Client landed 2026-08-15
+  (`c52b268`), day-soak proven, and the old client deleted from the tree 2026-08-16
+  (`66e2f77`). Brief: `docs/briefs/M3-transport-own-the-websocket-client.md`, closed with
+  its acceptance numbers in ARCHITECTURE §9 (2026-08-16).
 - DepthCharge: Crucible post — book structures under fire (flat_map vs dense window,
   driven by Anvil's *trend* workload).
 - Optional **live web mirror** of the panel's `DisplaySnapshot` feed (a browser twin of

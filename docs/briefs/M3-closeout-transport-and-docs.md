@@ -2,7 +2,8 @@
 
 **Track:** Agentic (Claude Code, **Opus** — plain `claude` in the terminal, not a Fable
 session; nothing here needs Fable's ceiling and the owner's Fable budget is spent for the
-week) · **Status:** Ready to start · **Size:** one session, ~4 focused parts, none large.
+week) · **Status:** ✅ **Done 2026-08-16** — see the session log at the foot of this file
+· **Size:** one session, ~4 focused parts, none large.
 **Read first:** `CLAUDE.md`, `ARCHITECTURE.md` §6 + the four newest §9 rows (2026-08-13,
 2026-08-14 ×2, 2026-08-16), `docs/briefs/M3-transport-own-the-websocket-client.md` from its
 2026-08-14 session-log entries to the end (five entries — they ARE the hand-off), then this
@@ -137,14 +138,26 @@ The board is off. COM7 is free. Nothing is running.
 
 ## Definition of done
 
-- ☐ Transport brief DoD ticked where the evidence supports it; unticked items named as owed.
-- ☐ espws/nopp arms and `DC_OWNED_WS` deleted; host + firmware green.
-- ☐ Window build is the default `depthcharge` env; provenance comment travels with it.
-- ☐ Silence-recycle in `WsSupervisor` (5 min), host-tested, one commit, §9 row.
-- ☐ ROADMAP: M3 status honest, Anvil backlog bullet rewritten to 2026-08-16 truth.
-- ☐ DESIGN.html: statusbar, transport diagrams, strains 11/14/18 + new path-ceiling strain,
-  status strip.
-- ☐ Session log per protocol; tree clean and green.
+- ☑ Transport brief DoD ticked where the evidence supports it; unticked items named as owed.
+  Six of seven ticked with the log line or commit cited; the weak-node 1 h soak is left
+  unticked and named as the one bar never run on the final build.
+- ☑ espws/nopp arms and `DC_OWNED_WS` deleted; host + firmware green. (`66e2f77` — also
+  `DC_WS_PINGPONG`, `kClientWaitTimeoutMs`, `kClientSelfExitUs` and the two-handle assert.)
+- ☑ Window build is the default `depthcharge` env; provenance comment travels with it —
+  into `[env]` rather than onto one environment, so no arm differs from the daily driver by
+  more than its own flag, and `link-autopsy-wnd` folds away. The comment gained the recovery
+  path for a machine without the package (`79c1867`).
+- ☑ Silence-recycle in `WsSupervisor` (5 min), host-tested, one commit (`e281df9`), §9 row.
+- ☑ ROADMAP: M3 status honest (stage D flashed and soaked; the pull-the-Wi-Fi photo named as
+  the only thing left, and the tick left to the owner), Anvil backlog bullet rewritten to
+  2026-08-16 truth with the new WS-stall observation added.
+- ☑ DESIGN.html: statusbar (hash + line count from HEAD), §01 diagram captions, strains 11
+  and 14 closed, 18 updated with the five confirmed review findings, **19 opened** for the
+  transatlantic path ceiling, the `TCP_RECVMBOX_SIZE` hazard added to §07 where the build is
+  described, §09's change list and the footer. One out-of-scope correction taken because it
+  contradicted the constitution: §05 still asserted that Anvil *sheds* to a slow consumer,
+  which ARCHITECTURE §9 withdrew on 2026-08-11.
+- ☑ Session log per protocol; tree clean and green.
 
 ## Out of scope
 
@@ -153,3 +166,83 @@ carrier board. Re-testing the ghosting on the panel (owner, at the bench: with c
 false, is the header speckle gone, and did the green right-edge dots go with it — the
 answer decides whether M6 still owes the display side anything; record it in
 `hardware/BRINGUP.md`).
+
+## Session log
+
+### 2026-08-16 · Claude Opus 5 · executed; M3 has one owner-driven thing left
+
+**Done.** All four deliverables. Five commits on `m3/stage-d-the-panel`:
+
+| commit | what |
+| --- | --- |
+| `66e2f77` | the old client's arms come out; the window build becomes the build |
+| `e281df9` | the supervisor recycles a silent socket after five minutes |
+| `447522a` | one fake slot pool; the SPLIT@ test calls the reject log's own scanner |
+| `79c1867` | one spelling of "silent"; the window build's costs written down |
+| *(this)* | ARCHITECTURE §9 ×2, both briefs, ROADMAP, DESIGN.html |
+
+No board was used. The object was off and COM7 free throughout; every claim about the
+hardware is read out of committed logs.
+
+**Decisions, with why.**
+
+1. **The five-boot acceptance is ticked on sixteen boots.** Every boot from 2026-08-14
+   onward joined `EE:D3:62:AE:81:9A` at −39…−47 dBm against siblings at −64…−86, and each
+   boot's `wifi up: bssid=` line confirms the association landed where its own scan pointed.
+   The bar is relative by the brief's own instruction, and it is met by a wide margin.
+2. **The weak-node hour is left unticked.** The day soak contains weak-sibling readings but
+   the board was never *pinned* to one on the final build, so there is no controlled arm.
+   Calling that an acceptance would be precisely the "measurement that answers a nearby
+   question" §9 has now convicted four times.
+3. **`platform_packages` went to `[env]`, not to `[env:depthcharge]`** as the brief
+   suggested. Every other environment here exists to be compared against the daily driver,
+   and an arm that differs in the framework as well as in its one flag is not a controlled
+   arm — `link-autopsy` in particular measures raw stack throughput, which is the one number
+   the window changes. The cost is real and is now written into `platformio.ini` beside the
+   rationale: no firmware env builds without the local package, and there are two documented
+   ways out (rebuild it, or drop the two lines and accept the 65.5 KiB/s cap).
+4. **`depthcharge-ping` survives, flagged.** Its question is closed by the silence recycle,
+   which needs no server cooperation; the brief scoped the deletions to the *old client's*
+   arms and this is not one. Deleting it is a one-line owner call, noted in `platformio.ini`,
+   `ws_transport.hpp` and DESIGN strain 18.
+5. **`M3`'s row is not ticked, and the ROADMAP says why.** The DoD is the pull-the-Wi-Fi
+   acceptance on the panel; this session had no board and cannot know whether the owner has
+   already done it. The row asks, per the brief's "ask via the session log, do not assume".
+   If it is done: tick M3 and mark M4 **Next**.
+6. **One out-of-scope DESIGN correction taken.** §05 still stated that Anvil sheds to a slow
+   consumer. ARCHITECTURE §9 withdrew that on 2026-08-11 (it queues; only freshness against
+   a reference clock can tell the two apart). DESIGN loses to the constitution on any
+   disagreement, so leaving it would have been leaving a known-false claim in the document
+   whose whole premise is that it is believed. Struck through with the correction beside it,
+   per §9's own rule about not deleting the reasoning.
+
+**The review found two real defects before any of this landed**, both in the silence
+recycle, both fixed and both recorded in §9 because the reasoning generalises: the RX task
+was trusting what a request flag *implied* about its own provenance (a slow-but-successful
+connect falsifies it, and the first draft would have torn down a healthy socket inside one
+read timeout), and the recycle's label was latched at the outage rather than read live (so
+every retry after one would have printed "socket up but silent" over a socket that was
+gone). The remaining review items are also cleared: `socket_is_silent()` is now one
+`constexpr` function both cores call and both are host-tested through, a 200k-poll property
+walk asserts the policy's two invariants over an arbitrary input trace, and `autopsy()`
+records that `deaths_` now counts a socket end this firmware chose.
+
+**Measured.** Host 11/11, 250 doctest cases / 829,925 assertions in `dc_tests`, 46/46 in
+`dc_tests_streaming`. Firmware: all five environments build; `depthcharge` is
+141,888 B RAM / 874,597 B flash, **+160 B RAM / +1,876 B flash** against the 2026-08-14
+owned arm.
+
+**Owed, in priority order.**
+
+1. **The pull-the-Wi-Fi acceptance** — grey stale state, then clean resync, photographed.
+   Owner, at the bench. It is the whole of M3's remaining DoD.
+2. **The weak-node 1 h soak** — the transport brief's last unticked bar. Pin or re-roll to a
+   −7x sibling for an hour; fades may grey, nothing may die.
+3. **The ghosting re-check** with `clkphase = false` — is the header speckle gone, and did
+   the green right-edge dots go with it? The answer decides whether M6 still owes the
+   display side anything. Record in `hardware/BRINGUP.md`.
+
+None of the three is agentic work. **The next agentic milestone is M4, the Kraken adapter**,
+and it inherits one sizing input from this session: a venue's byte rate is a design input,
+and Kraken's full-depth stream is larger than Anvil's against a path that already runs at
+60–80% of the wire (DESIGN strain 19).
