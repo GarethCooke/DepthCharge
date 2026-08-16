@@ -3,9 +3,11 @@ DepthCharge vendored snapshot of Anvil's wire protocol.
 
   Wire version : 1
   Source       : Anvil repo, PROTOCOL.md
-  Source commit: b4d31c207b16627f19f22209c2b4a63de904f4de  (2026-08-16)
-  Vendored on  : 2026-08-16  (A7 integration + the A1-A7 hand-back)
-  Supersedes   : e8d313f2dc71bc39adeb66c0e30a35cdfdcaa13e  (2026-07-26),
+  Source commit: 04db61225aad7c471c7c6b98def99f93f5a8d79f  (2026-08-16)
+  Vendored on  : 2026-08-16  (B1 — re-pinned the same evening, see below)
+  Supersedes   : b4d31c207b16627f19f22209c2b4a63de904f4de  (2026-08-16),
+                 vendored hours earlier at the A7 integration
+                 e8d313f2dc71bc39adeb66c0e30a35cdfdcaa13e  (2026-07-26),
                  vendored 2026-08-16 at the M3 close-out
                  d501652e7b205e36e0c9e647ef3e720559e9f82d  (2026-07-07),
                  vendored 2026-07-23 at M0
@@ -41,6 +43,36 @@ trivially in contract. No field, type, name, unit, frame shape or handshake
 behaviour changed; `depth` only ever truncates a prefix of an already-sorted
 ladder. What DID change is one firmware constant (`kAnvilPath` gains
 `&depth=27`) and one new committed trace.
+
+NOTE (B1, 2026-08-16) — A SEMANTIC WIRE CHANGE INSIDE WIRE VERSION 1, WITH NO
+VERSION BUMP, AND DEPTHCHARGE IS UNAFFECTED — CHECKED, NOT ASSUMED.
+
+The `summary` row's `last` was the **book mid** `(bestBid+bestAsk)/2`; it is now
+the ticker's **last traded price** (Anvil `864ee2f`, backlog B1). The wire SHAPE
+is unchanged — same key, same JSON *string* type, same `""` sentinel — so §1's
+version does not bump. Only the meaning moved: `""` now means *this ticker has
+not traded yet* rather than *the book is empty*, and once set the value
+**persists after the book empties**.
+
+Anvil's own note says the clients that must care are those that "reasoned about
+it as a mid — deriving a spread from it, or assuming a price exists whenever the
+book is two-sided". **DepthCharge does neither, and the reason is structural
+rather than lucky:** `AnvilAdapter` files `summary` under
+`FrameKind::Summary -> ++stats_.summary_ignored` and returns
+(`anvil_adapter.hpp`), so no field of a summary frame has ever reached the book,
+the ladder or the panel. The one thing this project *does* derive from `summary`
+is its **arrival count as a 2 Hz clock** (`staleness.hpp`), and B1 changes a
+value, not a cadence. So: no engine change, no firmware change, no golden moves,
+and the committed traces stay valid.
+
+**Two things to carry forward anyway.** (1) This is the first change Anvil has
+made to the wire's *meaning* without changing its *shape*, which is precisely the
+class a schema check cannot catch and a re-pin can — the argument for re-vendoring
+on a schedule, made again eight hours after the last time this header made it.
+(2) M7's board mode is the milestone that will finally read `summary`, and it
+should read `last` as a **traded price with a persistence rule**, not as a mid;
+a board built on the old meaning would show a stale-looking price on an empty
+book and be right to.
 
 NOTE (A7, 2026-08-16) — DEPTH IS SERVED IN TIERS, AND THIS IS THE ONE CONTRACT
 FACT A READER OF §3 MUST NOT SKIM. A request rounds **UP** to the next supported
@@ -156,6 +188,17 @@ Any change here must land in both bindings in the same commit. A breaking change
 bumps **wire version** (surfaced by `GET /api/health` so a client can detect a
 mismatch on connect).
 
+**Semantic change within wire version `1` — no bump, no client change.** The summary
+row's `last` was the **book mid** `(bestBid+bestAsk)/2`; it is now the ticker's **last
+traded price** ([`GET /api/summary`](#get-apisummary), [§3.5](#35-summary)). The wire
+**shape is unchanged** — same `last` key, same JSON *string* type, same `""` sentinel —
+so no client parsing changes and the version does **not** bump. Only the *meaning* of
+the value moved: `""` now means *this ticker has not traded yet* rather than *the book
+is empty*, and once set the price **persists after the book empties**. Clients that
+merely render the string need no edit; clients that *reasoned* about it as a mid
+(deriving a spread from it, or assuming a price exists whenever the book is two-sided)
+do.
+
 > Scope note: this is the *demo* transport — an unauthenticated, single-shared-book
 > "trading floor". The production order-entry gateway (reliable FIX/binary sessions)
 > is a named out-of-scope extension point, not this.
@@ -184,10 +227,11 @@ mismatch on connect).
   global line" note below and [§4 Reconnect](#4-reconnect--idempotency).
 - **Ticker scope:** the protocol is ticker-aware (every book/trade frame names its
   `ticker`). A WebSocket subscribes to **one** ticker (`/ws?ticker=`) and receives
-  that ticker's `snapshot`/`book`/`trade`; the cross-ticker `summary` frame (§3.5)
-  goes to **every** socket regardless. Switching ticker = reconnect with a new
-  `?ticker=`. (Phase 8 made this real across feeder + server + UI; the wire shapes
-  for `snapshot`/`book`/`trade` were already ticker-scoped and did not change.)
+  that ticker's `snapshot`/`book`/`trade`; the cross-ticker `summary` frame
+  ([§3.5](#35-summary)) goes to **every** socket regardless. Switching ticker =
+  reconnect with a new `?ticker=`. (Phase 8 made this real across feeder + server +
+  UI; the wire shapes for `snapshot`/`book`/`trade` were already ticker-scoped and
+  did not change.)
 - **`seq` is a single global line.** One engine-thread counter stamps every frame —
   trades, books and the summary across all tickers — so a socket subscribed to one
   ticker sees a *sparse* subsequence of `seq` (the gaps belong to other tickers'
@@ -247,10 +291,10 @@ than an error, and a negative or unparseable value is treated as absent.
 
 ### `GET /api/summary`
 
-Cross-ticker roster one-shot (Phase 8): the resting-buy / resting-sell totals and a
-`last` (book mid) for **every** ticker, for the initial page load and the summary
-view's first paint. Live updates ride the `summary` WS frame (§3.5). Empty `tickers`
-before the first publish (not a 404).
+Cross-ticker roster one-shot (Phase 8): the resting-buy / resting-sell totals and the
+**last traded price** for **every** ticker, for the initial page load and the summary
+view's first paint. Live updates ride the `summary` WS frame ([§3.5](#35-summary)).
+Empty `tickers` before the first publish (not a 404).
 
 ```json
 { "tickers": [
@@ -264,13 +308,22 @@ before the first publish (not a 404).
 | `ticker`      | number | product id                                           |
 | `restingBuy`  | number | sum of resting qty across **all** bid levels         |
 | `restingSell` | number | sum of resting qty across **all** ask levels         |
-| `last`        | string | book mid as a wire decimal ("10.0098"); "" if empty  |
+| `last`        | string | last **traded** price; `""` until first trade        |
 
 > `restingBuy`/`restingSell` walk **all** levels (a true per-side total), not the
-> top-N snapshot. `last` is the book **mid** `(bestBid+bestAsk)/2` — computed
-> read-side from the book, zero extra engine state (the implementer's-choice
-> alternative to tracking last-trade). Wire-formatted through the engine's
-> `append_price`, so it is a JSON **string** like every other price.
+> top-N snapshot. `last` is the ticker's **last traded price** — the resting (maker)
+> price of the most recent fill, byte-identical to the `price` on the
+> [`trade`](#33-trade) frame that carried it. It is recorded by a `LastTradeSink` tee
+> child on the engine thread (`server/last_trade.hpp`), **not** derived from the book,
+> so the matching core in `src/` stays byte-for-byte unchanged. Wire-formatted through
+> the engine's `append_price`, so it is a JSON **string** like every other price.
+>
+> Two consequences, both deliberate and both different from the book mid this replaced:
+>
+> - `last` is `""` **until a ticker's first trade** — even when the book already has
+>   resting orders on both sides. `""` means *has not traded yet*, **not** *empty book*.
+> - Once set it **persists after the book empties**. A trade is a historical fact,
+>   independent of current book state; the old mid vanished with the book.
 
 ### `POST /api/order`
 
@@ -392,7 +445,9 @@ replay; v1 has no replay buffer, so the server always resyncs by sending a fresh
 `snapshot` regardless of `since`.
 
 On connect the server sends exactly one **`snapshot`** (establishing the `seq`
-baseline and the full visible book), then streams `book` and `trade` frames live.
+baseline and the full visible book), immediately followed by one **`summary`**
+([§3.5](#35-summary)) seeding the cross-ticker roster, then streams `book`, `trade`
+and `summary` frames live.
 
 #### `depth` — per-socket book depth
 
@@ -601,6 +656,38 @@ when absent.
 | `message` | string | human-readable reason (an engine reason string forwards here) |
 | `raw`     | string | offending input line, if any (omitted when absent)        |
 | `ticker`  | number | ticker scope, if any (omitted when absent)                |
+
+### 3.5 `summary`
+
+The cross-ticker roster, delivered to **every** socket regardless of which ticker it
+subscribes to ([§1](#1-conventions)): once on connect — right after the `snapshot`, so
+a socket can paint its roster without waiting out a cadence tick — and thereafter on
+the slow `ANVIL_SUMMARY_HZ` cadence. Coalesced like `book`: each frame carries the
+current state of the whole roster, so applying one is an idempotent **full replace** of
+the client's roster view — never a delta.
+[`GET /api/summary`](#get-apisummary) returns the same rows without the `type`/`seq`
+envelope, for the first paint before the stream opens.
+
+```json
+{"type":"summary","seq":12,"tickers":[{"ticker":101,"restingBuy":1820,"restingSell":1640,"last":"10.0098"},{"ticker":102,"restingBuy":900,"restingSell":1200,"last":""}]}
+```
+
+| Field                   | Type           | Meaning                                       |
+| ----------------------- | -------------- | --------------------------------------------- |
+| `seq`                   | number         | global engine-thread stamp, not per-socket    |
+| `tickers`               | `SummaryRow[]` | one row per roster ticker                     |
+| `tickers[].ticker`      | number         | product id                                    |
+| `tickers[].restingBuy`  | number         | sum of resting qty across **all** bid levels  |
+| `tickers[].restingSell` | number         | sum of resting qty across **all** ask levels  |
+| `tickers[].last`        | string         | last **traded** price; `""` until first trade |
+
+> `last` is the ticker's **last traded price**, identical in meaning and formatting to
+> the REST surface — see [`GET /api/summary`](#get-apisummary) for the full semantics.
+> In short: it is the resting (maker) price of that ticker's most recent fill, it is
+> `""` until the ticker's **first** trade (a two-sided book that has never traded still
+> reports nothing), and it **persists after the book empties**. It is *not* a book mid,
+> and it is not derived from the book at all — the server records it off the engine's
+> fill stream.
 
 ---
 

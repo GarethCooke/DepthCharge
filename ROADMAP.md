@@ -57,10 +57,30 @@ around these IDs, and one item is new (**A2b**). Both sides now cite the same le
 | A1  | Sequenced incremental L2 feed   | ☐ Sized, not started — **and A3 pt 2 must be decided first**  |
 | A4  | Chaos flag for gap testing      | ☐ Open; near-required alongside A1                            |
 | A5  | Feeder realism                  | ☐ Open; nothing here is blocked on it                         |
+| B1  | `summary.last` = traded price   | ✅ **DONE Anvil-side** — semantic change, **no action here**   |
 
 **Nothing on this side is blocked on Anvil any more.** The two integration tasks the hand-back
 asked for are both done: `&depth=27` is in `kAnvilPath`, and `docs/vendor/anvil-protocol.md` is
-re-pinned at `b4d31c2`.
+re-pinned — now at **`04db612`**, not the hand-back's `b4d31c2`, because Anvil landed **B1** the
+same evening (below).
+
+**B1 · `summary.last` is a traded price, not the book mid.** *Anvil `864ee2f`/`04db612`, found by
+checking their repo rather than by being told.* A **semantic** change inside wire version 1 with
+**no version bump**, which is the class a shape check cannot catch: same key, same JSON string
+type, same `""` sentinel — but `""` now means *this ticker has not traded yet* rather than *the
+book is empty*, and the value **persists after the book empties**.
+
+- **No action here, and it is structural rather than lucky.** `AnvilAdapter` files `summary` under
+  `FrameKind::Summary → ++stats_.summary_ignored` and returns, so no field of a summary frame has
+  ever reached the book, the ladder or the panel. The only thing this project derives from
+  `summary` is its **arrival count as a 2 Hz clock** (`staleness.hpp`), and B1 moves a value, not
+  a cadence. No engine change, no firmware change, no golden moves.
+- **M7 is the milestone that will care.** The board mode is what finally *reads* `summary`, and it
+  must treat `last` as a traded price with a persistence rule, not as a mid — a board built on the
+  old meaning would show a price on an empty book and be correct to.
+- **The lesson repeats within eight hours:** the vendored header already argued for re-vendoring
+  *on a schedule rather than on a symptom*, having sat three weeks stale once. It was stale again
+  by the same evening. Worth a standing check rather than a resolution.
 
 The detail below runs in ID order **except A7, which comes first because it was the cheapest
 item here and the largest win** — and it is now closed.
