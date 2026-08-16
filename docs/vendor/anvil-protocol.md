@@ -3,44 +3,88 @@ DepthCharge vendored snapshot of Anvil's wire protocol.
 
   Wire version : 1
   Source       : Anvil repo, PROTOCOL.md
-  Source commit: d501652e7b205e36e0c9e647ef3e720559e9f82d  (2026-07-07)
-  Vendored on  : 2026-07-23  (DepthCharge M0)
+  Source commit: e8d313f2dc71bc39adeb66c0e30a35cdfdcaa13e  (2026-07-26)
+  Vendored on  : 2026-08-16  (M3 close-out follow-on)
+  Supersedes   : d501652e7b205e36e0c9e647ef3e720559e9f82d  (2026-07-07),
+                 vendored 2026-07-23 at M0
 
 Canonical source remains the Anvil repository; this pinned copy records exactly
 what DepthCharge was built against. Do not edit here — re-vendor from Anvil to
 update, and bump the commit/date above. See ARCHITECTURE.md "Boundaries".
 
-NOTE (M0 finding): §1/§4's "monotonic seq" is not what the deployed server does
-in practice — the wire seq is a single global counter and is non-monotonic in a
-single ticker's received subsequence. See harness/replay/NOTES.md.
+WHAT MOVED IN THIS RE-PIN, AND WHY NOTHING IN engine/ MOVES WITH IT.
+Exactly one Anvil commit touched PROTOCOL.md between the two pins — `e8d313f`,
+"reconcile PROTOCOL.md `seq`" — and it is documentation only: §1's "single global
+line" note, the Envelope note, §3.1's description of the `seq` field, §3.4 and §4.
+No field, type, name, unit, frame shape, endpoint or handshake behaviour changed.
+No adapter, trace, golden or firmware constant is affected by the re-pin; the
+three notes below are what actually needed correcting, and two of them close.
 
-NOTE (M3, 2026-08-09): §3 documents no per-socket shedding, and the deployed
-server does it — `book` frames are coalesced per socket, so a slow consumer
-receives proportionally fewer messages at an unchanged inter-frame cadence
-rather than a queue of stale ones (measured: 16.95/s at full drain, 8.32/s at a
-120 ms drain, 4.01/s at 250 ms, worst gap 156/125/266 ms respectively). Lossless
-for this venue because §3.2 book frames are idempotent full replaces; NOT
-lossless for a delta venue, so M4/M5 must not copy the assumption. On the ROADMAP
-backlog to be documented Anvil-side.
+NOTE (M0, 2026-07-23) — CLOSED. This header used to say that §1/§4's "monotonic
+seq" was not what the deployed server does, the wire `seq` being a single global
+counter that is non-monotonic within one ticker's subsequence. **Anvil fixed the
+document on 2026-07-26** (`e8d313f`, brief:
+`Anvil/docs/briefs/anvil-protocol-seq-reconciliation.md`, raised by this finding)
+and the text below now says it directly, in §1 and §4, going further than the ask:
+§4 additionally states that ring-overflow loss is not signalled on the wire at all
+in v1. The correction stopped being DepthCharge's to carry three weeks before this
+re-pin; that it sat here unnoticed is the argument for re-vendoring on a schedule
+rather than on a symptom. Background: `harness/replay/NOTES.md`.
 
-NOTE (M3, 2026-08-10) — ON CONNECT, AND WHAT IS *NOT* YET A PROTOCOL CLAIM.
-What §3's handshake says is confirmed: the server sends exactly one `snapshot`
-first, and the cross-ticker `summary` follows immediately.
+NOTE (M3, 2026-08-09) — **WITHDRAWN 2026-08-11.** This header used to assert that
+the deployed server sheds to a slow consumer — `book` frames coalesced per socket,
+a slow consumer receiving proportionally fewer messages at an unchanged inter-frame
+cadence rather than a queue of stale ones. That conclusion is retracted
+(ARCHITECTURE §9, 2026-08-11). It rested on a rate-and-gap measurement, **and a
+measurement of rate or of inter-message gap cannot distinguish a shed stream from a
+queued one.** The numbers under it (16.95/s at full drain, 8.32/s at a 120 ms
+drain, 4.01/s at 250 ms) are all still true; the sentence written under them was
+not. Replaced by the note below.
 
-The DepthCharge firmware separately rejects ~85% of the frames arriving in the
-first ~60 s of each connect (~1,281 of them), and that is deliberately NOT
-recorded here as venue behaviour, because the evidence points the other way: a
-desk capture opening at a connect (`anvil_101_baseline_20260809.ndjson`, 1,513
-frames / 90 s) contains no frame this client's parser rejects, and the golden
-pins it. Until the board prints the payloads, the burst is unattributed and most
-likely client-side. The single wire-level hypothesis a capture cannot exclude is
-WebSocket-level FRAGMENTATION — §1 says "one complete JSON object each" per
-frame but does not say unfragmented, the capture tool's library reassembles
-fragments before writing a line, and the firmware's reassembler cannot (this IDF
-vintage does not surface the FIN bit). If the bench shows that is what it is,
-this note becomes a real protocol observation and the fix belongs in
-firmware/src/frame_reassembler.hpp, not in Anvil. See harness/replay/NOTES.md
-"M3 addendum — the connect burst".
+NOTE (M3, 2026-08-11) — WHAT THE DEPLOYED SERVER ACTUALLY DOES TO A SLOW CONSUMER,
+which §3 still does not document. **It queues, without bound.** Measured with
+`tools/anvil_freshness_probe.py` — two sockets from one process, one drained flat
+out and one sleeping 250 ms per message, matched on the wire `seq` so staleness is
+a subtraction against a real clock rather than an inference from a rate: every
+frame kind is thinned by the *same* fraction (`book` 25.5%, `summary` 25.7% of full
+rate — so not per-kind coalescing but a delayed byte stream), and lag rises
+**linearly to 111 s over 150 s with no plateau**, +0.745 s/s measured and +0.745 s/s
+predicted from the drain fraction alone. Implied queue for that one socket at
+disconnect: **~1,746 messages, ≥12.4 MB, still growing** — a floor, because each
+queued frame exists as a copy per subscriber and can be counted twice (posted
+handler, then buffer).
+
+Confirmed in Anvil's own source on 2026-08-16, so this is construction rather than
+weather: `server/ws_registry.hpp`'s `CrowWsSubscriber::deliver()` calls
+`conn.send_text()`, which posts onto the connection's io_context and appends to
+Crow's per-connection `write_buffers_` (`std::vector<std::string>`,
+`server/third_party/crow_all.h`) — no cap, no drop policy and no size test anywhere
+on that path. Keep both halves straight: Anvil **does** coalesce, on its 70 ms
+publish tick, which bounds the **rate** it produces; nothing bounds the **total**
+once a socket stalls. Nor is growth activity-gated — a new `seq` is stamped every
+tick, so a stalled socket accrues ~14 book + ~2 summary frames a second even on a
+completely idle market.
+
+Two consequences that outlive this pin. (1) **Measure freshness against a reference
+clock; never infer it from cadence** — binding on M4/M5, where a stale delta stream
+is not idempotent and cannot be papered over by the next full replace. (2) This
+venue is lossless-but-stale *only* because §3.1/§3.2 frames are idempotent full
+replaces; the delta feed DepthCharge is asking Anvil for (ROADMAP backlog A1) would
+make the same queue lossy, so A1 and A3 have to be answered together.
+See `docs/anvil-handover-2026-08-16.md`.
+
+NOTE (M3, 2026-08-10) — CLOSED 2026-08-15, client-side, and Anvil is exonerated.
+This header used to hold open a single wire-level hypothesis for the board's
+~1,281 parse rejects in the first ~60 s of each connect: §1 says "one complete JSON
+object each" per frame but does not say *unfragmented*, and a capture cannot see
+WebSocket-level fragmentation because the capture tool's library reassembles it
+first. The M3 transport rewrite settled it without needing to know: DepthCharge's
+own client reads the FIN bit off the wire (the old library's reassembler could not,
+and published each fragment separately for the parser to reject), and a day-long
+soak on the rewritten client reports **zero `SPLIT@` rejects and a clean parser**.
+Nothing here becomes a protocol claim. Detail: `harness/replay/NOTES.md` "M3
+addendum — the connect burst", and
+`docs/briefs/M3-transport-own-the-websocket-client.md`.
 -->
 
 # Anvil Demo — Wire Protocol
@@ -80,8 +124,9 @@ mismatch on connect).
 - **Sides** are `"B"` / `"S"`, matching the engine's `AggrSide`.
 - **Order ids** are the raw id strings (`"A001"`), decoded from the engine's packed
   key — same charset/length the engine validates (`[A-Za-z0-9-]`, ≤10).
-- **`seq`** is a per-connection, monotonically increasing sequence number stamped on
-  every server→client frame. See [§4 Reconnect](#4-reconnect--idempotency).
+- **`seq`** is a **single global engine-thread stamp** carried on every server→client
+  frame — *not* a per-connection counter, and not an ordering oracle. See the "single
+  global line" note below and [§4 Reconnect](#4-reconnect--idempotency).
 - **Ticker scope:** the protocol is ticker-aware (every book/trade frame names its
   `ticker`). A WebSocket subscribes to **one** ticker (`/ws?ticker=`) and receives
   that ticker's `snapshot`/`book`/`trade`; the cross-ticker `summary` frame (§3.5)
@@ -91,9 +136,20 @@ mismatch on connect).
 - **`seq` is a single global line.** One engine-thread counter stamps every frame —
   trades, books and the summary across all tickers — so a socket subscribed to one
   ticker sees a *sparse* subsequence of `seq` (the gaps belong to other tickers'
-  frames it never receives). v1 clients apply frames idempotently and do not gap-test,
-  so this is benign; a per-ticker `seq` line is the change if strict gap detection is
-  ever needed.
+  frames it never receives). It can also **step backwards**. The broadcaster delivers
+  from two independent sources and does **not** merge-sort them: the trade ring is
+  drained continuously (each fill stamped at *generation*), while the coalesced
+  book/summary slots are sampled on the ~14 Hz tick (each stamped at *publish*). A
+  frame from either source can therefore be delivered ahead of a lower-`seq` frame
+  still queued on the other — a `book` delivered ahead of a lower-`seq` `trade` still
+  draining from the ring, or a just-drained `trade` delivered ahead of the lower-`seq`
+  `book` that was stamped before it. Both properties make `seq` **unusable for
+  per-ticker gap detection**; clients apply frames idempotently and snapshot-heal, so
+  this is benign. `seq` values are still globally *unique*, so
+  they remain valid as a reconnect watermark and for dedupe (§4) — just never for
+  ordering. A delivery-order per-ticker `seq` (a broadcaster merge-sort, or
+  per-ticker counters) is the change if strict gap detection is ever wanted — no
+  current client needs it.
 
 ---
 
@@ -287,10 +343,13 @@ Every frame is a JSON object with a `type` discriminator and a `seq`:
 > **The v1 WS stream carries `snapshot` / `book` / `trade` only — no `error` frame.**
 > A rejected order's verdict is the `POST /api/order` response, not a broadcast: a
 > shared market-data feed shouldn't carry one participant's input errors to every
-> watcher. Stream-integrity loss (a dropped frame on overflow) is signalled
-> structurally by a gap in `seq` (see [§4](#4-reconnect--idempotency)), not by an
-> error frame. The `error` shape below is retained as a **reserved** type — both
-> bindings still parse it defensively — for the documented override in which the
+> watcher. Stream-integrity loss (a fill dropped on ring overflow) is **not signalled
+> on the wire at all** in v1 — not by an error frame, and not by a detectable `seq`
+> gap, since a single-ticker socket's `seq` subsequence is already sparse and
+> non-monotonic (§1). The book self-heals from the next full-replace `book`/`snapshot`
+> and the trade tape is best-effort; see [§4](#4-reconnect--idempotency). The `error`
+> shape below is retained as a **reserved** type — both bindings still parse it
+> defensively — for the documented override in which the
 > server *deliberately* broadcasts engine rejects (`WsPublishSink::kEmitErrorFrames`).
 
 ### 3.1 `snapshot`
@@ -305,7 +364,7 @@ same shape.
 
 | Field             | Type          | Meaning                                            |
 | ----------------- | ------------- | -------------------------------------------------- |
-| `seq`             | number        | baseline sequence number for this stream           |
+| `seq`             | number        | reconnect-watermark baseline (global stamp — §1)   |
 | `ticker`          | number        | the ticker this book is for                        |
 | `bids`            | `LevelView[]` | top-N levels, **best-first** (highest price first) |
 | `asks`            | `LevelView[]` | top-N levels, **best-first** (lowest price first)  |
@@ -352,8 +411,9 @@ matching semantics.
 
 The v1 WS stream does **not** broadcast `error` frames (see the note under
 [Envelope](#envelope)): a rejected `POST /api/order` is the POST's HTTP response, and
-overflow loss surfaces as a `seq` gap, not a frame. The shape is retained here as a
-**reserved** type — both bindings still parse it — for the documented override in
+overflow loss is not signalled on the wire at all ([§4](#4-reconnect--idempotency)) —
+the `"resync"` code below is reserved for it, not emitted. The shape is retained here
+as a **reserved** type — both bindings still parse it — for the documented override in
 which the server deliberately broadcasts engine rejects
 (`WsPublishSink::kEmitErrorFrames`). When emitted, `raw` and `ticker` are omitted
 when absent.
@@ -373,15 +433,29 @@ when absent.
 
 ## 4. Reconnect & idempotency
 
-- `seq` is per-connection and increments by 1 per frame, starting at the `snapshot`'s
-  `seq`. A client tracks the last `seq` it applied.
-- **Gap detection:** if a received `seq` is not the expected next value, the client
-  has missed a frame → drop local state, reconnect, and take the fresh `snapshot` as
-  the new baseline.
+- `seq` is the **single global engine-thread stamp** of [§1](#1-conventions), not a
+  per-connection counter. A single-ticker socket sees a *sparse and non-monotonic*
+  subsequence, so a client **cannot compute a "next expected `seq`"**. Track the
+  last-applied `seq` only as the reconnect watermark (below), never for ordering.
+- **Recovery is transport-driven, not `seq`-driven.** A reconnect is triggered by the
+  socket closing, **never** by an unexpected `seq`. On reconnect the fresh `snapshot`
+  is the new baseline; discard any buffered frame with `seq ≤` the snapshot's `seq`.
+  Because every `snapshot`/`book` is a full replace, the book self-heals and a missed
+  frame needs no client-side detection.
 - **Idempotent book frames:** `snapshot` and `book` both carry the full top-N, so
   reapplying one is harmless — it is a full replace of the ticker's visible book.
-- **Trade tape:** `trade` frames are append-only, keyed by `seq`; on a reconnect
-  overlap, dedupe by `seq`.
+- **Trade tape:** `trade` frames are append-only; on a reconnect overlap, dedupe by
+  `seq`. This stays valid because `seq` values are globally *unique* even though they
+  do not arrive in order — dedupe is a set membership test, not a comparison.
+- **Ring-overflow loss is not signalled on the wire in v1.** When the engine→broadcaster
+  ring is full the fill is dropped and a server-side `stale` latch is set; the
+  broadcaster clears that latch without emitting anything. There is no `resync` frame,
+  and the resulting `seq` gap is **not** client-detectable (per §1 the subsequence is
+  already sparse and non-monotonic, so a gap is indistinguishable from another
+  ticker's frame). The book is unaffected — the next `book`/`snapshot` is a full
+  replace — and the **trade tape is best-effort**: dropped fills are lost silently. The
+  reserved `error` frame with code `"resync"` ([§3.4](#34-error--reserved-not-emitted-by-the-v1-server))
+  is the wire shape held for making this explicit; the v1 server does not emit it.
 - v1 has no server-side replay buffer; resync = a fresh `snapshot`. A bounded replay
   window keyed by `seq` is a natural later addition that needs no protocol change.
 

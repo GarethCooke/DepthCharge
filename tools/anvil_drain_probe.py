@@ -133,7 +133,7 @@ def probe(url: str, delay_s: float, seconds: float, per_kind: bool,
     mean_b = statistics.mean(sizes)
     print(f"  drain delay {delay_s * 1000:6.0f} ms | {len(times):5d} msgs / {span:5.1f} s "
           f"= {len(times) / span:5.2f} msg/s | mean {mean_b:5.0f} B "
-          f"| {len(times) * mean_b / span / 1024:6.1f} KB/s "
+          f"| {len(times) * mean_b / span / 1024:6.1f} KiB/s "  # binary: divisor is 1024
           f"| gaps p50 {percentile(gaps, 50):6.1f} p99 {percentile(gaps, 99):7.1f} "
           f"max {gaps[-1]:7.1f} ms")
 

@@ -368,3 +368,68 @@ M3's did, almost by accident, and it was the only thing that caught a defect mak
 unusable after any Wi-Fi interruption (strain 20).
 
 MP stage 2 (real hardware photos/video on the portfolio) is ungated by this tick.
+
+### 2026-08-16 (evening) · Claude Opus 5 · the Anvil ask, executed — and it turned out to be a different ask
+
+Follow-on to deliverable 4 of this brief ("rewrite the Anvil-side backlog bullet"), which
+rewrote it *here* but never got it to Anvil. Doing that properly meant reading Anvil's tree,
+and that changed the ask.
+
+**Done.**
+
+- **`docs/anvil-handover-2026-08-16.md`** — the ask as a document an Anvil session can act on,
+  with evidence and Anvil-side file references. ROADMAP's backlog table is now its index.
+- **The vendored protocol is re-pinned** — `docs/vendor/anvil-protocol.md` moves
+  `d501652` (2026-07-07) → `e8d313f` (2026-07-26). **Anvil fixed the `seq` contradiction three
+  weeks ago** in response to M0's finding and nobody here noticed, so the pin was stale and
+  its header still carried a correction Anvil had already made. Verified doc-only: exactly one
+  commit touched `PROTOCOL.md` between the pins, no field, type, shape or endpoint moved, so
+  no adapter, trace or golden is affected.
+- **The withdrawn shedding claim is gone from the last two places it survived** — the vendored
+  header, and a DESIGN §07 paragraph the close-out's §05 fix did not reach.
+- **`tools/anvil_frame_economics.py`** — new, and the reason the ask changed.
+- ROADMAP: **A7** added and put first; A1 demoted; A3 closed as a question; A2 halved; A6
+  sharpened; **D5** added. ARCHITECTURE §9 row; DESIGN strain 19 rewritten.
+
+**Decisions, with why.**
+
+1. **A7 goes ahead of A1, and A1 stops being blocking.** `book` frames are 98% of Anvil's wire
+   at ~8.4 KB and ~205 levels; a median of *one* level changes between consecutive frames; the
+   panel renders 27 a side. Truncating to what it renders is 27.8% of the stream — ~31 KiB/s
+   against a measured floor of 56 — and `GET /api/book` already takes `depth`. The delta feed
+   is 1.3% and still the better design, but it is no longer the cheap fix, and this project
+   spent a milestone calling it the thing that makes the hardware work at all.
+2. **The A2 ask is halved rather than pressed.** Crow answers client pings with pongs already,
+   and queues them behind a backlog — so the liveness signal is ours to take (D5) and Anvil
+   owes a sentence, not a feature.
+3. **The 2m56s stall is downgraded to an observation.** The old wording said the WS server
+   "wedged"; HTTPS succeeding on a *different* connection cannot establish that. nginx is
+   excluded on its timeouts; beyond that the evidence does not separate a server stall from one
+   flow in RTO backoff, and the note says so.
+4. **The hand-over admits the bad note.** DepthCharge put the withdrawn shedding claim on
+   Anvil's backlog and left it there for a week; the document says so in its own voice rather
+   than quietly replacing it. It also stops calling that bullet "wrong": only its central
+   clause was withdrawn — the ~8.3 msg/s measurement and the "a delta feed cannot be lossless"
+   sentence both stand, and the second is the reason A1 asks for deltas *alongside* the
+   full-replace `book` rather than instead of it.
+5. **Every load-bearing claim was verified against source before the document was called
+   done**, by an adversarial pass told to default to REFUTED. Eight claims: one CONFIRMED
+   outright (the unbounded queue), one CONFIRMED with the re-pin proven wire-safe, and six
+   returned corrections that are now in the text. **The one that mattered was DepthCharge being
+   wrong about DepthCharge:** the draft said the board "cannot use the ESP-IDF cert bundle —
+   `WiFiClientSecure` exposes `cert_pem` and nothing else", which was true of the *old*
+   transport and **died with the rewrite this brief shipped**. `ws_transport.cpp` builds an
+   `esp_tls_cfg_t` by hand, `crt_bundle_attach` is right there, and the framework ships the
+   200-cert bundle with X1 inside it. Sent as written, A6 would have collapsed on a one-line
+   reply. The general lesson is the milestone's own, again: **a constraint recorded when it was
+   true does not expire on its own** — `anvil_root_ca.hpp`'s header still asserts it, and that
+   is now on the backlog under A6. Other corrections folded in: the ping/pong measures the
+   *write-path backlog*, not end-to-end freshness (it is blind to producer-side lag); the nginx
+   exclusion now leads with symptom-in-kind rather than a template that only has a `listen 80`
+   block; the A1 baseline claim was backwards on the race that matters to a delta client; and
+   "~1 MB of RAM" / "on the feed since 2026-07" were both unsupported.
+
+**Not done / next.** Nothing has been given to Anvil yet — the hand-over is written, not sent.
+No commit made; the tree is dirty with the six files above and ctest is green. M4 is still
+**Next**, and it inherits one more rule than it did this morning (§9, 2026-08-16 eve): size
+the bytes you will *render*, not the bytes the venue offers.

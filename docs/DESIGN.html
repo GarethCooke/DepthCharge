@@ -1191,12 +1191,19 @@ stateDiagram-v2
     in twenty minutes and 5.3× above p99.9, on three times M1's sample.
   </p>
   <p>
-    The board's low message rate is real, and it is backpressure rather than cadence:
-    <b>Anvil sheds to a slow consumer, and sheds evenly.</b> A client deliberately
-    throttled to a quarter of the server's rate receives 4× fewer messages and is still
-    never silent longer than one drain interval, because <code>book</code> frames are
-    coalesced per socket — a backed-up socket gets the newest book on the next tick it can
-    accept, not a queue of stale ones. Throttle a desk socket to the board's own
+    The board's low message rate is real, and it is backpressure rather than cadence.
+    <b>Corrected 2026-08-11 (this paragraph caught up 2026-08-16):</b> this used to read
+    <s>Anvil sheds to a slow consumer, and sheds evenly</s> — it does not.
+    <b>Anvil queues, without bound</b>, and the conclusion below survives the correction
+    intact, because a queued stream is <em>regular</em>: a client throttled to a quarter of
+    the server's rate receives every frame, late, delivered at its own drain cadence, so it
+    is still never silent longer than one drain interval. Confirmed in Anvil's own source and
+    measured by seq-matching against a reference clock rather than by cadence (strain 17). The
+    distinction to keep straight, because both halves are true: Anvil <em>does</em> coalesce —
+    on its 70 ms publish tick, which bounds the <b>rate</b> it produces — and its per-socket
+    send queue (Crow's <code>write_buffers_</code>) has no cap and no drop, so nothing bounds
+    the <b>total</b> once a socket stalls.
+    Throttle a desk socket to the board's own
     8.30 msg/s and measure it under the board's own book-event rule and the worst silence
     is <b>594 ms</b>, with zero watchdog trips in four minutes; the board shows
     <b>2,461 ms</b>. So the multi-second holes are board-side and the watchdog is
@@ -2508,15 +2515,31 @@ classDiagram
       on every stock-window run.
     </p>
     <p>
-      <b>Two levers remain and only one of them exists.</b> Anvil's sequenced incremental L2
-      feed — a tenth the bytes — fits inside today's window with room to spare and closes this
-      completely; it is on Anvil's backlog and Anvil is not modified from here. On the
-      DepthCharge side there is <em>nothing</em>: the window is already 12 × MSS,
-      <code>CONFIG_LWIP_TCP_RECVMBOX_SIZE</code> cannot follow it up (see §07), window scaling
-      is compiled out of this vintage, and the read loop is io-bound at <code>feed 0%</code>.
-      Until the venue changes, the object runs tens of seconds to minutes behind at UK peak
-      <em>and says so</em>, which is invariant #5 doing exactly its job — the panel is honest
-      about age even when it cannot fix it.
+      <b>Every lever left is on the venue's side, and there is <em>nothing</em> on this one:</b>
+      the window is already 12 × MSS, <code>CONFIG_LWIP_TCP_RECVMBOX_SIZE</code> cannot follow
+      it up (see §07), window scaling is compiled out of this vintage, and the read loop is
+      io-bound at <code>feed 0%</code>. Until the venue changes, the object runs tens of seconds
+      to minutes behind at UK peak <em>and says so</em>, which is invariant #5 doing exactly its
+      job — the panel is honest about age even when it cannot fix it.
+    </p>
+    <p>
+      <b>Added 2026-08-16 — what is actually crossing the Atlantic, which reorders the ask.</b>
+      Both committed captures, priced by <code>tools/anvil_frame_economics.py</code>:
+      <code>book</code> frames are <b>98% of Anvil's wire</b> at a mean <b>8,428 bytes</b>, and
+      each carries <b>~205 levels</b> — <code>ANVIL_BOOK_DEPTH</code> defaults to "all resting
+      levels", deliberately, for the web client's scrollable ladder. <b>This object renders 27 a
+      side</b> (§05) and discards the rest. And between consecutive frames a <b>median of one
+      level changes</b> (mean 1.1, p99 3, max 4 over 90 s), so ~99% of every frame is a
+      retransmission of levels that did not move. Two consequences. <b>(1)</b> The sized fix is
+      no longer the delta feed but a <code>depth</code> parameter on <code>/ws</code>: truncated
+      to 27 a side the whole stream falls to <b>27.8%</b> of its size — 110.4 KiB/s becomes
+      <b>~31 KiB/s</b>, inside the soak's <em>worst</em> hour (56) with 2× headroom, with no
+      protocol redesign at all. The delta feed is 1.3% and remains the better answer, but it is
+      no longer the <em>cheap</em> one. <b>(2)</b> "Size the venue's byte rate before writing the
+      adapter" now has a sharper form for M4/M5: <b>size the bytes you will actually render,</b>
+      and ask the venue for those, before concluding the path is the constraint. Kraken's
+      subscription takes a depth; Binance's stream name encodes one. The ask is
+      <code>docs/anvil-handover-2026-08-16.md</code> (ROADMAP A7).
     </p>
     <p>
       The card exists because this is the first constraint in the project that is neither a

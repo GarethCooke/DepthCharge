@@ -42,18 +42,58 @@ where there is evidence to carry. Closed items move to the bottom rather than be
 Anvil; each is a note of what DepthCharge is waiting on, working around, or has measured
 from the outside. They live on Anvil's own backlog.
 
-| ID | Item                            | Standing                                      |
-| -- | ------------------------------- | --------------------------------------------- |
-| A1 | Sequenced incremental L2 feed   | **Promoted** — makes the hardware work at all |
-| A2 | Heartbeat / keepalive           | Needed — two independent reasons              |
-| A3 | Per-socket send-queue behaviour | Open question; document in `PROTOCOL.md`      |
-| A4 | Chaos flag for gap testing      | Nice-to-have                                  |
-| A5 | Feeder realism                  | Nice-to-have                                  |
-| A6 | TLS-chain rotation              | Lock-step dependency; no action yet           |
+**The hand-over document is [`docs/anvil-handover-2026-08-16.md`](docs/anvil-handover-2026-08-16.md)**
+— these items written for an Anvil session, with the evidence and the file-level detail. Give
+it to an Anvil CC; keep this table as the index. Anvil's own backlog is one bullet at the tail
+of its `docs/anvil-plan.md`, and its claim is the one this repo withdrew (A3), so the first
+thing the hand-over asks for is that the section be rebuilt around these IDs.
 
-**A1 · Sequenced incremental L2 feed.** Promoted 2026-08-11 from a nice-to-have to the thing
-that makes the hardware work at all — and *still* promoted after the firmware side did
-everything it could. A tenth the bytes closes the gap completely.
+| ID | Item                            | Standing                                                          |
+| -- | ------------------------------- | ----------------------------------------------------------------- |
+| A7 | `depth` parameter on `/ws`      | **Do first** — cheapest, and it closes the staleness gap outright |
+| A1 | Sequenced incremental L2 feed   | Right long-term; **no longer blocking** if A7 lands               |
+| A2 | Heartbeat / keepalive           | Mostly answerable on this side — see D5                           |
+| A3 | Per-socket send-queue behaviour | **Unbounded** — answered by Anvil's source; document it           |
+| A4 | Chaos flag for gap testing      | Nice-to-have; near-required alongside A1                          |
+| A5 | Feeder realism                  | Nice-to-have                                                      |
+| A6 | TLS-chain rotation              | Lock-step dependency; a one-line ask, worth now                   |
+
+The detail below runs in ID order **except A7, which comes first because it is both the
+cheapest item here and the largest win** — measured 2026-08-16, and it demoted A1.
+
+**A7 · A `depth` parameter on `/ws`** — `?ticker=101&depth=32`, truncating that socket's
+`snapshot`/`book` frames; default unchanged so the web client is untouched.
+
+- **Measured 2026-08-16** across both committed captures (`tools/anvil_frame_economics.py`,
+  written for this): `book` frames are **98% of Anvil's wire** at a mean **8,428 bytes**, and
+  they carry **~205 levels** — `ANVIL_BOOK_DEPTH` defaults to 0, "all resting levels", which is
+  deliberate for the web client's scrollable ladder. **DepthCharge renders 27 a side and
+  discards the rest.**
+- **Truncated to 27/side the whole stream falls to 27.8% of its current size — 110.4 KiB/s
+  becomes ~31 KiB/s**, against the soak's measured floor of 56 KiB/s. It fits inside the *worst*
+  hour of the day with ~2× headroom, with no protocol redesign, no sequencing and no resync.
+- `GET /api/book?ticker=&depth=` already takes exactly this parameter, and `/ws`'s `onaccept`
+  already parses `?ticker=` out of the upgrade — so the concept, the name and the plumbing all
+  exist. The one real design question is Anvil's: per-socket depth breaks the
+  serialise-once-fan-out-to-all path (answer: serialise once per distinct depth in use).
+- **Nothing in `engine/` changes to consume it** — the adapter takes 83–126 levels/side today
+  and truncates above `kMaxSnapshotLevels`; shallower is trivially in contract. New traces and
+  goldens would be owed once the wire changes, not before.
+
+**A1 · Sequenced incremental L2 feed.** Promoted 2026-08-11 to the thing that makes the
+hardware work at all; **demoted 2026-08-16 by A7** — a query parameter gets ~80% of the benefit
+for ~2% of the work, so this is no longer blocking and should be judged on its own merits. On
+those it is still the best answer, and the firmware side is still out of levers.
+
+- *Sized 2026-08-16.* "A tenth the bytes" was a 3× under-claim: **a median of one level changes
+  between consecutive `book` frames** (mean 1.1, p99 3, max 4 over 90 s), so an upper-bound
+  delta encoding is **1.3% of current `book` bytes** — against A7's 26.5%.
+- Its load-bearing prerequisite is a **per-ticker monotonic sequence**: the global stamp is
+  sparse *and* non-monotonic per socket by design, and unlike a full replace, a missed delta
+  never heals. PROTOCOL §1 already names this as the change "if strict gap detection is ever
+  wanted". Worth doing first and alone, even if deltas never follow.
+- **It is not Stage 5** and must not wait for it — Stage 5 is binary ITCH over LAN UDP
+  multicast, gated behind Stage 4.
 
 - *Rewritten 2026-08-16.* The three claims this item used to make — that a 5,744-byte window
   caps the board at 65.5 KiB/s, that no firmware lever reaches it, and that the alternative
@@ -67,21 +107,29 @@ everything it could. A tenth the bytes closes the gap completely.
 - **RX loop instrumented and exonerated:** `wait 0 / read 98–99 / feed 0` in every hour, so
   the board is bound by how fast bytes come off the wire into it, and there is nothing left
   to optimise on this side.
-- **Residual is path bandwidth** on the transatlantic hop, and the sized fix is still the
-  delta feed — so this stays promoted. Until then the object runs tens of seconds behind at
-  UK peak and honestly says so (ARCHITECTURE §9, 2026-08-16).
+- **Residual is path bandwidth** on the transatlantic hop. Until a smaller feed exists the
+  object runs tens of seconds behind at UK peak and honestly says so (ARCHITECTURE §9,
+  2026-08-16) — but the *smaller feed* no longer has to be this item. A7 is.
 
-**A2 · Heartbeat / keepalive.** Two independent reasons now.
+**A2 · Heartbeat / keepalive.** Two reasons, and the first one is probably ours.
 
 - Without one, DepthCharge's ~80 ms-republish liveness watchdog false-greys a
-  quiet-but-live book (strain 10).
+  quiet-but-live book (strain 10). **2026-08-16: Crow answers an unsolicited client PING with a
+  PONG with no application code, and the pong cannot overtake anything already queued on that
+  socket** — so a client-side ping measures **the server's write-path backlog for this
+  connection**, which is stronger than TCP liveness and still blind to producer-side lag in the
+  broadcaster. Ours to build (D5); the Anvil half shrinks to "please treat that ordering as a
+  contract, and say so in `PROTOCOL.md`" — they never claimed it, it is stock vendored Crow.
 - **Observed 2026-08-16 00:12:** the WS endpoint went silent mid-stream for **2 min 56 s** on
   a live TCP connection and then resumed on the same connection, while plain HTTPS to the
-  same host answered 200 in 0.5 s throughout — so the WS server wedged or restarted while the
-  rest of the box was fine. Worth a look at Anvil's WS server in its own right.
+  same host answered 200 in 0.5 s throughout. *Attribution corrected 2026-08-16:* the earlier
+  wording here ("so the WS server wedged") over-read it. nginx is excluded (`proxy_read_timeout
+  3600s`), but a healthy HTTPS request on a **different** connection cannot prove *this* flow
+  was healthy, so a server stall and a single transatlantic flow stalling in RTO backoff are
+  not separable from here. One unreproduced observation; worth Anvil's eyes, not a verdict.
 
-**A3 · Per-socket send-queue behaviour.** Document it in `PROTOCOL.md` *and establish whether
-it bounds queue depth.*
+**A3 · Per-socket send-queue behaviour.** *The open question is closed: it queues, without
+bound.* What remains is documenting it, and Anvil's call on whether to bound it.
 
 - The earlier wording here said "coalescing / even backpressure-shedding", on the strength of
   a 2026-08-09 rate-and-gap measurement; that conclusion is **withdrawn**
@@ -91,16 +139,36 @@ it bounds queue depth.*
   **linearly to 111 s over 150 s with no plateau**, implying **~12.4 MB still queued for that
   one socket** and rising. A DepthCharge board on one socket accumulated ~98 s of backlog in
   210 s of uptime.
+- **Confirmed in Anvil's source 2026-08-16**, so it is construction rather than weather:
+  `CrowWsSubscriber::deliver()` → `conn.send_text()` → Crow's per-connection `write_buffers_`,
+  a `std::vector<std::string>` with **no cap, no drop policy and no coalescing** on the path.
+  One socket that stops reading costs the server ~110 KiB/s of RAM for as long as it stays
+  connected.
 - **Downstream rule** — stands, and is now sharper: never assume a thinned stream is a fresh
   one, and M4/M5 delta venues cannot tolerate either shape without gap + resync.
 
-**A4 · Chaos flag** for deterministic gap testing.
+**A4 · Chaos flag** for deterministic gap testing. Near-required if A1 ever happens: a delta
+feed's gap-recovery path cannot be proven without one.
 
 **A5 · Feeder realism** — Hawkes arrivals / mirror mode / FrontierView execution-algo
 participant. DepthCharge is its future test client.
 
 **A6 · TLS-chain rotation** — a DepthCharge-firmware-pinned dependency: an Anvil CA/chain
-change means a lock-step firmware update.
+change means a lock-step firmware update. *Sharpened 2026-08-16:* the firmware pins **ISRG
+Root X1** as its only anchor and Anvil deploys with certbot behind nginx, so ordinary renewals
+are invisible **so long as the renewed leaf still chains to X1**; a CA move or any shortening
+of the presented chain (there are *two* cross-sign hops, and YE←X2 is the newer) is loud on
+DepthCharge's serial console and silent on Anvil's. **The whole ask is one line in Anvil's
+`deploy/README.md`** — tell DepthCharge before changing CA or chain configuration — or an
+explicit `--preferred-chain`, which survives a certbot default change in a way a README line
+does not.
+
+- **Owed here, found 2026-08-16:** `firmware/src/anvil_root_ca.hpp`'s own header says the
+  ESP-IDF bundle is unreachable because `WiFiClientSecure` offers only `cert_pem`. **That died
+  with the M3 transport rewrite** — `ws_transport.cpp` builds an `esp_tls_cfg_t` by hand, which
+  has `crt_bundle_attach`, and the framework ships `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` with
+  200 certs including X1. The pin is now a *choice*, not a constraint; the comment is stale and
+  should say so, and "switch to the bundle" is a live option worth its own decision.
 
 ### DepthCharge-side
 
@@ -134,6 +202,19 @@ Anvil's *trend* workload.
 *That* would be companion site #4 and trigger the shared-component-repo review. The portfolio
 page itself is scheduled work (MP) inside the portfolio repo and does **not** count toward
 the threshold.
+
+**D5 · Ping the venue instead of waiting on it — the liveness watchdog gets a clock.**
+*[A] — small, host-testable, and it retires most of A2.* **Found 2026-08-16 in Anvil's vendored
+Crow:** an unsolicited client PING is answered with a PONG by the library, no application code
+involved, and the pong goes into the *same* per-connection write queue as data — it **cannot
+overtake frames already queued**, so a round-trip prices the server's write-path backlog for
+this connection. Stronger than TCP liveness, and honestly bounded: it is **blind to
+producer-side lag** (a pong is posted ahead of frames the broadcaster has not handed over yet),
+the ordering is one-sided, and this is read from source, never yet captured under induced
+backpressure — worth a desk experiment before any firmware depends on it. Work: send on a
+cadence from the RX task, feed the round-trip into `SupervisorInput`, and let the panel
+distinguish "quiet book" from "minutes behind". Wants the Anvil half of A2 first, which costs
+Anvil a sentence.
 
 ### Closed
 
