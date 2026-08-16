@@ -72,15 +72,25 @@
 #include "mbedtls/error.h"
 #include "mbedtls/ssl.h"
 
+#include "anvil_endpoint.hpp"
 #include "anvil_root_ca.hpp"
 #include "secrets.h"
 
 using depthcharge::fw::kAnvilRootCaPem;
 
+// THE ENDPOINT IS SHARED NOW, NOT COPIED, and this file is the reason.
+//
+// These two used to be private constants right here, and on 2026-08-16 the
+// shipping firmware's path gained `&depth=27` (backlog A7) while this copy did
+// not. Nothing broke and nothing went red — this tool would simply have
+// subscribed a ~3x heavier stream than the build it exists to be compared
+// against, so its next autopsy would have measured the wrong stream and said so
+// confidently. Found by the bench-acceptance review of that same change.
+using depthcharge::fw::kAnvilHost;
+using depthcharge::fw::kAnvilPath;
+
 namespace {
 
-constexpr char kAnvilHost[]   = "anvil.garethcooke.com";
-constexpr char kAnvilPath[]   = "/ws?ticker=101";
 constexpr char kBulkTlsHost[] = "speed.cloudflare.com";
 constexpr char kBulkTlsPath[] = "/__down?bytes=1000000000";
 constexpr char kBulkTcpHost[] = "ipv4.download.thinkbroadband.com";
