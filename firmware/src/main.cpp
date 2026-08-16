@@ -3,7 +3,7 @@
 // The whole object:
 //
 //   Wi-Fi + TLS WebSocket        FramePipe        Core 0 feed task        SnapshotChannel        Core 1
-//   (esp_websocket_client task) ----------->  parse -> adapt -> book  ----------------->  render task
+//   (our RX task, Core 0)  ----------->  parse -> adapt -> book  ----------------->  render task
 //        firmware/                              engine/, linked as-is                  (HUB75 DMA + the log)
 //
 // Two things are worth noticing about that diagram, because they are the point
@@ -70,7 +70,8 @@ namespace {
     WsTransport g_transport(g_pipe, g_link);
     HeapProbe g_heap;
     Panel g_panel;
-    RenderTask g_render(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link, g_panel);
+    RenderTask g_render(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link,
+                        g_transport.rx_budget(), g_panel);
 
     [[noreturn]] void halt(const char* what) {
         ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);
@@ -158,11 +159,12 @@ void setup() {
 
 void loop() {
     // The feed and the panel both live in pinned tasks, so loopTask does almost
-    // nothing — but it is the right place for the one job that must NOT run in
-    // either: esp_websocket_client's stop()/start() are documented as unsafe
-    // from the event handler, and the supervisor calls them. See
-    // WsTransport::supervise() for what it is guarding against (a clean
-    // server-side close, which auto-reconnect does not cover).
+    // nothing — and what is left here is now genuinely small. It used to be the
+    // only context in which esp_websocket_client's stop()/start() were safe to
+    // call, and it paid for that by blocking on a DNS lookup and a client
+    // restart; since the transport owns its socket, supervise() reads two atomic
+    // flags, runs two host-tested policies and returns. The ~4 s of blocking
+    // connect it used to carry is on the RX task where it belongs.
     //
     // 250 ms, not the 1000 ms this used to be. The supervisor now also owns the
     // reconnect cadence, and its shortest deadline is 2 s — polling at 1 s put up

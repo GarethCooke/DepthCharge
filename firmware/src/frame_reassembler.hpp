@@ -16,11 +16,15 @@
 // in harness/tests/test_frame_reassembler.cpp it is a fake that records what
 // happened. Same code, two callers — the same trick the parse seam uses.
 //
-// A note on what a "chunk" is. esp_websocket_client delivers a WebSocket frame
-// in as many WEBSOCKET_EVENT_DATA events as its RX buffer requires, each
+// A note on what a "chunk" is. esp_websocket_client delivered a WebSocket frame
+// in as many WEBSOCKET_EVENT_DATA events as its RX buffer required, each
 // carrying `payload_offset` (where this piece sits in the frame) and
 // `payload_len` (how big the whole frame is). Those two fields are the entire
-// contract this class is written against.
+// contract this class is written against, and they survived that library's
+// removal: from the 2026-08-14 client rebuild the same two numbers are computed
+// by ws_frame.hpp — this project's own frame parser, host-tested beside this
+// file — precisely so that this class, and its tests, did not have to move. The
+// numbers are the same shape; the difference is that they are now right.
 #pragma once
 
 #include <cstddef>
@@ -52,6 +56,12 @@ struct WsChunk {
     const char* data = nullptr;
     std::uint32_t data_len = 0;
     std::int64_t arrival_us = 0;       // when this chunk came off the socket
+    // The frame's FIN bit — clear only on a fragment the server intends to
+    // continue. It defaults to true because that is what a whole frame carries
+    // and because every caller written before ws_frame.hpp existed (the
+    // esp_websocket_client path, which cannot supply it, and the tests) must
+    // keep meaning exactly what it did.
+    bool fin = true;
 };
 
 // `Slots` must provide:
@@ -90,19 +100,21 @@ public:
 
         // A WebSocket-level continuation frame — a message the *server* split,
         // as opposed to one this client received in pieces — restarts
-        // payload_offset at zero, and this IDF vintage does not surface the FIN
-        // bit, so there is no way to know where such a message truly ends.
+        // payload_offset at zero, so its bytes are appended to whatever is
+        // already in the slot rather than written at the frame's own offset.
         //
-        // Be precise about what happens then, because it is a limitation and
-        // not a solution: the continuation's bytes are appended to whatever is
-        // already in the slot, and the message is published at that fragment's
-        // end anyway, because `complete()` can only see the fragment. The parser
-        // then rejects the incomplete JSON and the adapter counts a parse error.
-        // That is the correct failure — a dropped frame Anvil re-sends in ~80 ms
-        // — rather than the firmware inventing a message boundary it cannot
-        // know. Anvil has never sent one (all 2,694 captured frames are whole
-        // text frames); the counter exists so that if it ever starts, the bench
-        // log says so instead of the ladder merely misbehaving.
+        // This used to end badly, and the note is kept because the repair is the
+        // milestone's point rather than a tidy-up. esp_websocket_client did not
+        // surface the FIN bit, so `complete()` could only see the fragment and
+        // published each one on its own; the parser then rejected the incomplete
+        // JSON and the adapter counted a parse error. Owning the frame layer
+        // (ws_frame.hpp) means FIN arrives on the chunk, so a fragmented message
+        // is now held until the fragment that says it is the last — the
+        // limitation's stated cause is gone and it went with it.
+        //
+        // Anvil has never sent one (all 2,694 captured frames are whole text
+        // frames); the counter stays so that if it ever starts, the bench log
+        // says so rather than the behaviour merely being assumed.
         const bool server_fragment = (c.op_code == kOpContinuation && c.payload_offset == 0);
         if (server_fragment) { slots_.count_continuation(); }
 
@@ -170,9 +182,14 @@ private:
 
     static bool complete(const WsChunk& c) noexcept {
         // `payload_len` is the total for this WebSocket frame, so the last piece
-        // of it satisfies this. A zero-length frame is complete immediately and
-        // is filtered out by the fill_ check in finish().
-        return static_cast<std::size_t>(c.payload_offset) + c.data_len >= c.payload_len;
+        // of it satisfies the second half. A zero-length frame is complete
+        // immediately and is filtered out by the fill_ check in finish().
+        //
+        // `fin` is the first half and only ever removes completions: a frame the
+        // server marked as continuing is the end of a *frame*, not of a
+        // *message*. Callers that cannot supply it send true, which is what the
+        // whole-frame case has always meant here.
+        return c.fin && static_cast<std::size_t>(c.payload_offset) + c.data_len >= c.payload_len;
     }
 
     void finish(std::int64_t arrival_us) noexcept {

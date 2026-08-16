@@ -71,6 +71,17 @@ partly attributable to the 1× probe. Jumper interconnect **characterised and pr
   - **Shipped setting: `clkphase = true` (library default).** The feed wins — a ghosted
     header is cosmetic, a 2 msg/s feed greys the panel every few seconds. Recorded in
     `firmware/src/panel.cpp` so it is not retried blind.
+  - **2026-08-14 supersession: retried deliberately on the owned WS client (M3 transport
+    rewrite), and the collapse does not reproduce.** A/B/A at ~10 min per arm, same divider
+    24, RSSI −38…−47: 6.58 msg/s median (`true`, 25 min) → 6.78 (`false`) → 6.48 (`true`),
+    byte rate pinned at the familiar ~44-50 KB/s inbound ceiling in all three arms (the
+    same evening's window rebuild showed that ceiling is the RX path's, not the TCP
+    window's — ARCHITECTURE §9 2026-08-14), `connects=1 sock_gaps=0`
+    throughout. **`clkphase = false` now ships and the header-ghosting fix is free.** Whether
+    2026-08-11's real variable was the old client or that week's mesh weather is left open —
+    the separating experiment needs the deleted client. The M6 carrier items (ground plane,
+    short leads, 74HCT245s) stay load-bearing for the remaining right-edge artefact, and the
+    10× CLK probe is still owed. Logs `device-monitor-260814-{151322,154752,155929}.log`.
   - **M6 requirement, stated with evidence:** the carrier PCB needs a ground plane under
     the HUB75 run and short leads, and the roadmap's existing `2× 74HCT245` buffers and
     bulk caps are load-bearing rather than nice-to-have. Re-test `clkphase = false` on the

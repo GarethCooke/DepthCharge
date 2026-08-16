@@ -44,6 +44,7 @@
 #include "frame_pipe.hpp"
 #include "reject_log.hpp"
 #include "stall_probe.hpp"
+#include "staleness.hpp"
 
 namespace depthcharge::fw {
 
@@ -162,6 +163,21 @@ public:
         // kRejectsPerConnect of each connect; a healthy run never touches it.
         RejectLog rejects{};
 
+        // HOW OLD THE BOOK IS (M3 stage E).
+        //
+        // Everything above answers "is the feed stopped" or "whose fault is
+        // that". None of it can see a feed that is running, parsing and healthy
+        // on every counter while showing a book a hundred seconds behind the
+        // market — which is what the 2026-08-11 bench was doing. This is the
+        // deficit between Anvil's fixed 2 Hz `summary` broadcast and the rate
+        // this socket receives it at, integrated over the connection.
+        //
+        // Read it with its own assumption in hand (staleness.hpp): the deficit
+        // is an age only if the missing summaries are QUEUED, and rate alone
+        // cannot tell queuing from shedding. Upper bound, not measurement, until
+        // the lag-versus-uptime run calibrates it.
+        StalenessEstimator staleness{};
+
         std::uint32_t worst_queue_wait_us = 0;
         // The most messages ever left queued BEHIND the one being processed —
         // sampled after the dequeue, so it is one below the peak depth and can
@@ -187,6 +203,18 @@ public:
 
     const Stats& stats() const noexcept { return stats_; }
     const anvil::AnvilAdapter::Stats& adapter_stats() const noexcept { return adapter_.stats(); }
+
+    // THE JOIN KEY, and the reason the age line carries it.
+    //
+    // Anvil's wire `seq` is a single GLOBAL engine counter, useless for ordering
+    // (§4) — but that is exactly what makes it a join key: the same broadcast
+    // carries the same value on every socket. Printing the board's latest one
+    // beside its own clock lets a serial log and a simultaneous desk capture be
+    // joined offline into a continuous lag curve, which is the measurement
+    // `tools/anvil_freshness_probe.py` already performs across two sockets.
+    // It replaces a human with a stopwatch, and unlike the stopwatch it measures
+    // the age itself rather than the age divided by the drain fraction.
+    std::int64_t last_wire_seq() const noexcept { return adapter_.last_wire_seq(); }
     const Book::Stats& book_stats() const noexcept { return book_.stats(); }
 
 private:

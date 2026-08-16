@@ -8,21 +8,20 @@
 // boot connection spent a year of bench runs with no handshake immunity.
 //
 // What is tested here is only the arithmetic: when an attempt goes out, which
-// attempt it is, and the two guarantees the constants exist to provide — that an
-// attempt is never disturbed inside its own budget, and that a retry never comes
-// back to a handle whose task has not finished dying. Which handle gets opened,
-// and what the library does with it, is WsTransport's half and stays on the
-// board.
+// attempt it is, the guarantee the constants exist to provide — that an attempt
+// is never disturbed inside its own budget — and, from 2026-08-16, when a socket
+// that is UP but silent stops counting as alive. What the platform does with a
+// decision is WsTransport's half and stays on the board.
 #include <doctest/doctest.h>
 
 #include <cstdint>
 
 #include "ws_supervisor.hpp"
 
-using depthcharge::fw::kClientSelfExitUs;
 using depthcharge::fw::kHandshakeBudgetUs;
 using depthcharge::fw::kReconnectBackoffUs;
 using depthcharge::fw::kRetryCycleUs;
+using depthcharge::fw::kSilenceRecycleUs;
 using depthcharge::fw::kSupervisePeriodUs;
 using depthcharge::fw::SupervisorAction;
 using depthcharge::fw::SupervisorDecision;
@@ -39,12 +38,19 @@ struct Bench {
     std::int64_t now = 0;
     bool socket = false;
     bool wifi = true;
+    // The last-byte stamp the transport feeds in. Left at 0 — "nothing yet" — by
+    // every test that predates the silence recycle, which is exactly the
+    // behaviour a caller that never fills the field in must get: the supervisor
+    // measures silence from the connect edge it observes for itself, so an unset
+    // stamp can never age a socket that has only just come up.
+    std::int64_t last_rx = 0;
 
     SupervisorDecision step() {
         SupervisorInput in;
         in.now_us = now;
         in.socket_connected = socket;
         in.wifi_associated = wifi;
+        in.last_rx_us = last_rx;
         const SupervisorDecision d = sup.poll(in);
         now += kSupervisePeriodUs;
         return d;
@@ -127,26 +133,13 @@ TEST_CASE("later attempts come one full retry cycle apart") {
     }
 }
 
-TEST_CASE("a retry never returns to a handle that is still dying") {
-    // The two-handle invariant, checked as behaviour rather than only as the
-    // static_assert in the header. Handles alternate, so attempt N and attempt
-    // N+2 share one — and the one attempt N used became reusable
-    // kClientSelfExitUs after the socket that triggered it aborted.
-    Bench b;
-    b.socket = true;
-    b.step();
-    const std::int64_t died = b.now;
-    b.socket = false;
-
-    const std::int64_t first = b.run_to_attempt(died);
-    REQUIRE(first >= 0);
-    const std::int64_t second = b.run_to_attempt(died + first);
-    REQUIRE(second >= 0);
-
-    // Attempt #2 reopens the handle that was live when the feed died at `died`,
-    // whose task exits kClientSelfExitUs later.
-    CHECK(first + second > kClientSelfExitUs);
-}
+// The two-handle case that used to sit here — "a retry never returns to a handle
+// that is still dying" — went with the two handles on 2026-08-16. It asserted
+// `first + second > kClientSelfExitUs`, a property of how long
+// `esp_websocket_client`'s task slept before a handle became reusable, and this
+// firmware now owns one esp-tls connection that `esp_tls_conn_destroy()` frees
+// at once. Keeping it would have meant keeping a constant that describes a
+// library the build no longer contains, in order to test a rule nothing obeys.
 
 TEST_CASE("an unassociated station holds the attempt without spending a cycle") {
     Bench b;
@@ -273,6 +266,283 @@ TEST_CASE("the holdoff line returns after the feed recovers") {
         if (b.step().wifi_holdoff) { ++second_run; }
     }
     CHECK(second_run == 1);
+}
+
+// ---------------------------------------------------------------------------
+// The silence recycle — the 2026-08-16 half-open hole.
+// ---------------------------------------------------------------------------
+//
+// A silent-but-open socket reads as connected, so before this the transport held
+// it forever: the panel was honestly grey and nothing would ever try a fresh
+// connect. These cases pin the three things the threshold has to get right —
+// it fires, it does not fire early, and it does not fire on a socket that is
+// merely slow.
+
+namespace {
+
+// A socket that is up and delivering. `feed()` advances the clock while keeping
+// the last-byte stamp current, which is what a healthy connection looks like to
+// the supervisor; `starve()` advances it while leaving the stamp where it was.
+struct SocketBench : Bench {
+    SocketBench() {
+        socket = true;
+        last_rx = now;
+        step();   // the up-edge, so the supervisor has seen this socket connect
+    }
+
+    // Polls for `span` of wall clock with bytes arriving every pass. Returns the
+    // first StartAttempt seen, or an action of None.
+    SupervisorDecision feed(std::int64_t span) {
+        return run(span, /*bytes=*/true);
+    }
+    // Polls for `span` of wall clock with the socket up and saying nothing.
+    SupervisorDecision starve(std::int64_t span) {
+        return run(span, /*bytes=*/false);
+    }
+
+private:
+    SupervisorDecision run(std::int64_t span, bool bytes) {
+        const std::int64_t until = now + span;
+        while (now < until) {
+            if (bytes) { last_rx = now; }
+            const SupervisorDecision d = step();
+            if (d.action == SupervisorAction::StartAttempt) { return d; }
+        }
+        return SupervisorDecision{};
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a socket that keeps delivering is never recycled, however long it runs") {
+    // The case that must never break: an object on a desk for a week.
+    SocketBench b;
+    const SupervisorDecision d = b.feed(20 * kSilenceRecycleUs);
+    CHECK(d.action == SupervisorAction::None);
+    CHECK(b.sup.attempts() == 0u);
+}
+
+TEST_CASE("a silent socket is recycled, and not one poll before the threshold") {
+    SocketBench b;
+    const std::int64_t last_byte = b.now - kSupervisePeriodUs;
+
+    // Everything up to the threshold is a hold, not a decision. This is the half
+    // that matters most, because the failure it prevents is tearing down a
+    // healthy connection — see the 2m56s Anvil stall in the constant's note.
+    const SupervisorDecision early = b.starve(kSilenceRecycleUs - 2 * kSupervisePeriodUs);
+    CHECK(early.action == SupervisorAction::None);
+    CHECK(b.sup.attempts() == 0u);
+
+    const SupervisorDecision d = b.starve(4 * kSupervisePeriodUs);
+    REQUIRE(d.action == SupervisorAction::StartAttempt);
+    // It is labelled, because the transport has to tear a live socket down for
+    // this one and merely open a socket for every other StartAttempt.
+    CHECK(d.silence_recycle);
+    CHECK(d.attempt == 1u);
+    // And `feed down N` reports the silence rather than the poll period: the
+    // outage is measured from the last byte, which is the honest number and the
+    // one a bench reads to decide whether the threshold is right.
+    CHECK(d.elapsed_us >= kSilenceRecycleUs);
+    CHECK(b.now - last_byte < d.elapsed_us + 3 * kSupervisePeriodUs);
+}
+
+TEST_CASE("the 2026-08-16 Anvil stall costs nothing") {
+    // THE MEASUREMENT THAT SET THE CONSTANT. At 00:12:24 the server went silent
+    // mid-stream on a live socket and resumed 2 min 56 s later on the same TCP
+    // connection — the board went LIVE the instant bytes flowed. The first draft
+    // of this policy used a 15 s threshold and would have torn that connection
+    // down and paid a reconnect plus a fresh snapshot for nothing.
+    constexpr std::int64_t kAnvilStallUs = (2 * 60 + 56) * 1000 * 1000LL;
+    SocketBench b;
+
+    const SupervisorDecision during = b.starve(kAnvilStallUs);
+    CHECK(during.action == SupervisorAction::None);
+    CHECK(b.sup.attempts() == 0u);
+
+    // Bytes resume on the held socket, and the silence clock resets with them.
+    CHECK(b.feed(kSilenceRecycleUs).action == SupervisorAction::None);
+    CHECK(b.sup.attempts() == 0u);
+}
+
+TEST_CASE("the recycle's attempt behaves like any other from there on") {
+    // Once the decision is out, the transport tears the socket down and opens a
+    // replacement — so the supervisor sees the socket go away and come back, and
+    // must report the recovery exactly as it would after a real death.
+    SocketBench b;
+    REQUIRE(b.starve(kSilenceRecycleUs + 4 * kSupervisePeriodUs).action ==
+            SupervisorAction::StartAttempt);
+
+    // The socket is still up for a pass or two while the RX task notices; the
+    // policy must not fire again inside the handshake budget.
+    const std::int64_t attempt_at = b.now - kSupervisePeriodUs;
+    while (b.now < attempt_at + kHandshakeBudgetUs) {
+        CHECK(b.step().action != SupervisorAction::StartAttempt);
+    }
+    CHECK(b.sup.attempts() == 1u);
+
+    // The transport has now torn the socket down, and the reconnect is failing.
+    // THE LABEL MUST STOP: there is no live socket left to recycle, and a retry
+    // that still claimed `socket up but silent` would print exactly that over a
+    // socket that is definitively gone. The first version of this policy latched
+    // "this outage began in silence" when the outage opened and never cleared
+    // it, so every attempt from #2 on lied; the fix is to report the live
+    // reading instead of the remembered one.
+    b.socket = false;
+    SupervisorDecision retry;
+    while (retry.action != SupervisorAction::StartAttempt) {
+        REQUIRE(b.now < attempt_at + 4 * kRetryCycleUs);
+        retry = b.step();
+    }
+    CHECK(retry.attempt == 2u);
+    CHECK_FALSE(retry.silence_recycle);
+
+    // Down, then up with data: a clean ReportConnected and a clear outage.
+    b.step();
+    b.socket = true;
+    b.last_rx = b.now;
+    const SupervisorDecision up = b.step();
+    REQUIRE(up.action == SupervisorAction::ReportConnected);
+    CHECK(up.attempt == 2u);
+    CHECK_FALSE(b.sup.attempt_in_flight());
+
+    // And the recycle is not sticky: a healthy socket from here decides nothing.
+    CHECK(b.feed(2 * kSilenceRecycleUs).action == SupervisorAction::None);
+}
+
+TEST_CASE("the silence clock starts at the connect, not at the epoch") {
+    // A caller that never fills `last_rx_us` in — which is every test written
+    // before this feature, and would be a transport that forgot the store — gets
+    // a supervisor that measures from the up-edge it observed itself. Without
+    // that, a stamp of 0 against a clock that is hours into a run would read as
+    // "silent since boot" and recycle a socket on its first poll.
+    Bench b;
+    b.now = 9 * kSilenceRecycleUs;   // a board that has been up a long time
+    b.socket = true;
+    b.last_rx = 0;                   // never stamped
+
+    const std::int64_t connected_at = b.now;
+    for (int i = 0; i < 40; ++i) {
+        CHECK(b.step().action == SupervisorAction::None);
+    }
+    CHECK(b.sup.attempts() == 0u);
+
+    // ...and it still recycles once the connect itself is old enough, so the
+    // fallback is a delay and not a hole in the cover.
+    SupervisorDecision d;
+    while (d.action != SupervisorAction::StartAttempt) {
+        REQUIRE(b.now < connected_at + 2 * kSilenceRecycleUs);
+        d = b.step();
+    }
+    CHECK(d.silence_recycle);
+    CHECK(b.now - connected_at >= kSilenceRecycleUs);
+    CHECK(b.sup.attempts() == 1u);
+}
+
+TEST_CASE("a socket that dies normally is not labelled a silence recycle") {
+    // The label is branched on in the transport, so a false positive would print
+    // "recycling a live socket" for a socket that had already gone.
+    Bench b;
+    b.socket = true;
+    b.last_rx = b.now;
+    b.step();
+    b.socket = false;   // and the last-byte stamp stays where the feed left it
+
+    SupervisorDecision d;
+    while (d.action != SupervisorAction::StartAttempt) {
+        REQUIRE(b.now < 10 * kSupervisePeriodUs);
+        d = b.step();
+    }
+    CHECK_FALSE(d.silence_recycle);
+    CHECK(d.attempt == 1u);
+}
+
+TEST_CASE("socket_is_silent is the one spelling both cores decide with") {
+    // The predicate the RX task tests before it tears a socket down, tested
+    // directly rather than only through the policy — because the transport's use
+    // of it is the half that cannot be reached from the desk, and a constant
+    // compared in two places is a constant that drifts.
+    using depthcharge::fw::socket_is_silent;
+
+    CHECK_FALSE(socket_is_silent(0, 0));
+    CHECK_FALSE(socket_is_silent(kSilenceRecycleUs - 1, 0));
+    CHECK(socket_is_silent(kSilenceRecycleUs, 0));
+    CHECK(socket_is_silent(kSilenceRecycleUs + 1, 0));
+
+    // Offset from an arbitrary epoch: it is a difference, not an absolute.
+    const std::int64_t base = 9'876'543'210;
+    CHECK_FALSE(socket_is_silent(base + kSilenceRecycleUs - 1, base));
+    CHECK(socket_is_silent(base + kSilenceRecycleUs, base));
+
+    // A stamp from the future — supervise() reads `now` before it loads the
+    // atomic, so the last byte can land in between — must never read as silent.
+    CHECK_FALSE(socket_is_silent(base, base + 5000));
+}
+
+TEST_CASE("the policy's invariants hold over an arbitrary walk of inputs") {
+    // A property check rather than another example. The supervisor is a
+    // deterministic reducer over (now, socket_connected, wifi_associated,
+    // last_rx_us), and the two things that must be true of EVERY trace through
+    // it are cheap to state and expensive to notice by example:
+    //
+    //   1. Two attempts are never closer together than one backoff. Anything
+    //      tighter is the supervisor preempting its own handshake, which is the
+    //      single way this policy could turn a recoverable outage permanent.
+    //   2. A socket that is connected and delivering never produces a
+    //      StartAttempt, whatever the Wi-Fi flag or the history says.
+    //
+    // The walk is a fixed pseudo-random sequence — same shape as the reassembler
+    // suite's slot-leak walk, and deterministic for the same reason: a property
+    // that fails once in twenty runs is a property nobody fixes.
+    WsSupervisor sup;
+    std::uint32_t rng = 20260816u;
+    const auto next = [&rng](std::uint32_t n) {
+        rng = rng * 1103515245u + 12345u;
+        return (rng >> 16) % n;
+    };
+
+    std::int64_t now = 0;
+    std::int64_t last_rx = 0;
+    bool socket = false;
+    std::int64_t previous_attempt = -1;
+    int attempts = 0;
+
+    for (int i = 0; i < 200000; ++i) {
+        // Flip the socket occasionally; when it is up, deliver bytes most of the
+        // time and go quiet the rest, so both the healthy and the silent paths
+        // are exercised for long stretches.
+        if (next(400) == 0) { socket = !socket; }
+        const bool delivering = socket && next(10) != 0;
+        if (delivering) { last_rx = now; }
+
+        SupervisorInput in;
+        in.now_us = now;
+        in.socket_connected = socket;
+        in.wifi_associated = (next(20) != 0);
+        in.last_rx_us = last_rx;
+
+        const SupervisorDecision d = sup.poll(in);
+
+        if (d.action == SupervisorAction::StartAttempt) {
+            ++attempts;
+            if (previous_attempt >= 0) {
+                INFO("attempt ", attempts, " at ", now, " after ", previous_attempt);
+                CHECK(now - previous_attempt >= kReconnectBackoffUs);
+            }
+            previous_attempt = now;
+            // An attempt is only ever raised against a station that could carry
+            // it — the holdoff gate, checked as a property rather than by example.
+            CHECK(in.wifi_associated);
+        }
+        if (delivering) {
+            CHECK(d.action != SupervisorAction::StartAttempt);
+            CHECK_FALSE(d.silence_recycle);
+        }
+        now += kSupervisePeriodUs;
+    }
+
+    // The walk has to have actually exercised the machinery, or the two
+    // properties above are vacuously true over a trace where nothing happened.
+    CHECK(attempts > 20);
 }
 
 // ---------------------------------------------------------------------------

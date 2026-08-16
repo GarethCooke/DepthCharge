@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "fake_slots.hpp"
 #include "frame_reassembler.hpp"
 
 using depthcharge::fw::FrameReassembler;
@@ -43,61 +44,9 @@ namespace {
 constexpr std::size_t kCap = 64;
 constexpr std::uint8_t kSlots = 2;
 
-// Stands in for FramePipe. Records every published message and every counter,
-// and — the point of a fake rather than a mock — actually models slot ownership,
-// so a double-release or a leaked slot shows up as a wrong free count.
-struct FakeSlots {
-    char storage[kSlots][kCap]{};
-    bool in_flight[kSlots]{};
-    std::uint8_t free_count = kSlots;
-
-    std::vector<std::string> published;
-    // The arrival half of M3's stall instrument: `arrivals` is every whole
-    // message the socket delivered, `published_at` only the ones that survived
-    // to the feed task. The two differing is the point — see the note in
-    // FrameReassembler::finish().
-    std::vector<std::int64_t> arrivals;
-    std::vector<std::int64_t> published_at;
-    std::uint32_t oversize = 0;
-    std::uint32_t abandoned = 0;
-    std::uint32_t continuation = 0;
-    std::uint32_t control = 0;
-    std::uint32_t chunks = 0;
-    std::uint32_t acquire_failures = 0;
-
-    bool acquire(std::uint8_t& slot) noexcept {
-        for (std::uint8_t i = 0; i < kSlots; ++i) {
-            if (!in_flight[i]) {
-                in_flight[i] = true;
-                --free_count;
-                slot = i;
-                return true;
-            }
-        }
-        ++acquire_failures;
-        return false;
-    }
-    char* buffer(std::uint8_t slot) noexcept { return storage[slot]; }
-    void release(std::uint8_t slot) noexcept {
-        REQUIRE(in_flight[slot]);   // a double release is a bug, not a no-op
-        in_flight[slot] = false;
-        ++free_count;
-    }
-    bool publish(std::uint8_t slot, std::uint32_t len, std::int64_t arrival_us) noexcept {
-        REQUIRE(in_flight[slot]);
-        published.emplace_back(storage[slot], len);
-        published_at.push_back(arrival_us);
-        in_flight[slot] = false;
-        ++free_count;
-        return true;
-    }
-    void note_arrival(std::int64_t at_us) noexcept { arrivals.push_back(at_us); }
-    void count_oversize() noexcept { ++oversize; }
-    void count_abandoned() noexcept { ++abandoned; }
-    void count_continuation() noexcept { ++continuation; }
-    void count_control() noexcept { ++control; }
-    void count_chunk() noexcept { ++chunks; }
-};
+// Stands in for FramePipe — fake_slots.hpp, shared with test_ws_frame.cpp, which
+// drives the same object at the firmware's real 16 KiB geometry.
+using FakeSlots = dc::testing::FakeSlotPool<kCap, kSlots>;
 
 struct Fixture {
     FakeSlots slots;
@@ -338,19 +287,92 @@ TEST_CASE("a binary frame is reassembled like a text one") {
     CHECK(f.slots.published[0] == "{\"binary\":true}");
 }
 
-TEST_CASE("a server-fragmented message is counted so the assumption is observable") {
-    // Anvil has never done this — the counter exists so that if it ever starts,
-    // the bench log says so rather than the ladder just misbehaving.
+TEST_CASE("with FIN on the chunk a fragmented message is held and published whole") {
+    // Anvil has never fragmented — the `continuation` counter exists so that if
+    // it ever starts, the bench log says so rather than the ladder just
+    // misbehaving. What is pinned here is that the counter moves AND the message
+    // survives.
+    //
+    // A case above this one used to pin the opposite, and folding it away on
+    // 2026-08-16 is worth a sentence because it is the shape of the whole
+    // milestone. `esp_websocket_client`'s DATA event carried no FIN bit, so every
+    // chunk arrived saying `fin = true` (the field's default) and a fragment was
+    // indistinguishable from a whole frame: the first fragment published on its
+    // own and the parser rejected the partial JSON. That was a documented
+    // limitation with a test pinning it, kept only while the espws build arm was
+    // kept, and it went with the arm. ws_frame.hpp reads FIN off the wire, so a
+    // non-final fragment says so and the message stays open across it.
     Fixture f;
-    f.re.on_chunk(WsChunk{kOpText, 0, 4, "abcd", 4});          // fragment 1, "complete"
-    f.re.on_chunk(WsChunk{kOpContinuation, 0, 4, "efgh", 4});  // server continuation
+    WsChunk first{kOpText, 0, 4, "abcd", 4};
+    first.fin = false;
+    f.re.on_chunk(first);
+    CHECK(f.slots.published.empty());   // held, not published
+    CHECK(f.re.holding());
+
+    WsChunk last{kOpContinuation, 0, 4, "efgh", 4};   // FIN set: the message ends here
+    f.re.on_chunk(last);
 
     CHECK(f.slots.continuation == 1);
-    // The first fragment published on its own; that is the documented
-    // limitation (no FIN bit in this IDF vintage), and the parser rejects the
-    // partial JSON rather than the firmware inventing a message boundary.
-    CHECK(f.slots.published.size() >= 1);
-    CHECK(f.slots.published[0] == "abcd");
+    REQUIRE(f.slots.published.size() == 1);
+    CHECK(f.slots.published[0] == "abcdefgh");
+    CHECK(f.slots.free_count == kSlots);
+    CHECK_FALSE(f.re.holding());
+}
+
+TEST_CASE("fragments that together outgrow the slot are dropped whole, counted, recovered from") {
+    // The 2026-08-15 review's finding: the FIN gate makes cross-frame
+    // accumulation reachable on a WELL-FORMED stream for the first time, so the
+    // capacity check in write() is now all that stands between a fragmented
+    // 17 KB message and a 16 KiB slot — and nothing drove it. Two 40-byte
+    // fragments against the 64-byte test capacity: the second crosses the line,
+    // the message dies whole (never truncated, never published), the counter
+    // names it, the slot comes back, the arrival is still noted (the
+    // instrument rule in finish()), and the next message is untouched.
+    Fixture f;
+    const std::string part(40, 'x');
+    WsChunk first{kOpText, 0, 40, part.data(), 40};
+    first.fin = false;
+    f.re.on_chunk(first);
+    CHECK(f.re.holding());
+
+    WsChunk last{kOpContinuation, 0, 40, part.data(), 40};   // FIN: the message ends here
+    f.re.on_chunk(last);
+
+    CHECK(f.slots.oversize == 1);
+    CHECK(f.slots.published.empty());
+    CHECK(f.slots.free_count == kSlots);
+    CHECK_FALSE(f.re.holding());
+    CHECK(f.slots.arrivals.size() == 1);
+
+    f.deliver("ok", 2);
+    REQUIRE(f.slots.published.size() == 1);
+    CHECK(f.slots.published[0] == "ok");
+    CHECK(f.slots.oversize == 1);   // the drop did not echo
+}
+
+TEST_CASE("a fragment that is itself chunked still completes only at FIN") {
+    // The two splits compose: the server fragments the message and the socket
+    // delivers each fragment in pieces. Only the read that carries the last byte
+    // of the FIN fragment may publish.
+    Fixture f;
+    const std::string a = "0123456789";
+    const std::string b = "abcdefghij";
+    for (std::size_t off = 0; off < a.size(); off += 4) {
+        const std::size_t n = (off + 4 <= a.size()) ? 4 : a.size() - off;
+        WsChunk c{kOpText, static_cast<std::uint32_t>(off), 10, a.data() + off,
+                  static_cast<std::uint32_t>(n)};
+        c.fin = false;
+        f.re.on_chunk(c);
+    }
+    CHECK(f.slots.published.empty());
+    for (std::size_t off = 0; off < b.size(); off += 3) {
+        const std::size_t n = (off + 3 <= b.size()) ? 3 : b.size() - off;
+        f.re.on_chunk(WsChunk{kOpContinuation, static_cast<std::uint32_t>(off), 10, b.data() + off,
+                              static_cast<std::uint32_t>(n)});
+    }
+
+    REQUIRE(f.slots.published.size() == 1);
+    CHECK(f.slots.published[0] == a + b);
     CHECK(f.slots.free_count == kSlots);
 }
 

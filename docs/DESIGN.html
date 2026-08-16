@@ -320,6 +320,18 @@
   .strain .verdict b { color: var(--stale); font-weight: 600; }
   .strain.settled .verdict b { color: var(--bid); }
 
+  /* A measured-bad configuration, called out where the build is described.
+     There is exactly one of these and it should stay that way: it means "this
+     was tried, it failed silently below the layer that reports failure, and the
+     mapping is in the log". */
+  p.warn {
+    border-left: 3px solid var(--ask);
+    padding: 10px 0 10px 16px;
+    margin: 18px 0;
+    max-width: var(--col);
+  }
+  p.warn b { color: var(--ask); }
+
   hr {
     border: none;
     border-top: 1px solid var(--rule);
@@ -360,9 +372,9 @@
   <div class="statusbar">
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
-    <span class="status amber">in progress <b>M3 — live Anvil on the panel · A-C done, D on the panel and running — bench acceptance and photo outstanding</b></span>
-    <span class="status">first-party C++ <b>~16,300 lines</b></span>
-    <span class="status">drawn from source at <b>2d3b8b3</b></span>
+    <span class="status amber">in progress <b>M3 — live Anvil on the panel · A-D done, flashed and soaked · the WebSocket client is ours and accepted (23.6 h, connects=1 over 10.9 h, zero deaths, zero rejects; the old client is deleted from the tree) · the rebuilt TCP window is the default build · one thing left for the tick: the owner's pull-the-Wi-Fi acceptance on the panel</b></span>
+    <span class="status">first-party C++ <b>~19,600 lines</b></span>
+    <span class="status">drawn from source at <b>79c1867</b></span>
   </div>
 </header>
 
@@ -406,8 +418,8 @@
         <text x="202" y="80" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#64756E">NDJSON replay · harness/ · shipped</text>
 
         <rect x="408" y="40" width="300" height="54" rx="4" fill="#FFFFFF" stroke="#9FB3AA" stroke-width="1" stroke-dasharray="4 3"/>
-        <text x="558" y="62" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="13" fill="#4A5B55">esp_websocket_client</text>
-        <text x="558" y="80" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#7E918A">TLS WS · firmware/ · M3 stage C</text>
+        <text x="558" y="62" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="13" fill="#4A5B55">WsFrameParser</text>
+        <text x="558" y="80" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#7E918A">esp-tls WS · firmware/ · ours · 23.6 h soaked</text>
 
         <polyline points="202,94 202,116 380,116" fill="none" stroke="#4A5B55" stroke-width="1.3"/>
         <polyline points="558,94 558,116 380,116" fill="none" stroke="#4A5B55" stroke-width="1.3" stroke-dasharray="4 3"/>
@@ -458,7 +470,7 @@
 
         <rect x="408" y="652" width="300" height="40" rx="4" fill="#FFFFFF" stroke="#9FB3AA" stroke-width="1" stroke-dasharray="4 3"/>
         <text x="558" y="672" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#4A5B55">HUB75 DMA, Core 1 · stage D</text>
-        <text x="558" y="686" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10" fill="#7E918A">ladder host-tested · bench pending</text>
+        <text x="558" y="686" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10" fill="#7E918A">ladder host-tested · flashed and soaked</text>
       </svg>
     </div>
     <figcaption>
@@ -1347,24 +1359,42 @@ sequenceDiagram
   </p>
   <p>
     Read against the table above, that says "transport". It does not, and the reason is the
-    first row's premise: <b>the arrival stamp is not the wire.</b> It is taken in
+    first row's premise: <b>the arrival stamp is not the wire.</b> It was taken in
     <code>WsTransport::on_event</code>, inside <code>esp_websocket_client</code>'s own task,
     which is already downstream of the Wi-Fi driver, lwIP, the socket read, the TLS record
     decrypt and the <code>esp_event</code> dispatch hop. A hole in <code>arrival_gaps</code>
-    therefore means <em>no complete message was handed to our callback for a second</em> —
+    therefore meant <em>no complete message was handed to our callback for a second</em> —
     equally consistent with a dry socket and with that task not being scheduled on a busy
-    Core 0. The split is real, but the line it draws is at the FramePipe queue hop, not at
+    Core 0. The split is real, but the line it drew was at the FramePipe queue hop, not at
     the antenna.
   </p>
   <p>
-    The second reason is upstream and not ours: Anvil's per-socket coalescing
+    <b>The owned client (2026-08-14) moves that line one hop upstream and no further.</b> The
+    stamp is now taken on the instruction after the <code>esp_tls_conn_read</code> that
+    produced the bytes, on a task this firmware created and pinned to Core 0 — so the
+    <code>esp_event</code> dispatch hop and the unpinnable library task are both out of the
+    measurement, and a hole on the arrival side can no longer be that library's scheduling.
+    What remains between the antenna and the stamp is the Wi-Fi driver, lwIP and the TLS
+    record decrypt, which are still not ours and still not zero. The sentence above stays
+    true in shape: <em>the arrival stamp is still not the wire</em>, it is just closer to it.
+  </p>
+  <p>
+    The second reason is upstream and not ours. <s>Anvil's per-socket coalescing
     <em>sheds</em> <code>book</code> frames whenever a socket backs up (measured 2026-08-09:
     a client throttled to a quarter rate receives 4× fewer messages and is never silent for
-    longer than one drain interval). So shedding is a <em>symptom</em> of the board falling
-    behind rather than an independent cause, and "Anvil shed it" and "Wi-Fi delayed it"
-    surface identically as no book frame for two seconds. The un-entangled question is not
-    where the hole appears in the pipeline; it is whether Core 0 had the headroom to drain
-    the stream at all.
+    longer than one drain interval).</s> <b>That sentence is withdrawn</b> — ARCHITECTURE §9,
+    2026-08-11: Anvil does not shed to a slow consumer, it <em>queues</em>. The 2026-08-09
+    probe was honestly run and its numbers are all still true; what was wrong was the sentence
+    written under them, because <b>a measurement of rate or of inter-message gap cannot
+    distinguish a shed stream from a queued one</b>. Seq-matching against a reference clock
+    settled it: every frame kind thinned by the same 25%, lag rising linearly to 111 s over
+    150 s with no plateau, ~12.4 MB implied still queued for one socket. The shape of the
+    conclusion survives and is if anything stronger — a thinned stream is a <em>symptom</em>
+    of the board falling behind rather than an independent cause, and "Anvil held it back" and
+    "Wi-Fi delayed it" surface identically as no book frame for two seconds. The un-entangled
+    question is not where the hole appears in the pipeline; it is whether Core 0 had the
+    headroom to drain the stream at all — and by 2026-08-16 the answer is measured and is yes
+    (strain 19: <code>feed 0%</code> at every hour of a day).
   </p>
   <p>
     That needs a signal from outside the data path, and as of 2026-08-10 the board carries
@@ -1382,7 +1412,7 @@ sequenceDiagram
       <thead><tr><th>Core 0 idle across the hole</th><th>Recovery shape</th><th>Reading</th></tr></thead>
       <tbody>
         <tr><td>far below the run's healthy baseline</td><td>burst, <code>seq</code> catching up</td><td><b>board-bound</b> — the frames sat unread in the socket buffer because Core 0 was busy</td></tr>
-        <tr><td>far below baseline</td><td>cadence, <code>seq</code> already moved on</td><td><b>board-bound</b> — Anvil shed the middle because this socket backed up (§7, strain 10)</td></tr>
+        <tr><td>far below baseline</td><td>cadence, <code>seq</code> already moved on</td><td><b>board-bound</b> — <s>Anvil shed the middle because this socket backed up</s> <b>the middle is QUEUED, not shed</b> — see below (§7, strain 10, strain 17)</td></tr>
         <tr><td>at or above baseline</td><td>burst, <code>seq</code> catching up</td><td><b>link-bound</b> — the frames existed and the air delayed them</td></tr>
         <tr><td>at or above baseline</td><td>cadence</td><td><b>link-bound</b> — nothing arrived and nothing was waiting to</td></tr>
       </tbody>
@@ -1396,6 +1426,18 @@ sequenceDiagram
     predecessors were never sent to us. The board prints both the step and the prediction, so
     the reading is checkable rather than asserted — as are the verdicts, which print beside
     the idle figure and the baseline they were derived from. Nothing branches on any of it.
+  </p>
+  <p>
+    <b>One premise in that table was withdrawn on 2026-08-11 and the row above says so.</b> The
+    second row read "Anvil shed the middle", on the strength of the 2026-08-09 drain probe. That
+    conclusion came from a rate-and-gap measurement, which cannot tell shedding from queuing, and
+    a freshness measurement — matching Anvil's global wire <code>seq</code> across a throttled
+    and an unthrottled socket at the same instant — shows the middle is <b>queued</b>: every frame
+    kind thinned to the same fraction, lag rising linearly to 111 s with no plateau. The
+    <em>verdict</em> the row reaches is unaffected (a cadence recovery with <code>seq</code>
+    already moved on is still board-bound), but the mechanism named in it was wrong, and the
+    difference matters at M4/M5 where a delayed delta stream is not a delayed full replace.
+    Strain 17 carries the whole finding.
   </p>
 
   <h3>The other failure, which deliberately does nothing</h3>
@@ -1568,13 +1610,17 @@ classDiagram
     <code>cmake --workflow --preset host</code> configures, builds and tests in one step
     (<code>host-mingw</code> is the Windows MinGW-w64 equivalent; the two presets share a
     binary directory, so switching between them needs <code>build/host</code> cleared).
-    Eleven ctest entries run; the main doctest binary carries 169 cases across twelve files,
-    and a second doctest binary re-runs the parser-facing subset of them against the other
-    implementation of the parse seam. Five of those files test <em>firmware</em> headers —
-    <code>frame_reassembler</code>, <code>gap_histogram</code>, <code>stall_probe</code>,
-    <code>reject_log</code> and <code>ws_supervisor</code> are all deliberately ESP-IDF-free
-    so that the reassembly, the bucketing, the stall verdict, the reject capture and the
-    reconnect policy are ctest's problem rather than the bench's.
+    Eleven ctest entries run; the main doctest binary carries <b>211 cases across sixteen
+    files</b>, and a second doctest binary re-runs the parser-facing subset of them against the
+    other implementation of the parse seam. <b>Eight of those files test <em>firmware</em>
+    headers</b> — <code>frame_reassembler</code>, <code>gap_histogram</code>,
+    <code>stall_probe</code>, <code>reject_log</code>, <code>ws_supervisor</code>,
+    <code>ladder_render</code> (with <code>ladder_font</code>), <code>panel_budget</code> and,
+    from stage E, <code>staleness</code> are all deliberately ESP-IDF-free so that the
+    reassembly, the bucketing, the stall verdict, the reject capture, the reconnect policy, the
+    64×64 geometry, the framebuffer arithmetic and the age estimate are ctest's problem rather
+    than the bench's. Every one of them is a header; no firmware <code>.cpp</code> is compiled
+    on the host, so nothing in <code>firmware/</code> can quietly become a host dependency.
   </p>
 
   <div class="tablewrap">
@@ -1723,6 +1769,40 @@ classDiagram
     the LX7. That is inherited from M1's shared scaling and is identical in both parsers, so
     it is not a stage B regression, but it is the first thing to look at if the feed task
     ever needs headroom. <code>qty_step</code> is 1 for every venue we consume.
+  </p>
+
+  <h3>What the framework costs, and the one line in it that must not move</h3>
+  <p>
+    The target build is <code>espressif32@6.5.0</code> / Arduino-ESP32 2.0.14 / xtensa
+    GCC 8.4 — a precompiled framework, which is why so much of §08 is archaeology performed
+    with <code>objdump</code>. Since 2026-08-16 it is that framework with <em>one archive
+    rebuilt</em>: <code>liblwip.a</code>, from the esp-idf v4.4.6 tag the package's own
+    <code>versions.txt</code> names, on the same toolchain generation and from the package's
+    own build <code>sdkconfig</code>, changing a single Kconfig value —
+    <code>CONFIG_LWIP_TCP_WND_DEFAULT</code> <b>5,744 → 17,232</b> (12 × MSS 1436). It ships
+    as a local package override on <code>[env]</code>, so it is the framework every
+    environment builds against rather than an arm one of them opts into. The swap was
+    verified before it was flashed: 564 global symbols identical across 87 members, the only
+    member size delta <code>tcp.c.obj</code> +4 B, and <code>tcp_alloc</code>'s packed
+    <code>rcv_wnd</code>/<code>rcv_ann_wnd</code> literal pair reading
+    <code>0x4350,0x4350</code> where the stock archive reads <code>0x1670,0x1670</code>.
+    Provenance and the rebuild scripts live in
+    <code>C:\local\framework-arduinoespressif32-wnd17232\WND17232-README.md</code>. Cost of
+    promoting it out of an arm, stated: no firmware environment builds on a machine that does
+    not have that package, and <code>platformio.ini</code> carries the two ways out.
+  </p>
+  <p class="warn">
+    <b>HAZARD — <code>CONFIG_LWIP_TCP_RECVMBOX_SIZE</code> must stay at the stock 6 on this
+    vintage, and that is a measurement rather than an oversight.</b> Kconfig's own guidance is
+    <code>WND / MSS + 2</code>, which for the widened window is 14. Applied, the board
+    completes TCP connect and the TLS handshake and then <em>never receives the HTTP 101</em>.
+    Four archives from one pipeline, flashed A/B, map it completely: 5744/6 healthy, 17232/6
+    healthy, <b>5744/14 connects then watchdog-greys within 25 s</b>, <b>17232/14 never
+    completes an upgrade</b>. The mechanism is formally open — the constant reaches one
+    <code>xQueueCreate</code> in netconn alloc, read from source, and no further explanation
+    has been earned. The failure is silent in the worst way, because every layer below the
+    upgrade reports success. <b>Do not "fix" the mbox to match the window without a soak
+    behind it.</b>
   </p>
 </section>
 
@@ -1991,29 +2071,36 @@ classDiagram
   </div>
 
   <div class="strain">
-    <h4>11 · Invariant #7 is now two claims, because the transport is not ours</h4>
+    <h4><s>11 · Invariant #7 is now two claims, because the transport is not ours</s> — the per-event churn closed 2026-08-16; the measurement gap did not</h4>
     <p>
+      <em>The original card, kept because the reasoning is what makes the closure legible.</em>
       Every earlier statement of "allocation-free steady state" was about code in this repo,
       and could be proven absolutely: <code>alloc_probe</code> counts zero over both traces,
       and the streaming parser's xtensa object has no undefined <code>operator new</code> to
-      call. Stage C is the first time the invariant met a library nobody here wrote, and it
-      loses. <code>esp_websocket_client</code> dispatches every event through
-      <code>esp_event_post_to</code>, which heap-copies the 28-byte payload and frees it when
-      the handler returns — about 37 balanced <code>calloc</code>/<code>free</code> pairs a
+      call. Stage C was the first time the invariant met a library nobody here wrote, and it
+      lost. <code>esp_websocket_client</code> dispatched every event through
+      <code>esp_event_post_to</code>, which heap-copied the 28-byte payload and freed it when
+      the handler returned — about 37 balanced <code>calloc</code>/<code>free</code> pairs a
       second at three DATA events per book frame.
     </p>
     <p>
-      So the invariant now reads differently either side of the boundary: strict for the
-      engine, "no net allocation and no fragmentation drift" for the transport (ARCHITECTURE
-      §9). That is defensible — bounded churn of one fixed-size block threatens neither
-      determinism nor a heap that must survive a week on a desk — but it is a weaker sentence
-      than the one the constitution started with, and weaker sentences drift. The
-      instrumentation is honest about its own limits: ESP-IDF heap tracing is compiled out of
-      the precompiled framework, and the low-water mark is a since-boot minimum that cannot
-      see steady churn at all, so <code>heap_probe</code> detects a <em>leak or
-      fragmentation</em> and says so rather than claiming to test the invariant.
+      <b>That path is gone with the library.</b> The owned client reads into a 4 KiB buffer
+      that lives in the object's BSS and drives <code>WsFrameParser</code> →
+      <code>FrameReassembler</code> → <code>FramePipe</code> with no event loop, no dispatch
+      hop and no per-message block: there is no <code>esp_event_post_to</code> anywhere in the
+      RX path any more, so the 37 pairs a second are not merely bounded, they do not happen.
+      The strict reading of invariant #7 reaches one hop further out than it could at stage C.
     </p>
-    <p class="verdict">Resolves: <b>not by tightening the words. Either accept the split permanently, or move to pure ESP-IDF where <code>heap_trace_start</code> exists and the claim can be measured rather than reasoned — which is the same platform decision stage C deferred for the framework, and should be made once, for both reasons together</b></p>
+    <p>
+      <b>What does not close is the part that was never about the websocket client.</b>
+      esp-tls still allocates per handshake — inside the boundary the invariant already names
+      ("after connect and first snapshot") — and ESP-IDF heap tracing is still compiled out of
+      the precompiled framework, so <code>heap_probe</code> still detects a <em>leak or
+      fragmentation</em> rather than proving the absence of churn. The 23.6 h soak is the
+      evidence that stands in for the proof: <code>free</code> ended <b>+452 B</b> against its
+      own baseline after 331,682 frames, with the largest free block unmoved.
+    </p>
+    <p class="verdict">Resolves: <b>the transport half of the split is closed by deleting the library that caused it (2026-08-16). The residual is the measurement, not the behaviour: <code>heap_trace_start</code> is still unavailable on this framework, so the claim is supported by a day of flat sampling rather than by a counter. That resolves only on the platform decision — pioarduino / IDF 5.x — and is no longer urgent enough to drive one</b></p>
   </div>
 
   <div class="strain">
@@ -2120,11 +2207,26 @@ classDiagram
       are what made a two-arm question answerable at all, and stage D re-reads the same lines
       with a panel beside them, where a false grey is finally visible rather than inferred.
     </p>
-    <p class="verdict">Resolved: <b>link-bound. The mesh association was the cause; the firmware was not. <code>kRxWatchdogMs</code> unchanged at 1000 ms, no golden moved, no lever pulled. Excluded along the way and recorded so nobody re-runs them: modem sleep (both arms measured), Anvil's cadence (17.02 frames/s, 391 ms worst gap), and the socket (<code>connects=1</code> throughout)</b></p>
+    <p>
+      <b>AMENDED 2026-08-13 — the closure stands for the stalls, and stops there.</b> A second
+      board carrying a worst-fade instrument re-measured the weak-node condition from inside:
+      ~1,140 windows pinned to a −7x sibling, mean worst-fade ~580 ms, max 3,914 ms — real RF
+      weather, honestly greyed by the watchdog, and <em>never itself fatal</em> (the same board
+      held one socket 3.7 h / 534 MB there). What the 2026-08-10 closure over-carried was the
+      socket deaths: those are <code>esp_websocket_client</code>'s own (strain 13's diagnosis
+      — 17/17 errno-silent), at base rate even at −39 dBm. And the mis-association now has a
+      mechanism instead of a mystery: the framework default <code>WIFI_FAST_SCAN</code> joins
+      the first same-SSID sibling that answers — four boots drew −40/−76/−76/−39 dBm on one
+      desk — so "moving the board" was a re-roll, not a fix, and the board never roams off its
+      draw. <code>connect_wifi()</code> now sets <code>WIFI_ALL_CHANNEL_SCAN</code> +
+      <code>WIFI_CONNECT_AP_BY_SIGNAL</code> (in-tree 2026-08-13; bench acceptance: five
+      consecutive boots ≥ −45 dBm).
+    </p>
+    <p class="verdict">Resolved: <b>link-bound. The mesh association was the cause; the firmware was not. <code>kRxWatchdogMs</code> unchanged at 1000 ms, no golden moved, no lever pulled. Excluded along the way and recorded so nobody re-runs them: modem sleep (both arms measured), Anvil's cadence (17.02 frames/s, 391 ms worst gap), and the socket (<code>connects=1</code> throughout)</b> <em>— amended 2026-08-13 as above: true of the stalls, not of the socket deaths, and the association choice itself is now deterministic.</em></p>
   </div>
 
   <div class="strain">
-    <h4>13 · The board throws away most of the opening burst, and no counter can say what it was</h4>
+    <h4><s>13 · The board throws away most of the opening burst, and no counter can say what it was</s> — diagnosed 2026-08-13, it was the WebSocket client's offset accounting</h4>
     <p>
       A second finding out of the 2026-08-10 bench, independent of the stall and much
       simpler: <b>~1,281 frames rejected in the first ~60 s of every connect — around 85 % of
@@ -2176,14 +2278,34 @@ classDiagram
       host-tested in <code>test_reject_log.cpp</code>; the reject path is the only path that
       touches it.
     </p>
-    <p class="verdict">Resolves: <b>instrumented 2026-08-10, not diagnosed — and the fix is deliberately not chosen, because the three candidates have three different owners and picking one before the payload is read is the trap this milestone has already paid for. One bench run supplies it: the first <code>-- reject</code> lines of a connect. <code>MissingType</code> on a whole, well-formed payload → the venue's, so skip-not-error it and document the frame in the vendored protocol; <code>NotJson</code> with a chunk-boundary length or a <code>SPLIT@</code> offset → ours, and the lever bundle is the same one strain 12 names (<code>buffer_size</code>, the LWIP window, WS-task priority)</b></p>
+    <p>
+      <b>DIAGNOSED 2026-08-13, and the payload-first discipline the verdict below insists on
+      is what did it.</b> The bench read the <code>-- reject</code> lines it asked for: 85
+      rejects over one afternoon, recurring signature <code>SPLIT@1</code> with <b>exactly one
+      stray byte — the previous message's tail — glued ahead of clean JSON</b>, plus mid-JSON
+      fragments delivered as whole messages. That is the <code>NotJson</code>/<code>SPLIT@</code>
+      branch: ours. TLS's record MAC guarantees the wire, so the mangling is post-decryption —
+      an off-by-one in <code>esp_websocket_client</code>'s payload-offset accounting — and the
+      rejects co-time with the socket deaths that carried no socket errno (17/17 stale
+      <code>errno=119</code>), which attributes both to the same layer. One correction to the
+      lever list below: it is not <code>buffer_size</code>, the LWIP window or task priority —
+      it is the client layer itself, and the owned-client brief
+      (<code>docs/briefs/M3-transport-own-the-websocket-client.md</code>) carries a host-tested
+      regression for exactly this stream shape. Full chain:
+      <code>hardware/bench-2026-08-13-wifi-drop-diagnosis.md</code>.
+    </p>
+    <p class="verdict">Resolves: <b>instrumented 2026-08-10, not diagnosed — and the fix is deliberately not chosen, because the three candidates have three different owners and picking one before the payload is read is the trap this milestone has already paid for. One bench run supplies it: the first <code>-- reject</code> lines of a connect. <code>MissingType</code> on a whole, well-formed payload → the venue's, so skip-not-error it and document the frame in the vendored protocol; <code>NotJson</code> with a chunk-boundary length or a <code>SPLIT@</code> offset → ours, and the lever bundle is the same one strain 12 names (<code>buffer_size</code>, the LWIP window, WS-task priority)</b> <em>— superseded 2026-08-13 as above: NotJson/SPLIT@1, ours, the client layer itself.</em></p>
   </div>
 
   <div class="strain">
-    <h4>14 · The reconnect is correct because of three facts about a binary nobody here built</h4>
+    <h4><s>14 · The reconnect is correct because of three facts about a binary nobody here built</s> — closed 2026-08-14, and the binary left the tree 2026-08-16</h4>
     <p>
-      <code>WsTransport</code> now keeps two <code>esp_websocket_client</code> handles and
-      opens the idle one on a drop, because the alternative — <code>esp_websocket_client_stop()</code>
+      <em>The original card. <code>WsTransport</code> keeps one esp-tls connection today and
+      none of the three facts below reaches any shipping build; the text is kept because
+      "we depended on three undocumented properties of an archive" is the reasoning that
+      justified replacing the archive.</em>
+      <code>WsTransport</code> kept two <code>esp_websocket_client</code> handles and
+      opened the idle one on a drop, because the alternative — <code>esp_websocket_client_stop()</code>
       — blocks for up to five seconds. That design is sound only while three undocumented
       properties of the precompiled Arduino-ESP32 2.0.14 archive hold, all three read out of
       it with <code>objdump</code> on 2026-08-10 rather than taken from IDF source:
@@ -2208,7 +2330,129 @@ classDiagram
       <code>heap_trace_start</code>, the missing <code>reconnect_timeout_ms</code> and
       <code>CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS</code>.
     </p>
-    <p class="verdict">Resolves: <b>not by a test — nothing on the desk can see a precompiled xtensa archive. It resolves by a platform decision: pioarduino / IDF 5.x supplies <code>reconnect_timeout_ms</code> as a real config field, at which point the spare handle, the disabled auto-reconnect and this whole card collapse into one line of configuration. Until then the mitigation is that the bench can see it — a drop that recovers on the wrong handle, or twice, shows up in the <code>opening handle X</code> and <code>socket up on handle X</code> lines, which is why those print the handle at all</b></p>
+    <p class="verdict">Resolves: <b>not by a test — nothing on the desk can see a precompiled xtensa archive. It resolves by a platform decision: pioarduino / IDF 5.x supplies <code>reconnect_timeout_ms</code> as a real config field, at which point the spare handle, the disabled auto-reconnect and this whole card collapse into one line of configuration. Until then the mitigation is that the bench can see it — a drop that recovers on the wrong handle, or twice, shows up in the <code>opening handle X</code> and <code>socket up on handle X</code> lines, which is why those print the handle at all</b> <em>— resolved 2026-08-14, and not by the platform decision it predicted. The owned client deletes the binary all three facts describe: <code>esp_tls_conn_destroy()</code> returns at once, so there is no 5 s sleeper to dodge, no spare handle, no <code>disable_auto_reconnect</code>, and no live_/retired bookkeeping. One connection. The card survives only inside <code>depthcharge-espws</code>, the control arm, and dies with it when the bench acceptance passes.</em> <em>— and it did: the acceptance passed on the 23.6 h soak and the arm was deleted on 2026-08-16 (<code>66e2f77</code>), taking <code>kClientWaitTimeoutMs</code>, <code>kClientSelfExitUs</code> and the assert quoted in (a) with it. Nothing in the tree can build the binary these three facts describe. Fully closed.</em></p>
+  </div>
+
+  <div class="strain">
+    <h4>18 · The framing is ours now, and so is every bug in it</h4>
+    <p>
+      Strain 13 was resolved by taking the WebSocket layer off a vendor and writing it here
+      (<code>firmware/src/ws_frame.hpp</code>, 2026-08-14). That is the right trade — the
+      library's off-by-one was invisible for months and unfixable from outside — but it is a
+      trade, and this card is the other side of it. Four things are now ours that were not:
+    </p>
+    <p>
+      <b>(a) A protocol parser on the hot path.</b> Mitigated harder than anything else in
+      this milestone: <code>test_ws_frame.cpp</code> drives the real chain — parser →
+      reassembler → slot pool — and asserts on the messages the feed task would receive, for
+      <em>every read size from one byte to 137</em> and again at the production 4 KiB. A
+      framing off-by-one can be right at one alignment; it cannot be right at all of them.
+      The exact bug that convicted the library has its own case, and it was verified by
+      re-introducing that bug and watching the case report a second <code>{"type":</code> at
+      offset 1 — the bench signature, reproduced on the desk.
+      <b>(b) The upgrade uses a fixed <code>Sec-WebSocket-Key</code></b>, which §4.1 says
+      should be random. What randomness defends against is a canned response from something
+      that is not a WebSocket server; this client speaks TLS to one pinned host with a pinned
+      root, so there is no intermediary to fool — and in exchange the <code>Accept</code>
+      value is a compile-time constant, so the response IS verified, which the prototype
+      never did.
+      <b>(c) No client ping by default.</b> The RX watchdog greys the panel for silence in
+      1 s, but it cannot make a half-open TCP connection admit it is dead. The 3.7 h
+      prototype soak ran pingless and nothing needed one; that is evidence, not proof, and
+      <code>depthcharge-ping</code> is the 60 s arm that turns it into a measurement.
+      <b>(d) The RX task's stack and priority are estimates</b> — 6144 bytes and priority 5,
+      copied from what the library asked for, for a task that does strictly less. Every
+      autopsy line prints the high-water mark so the next bench run can lower them on
+      evidence.
+    </p>
+    <p>
+      And one layer down nothing changed: esp-tls, mbedTLS and lwIP are still this
+      framework's, and this vintage has now decided nine designs. The difference is that when
+      the next one arrives, the death autopsy names it — <code>rc</code>, <code>errno</code>,
+      <code>SO_ERROR</code>, lifetime, bytes, close code — instead of printing
+      <code>Error receive data</code> and swallowing the number.
+    </p>
+    <h5>Where the four stand after the acceptance (2026-08-16)</h5>
+    <p>
+      <b>(a) holds and got harder.</b> 23.6 h of live wire produced zero <code>SPLIT</code>
+      and <code>parse=0</code>; on the desk the read-size sweep was extended to the
+      <em>fragmented</em> path (three fragments with a ping and a pong wedged between them, at
+      every read size 1–137), which is where the continuation offsets live and where the
+      original sweep did not reach. The regression now calls <code>reject_log.hpp</code>'s own
+      <code>find_second_frame_header</code> rather than re-spelling the bench signature, so the
+      desk and the board cannot drift apart about what <code>SPLIT@N</code> means.
+      <b>(b) holds unchanged</b> — the accept check has never failed on a healthy Anvil, which
+      is the point of it.
+      <b>(c) is closed, and not by the arm that was built for it.</b>
+      <code>WsSupervisor</code> now recycles a socket that is up and silent for five minutes
+      (strain 19 below has the number's provenance), which acts on the silence directly
+      instead of provoking it — cheaper, needs no server cooperation, and host-tested rather
+      than benched. <code>depthcharge-ping</code> still builds and nothing needs it.
+      <b>(d) has its first real reading</b>: <code>stack_free=1932 B</code> on both autopsies
+      in the soak, i.e. the 6144-byte stack peaked around 4.2 KiB — the handshake, as
+      predicted. Not lowered yet, because two samples from the same connect path are not the
+      worst case.
+    </p>
+    <p>
+      <b>Five findings from the 2026-08-15/16 reviews, all confirmed and all fixed</b>, listed
+      because four of them are the same species — <em>a bound that was reasoned about rather
+      than observed</em>: the write budget was a stall <em>count</em> whose true worst case was
+      ~8.4 minutes of the RX task held by a wedged peer (now a 2 s wall clock, with the
+      in-flight <code>SO_SNDTIMEO</code> extension stated rather than hidden); the FIN gate
+      made cross-frame accumulation reachable on a well-formed stream for the first time and
+      nothing drove the capacity check (now driven); the exhaustive read-size sweep did not
+      cover fragments (now does); the silence recycle's first draft trusted that a connect
+      request seen on a live socket must have come from the silence rule, which a slow connect
+      falsifies (the RX task now tests the silence itself, through the same
+      <code>socket_is_silent()</code> both ends call); and the recycle's label was latched at
+      the outage rather than read live, so every retry after one would have reported "socket up
+      but silent" over a socket that was gone.
+    </p>
+    <p class="verdict">Resolves: <b>(a) resolved and staying resolved by the read-size property tests — whole frames and fragments both — and the thing to protect is that they keep running against every new case. (b) resolved. (c) resolved 2026-08-16 by the silence recycle, which subsumes the question the ping arm was built to answer; <code>depthcharge-ping</code> is now deletable on the owner's word. (d) resolves into a lowered <code>kRxTaskStack</code> once a run produces a high-water mark from something other than a failed upgrade — two samples of 1932 B are a floor observation, not a worst case</b></p>
+  </div>
+
+  <div class="strain">
+    <h4>19 · The object is now bound by the Atlantic, and there is no lever left on this side</h4>
+    <p>
+      Every firmware-side candidate for the panel's staleness has been measured and
+      eliminated, in this order and each time by an experiment that could have gone the other
+      way: the socket deaths (the library's, removed), the TCP receive window (rebuilt 5,744 →
+      17,232 and <em>load-bearing</em>), and the RX path itself (instrumented, and exonerated
+      by its own instrument). What is left is the wire.
+    </p>
+    <p>
+      <b>The numbers, from the 23.6-hour soak</b> (<code>device-monitor-260815-002728.log</code>,
+      four bench-power brownouts excluded). Hourly median inbound: <b>87 KiB/s</b> at midnight,
+      <b>56–60</b> through 07:00–10:00, 70–78 in the afternoon, 65–71 in the evening, 73–81
+      from 21:00 — against Anvil's <b>110.4 KiB/s</b> full-book stream, so 60–80% of the wire,
+      all day, with no hour below 56. The RX budget line read <code>wait 0 / read 98–99 /
+      feed 0</code> in <em>every</em> hour: the socket always had bytes when asked, and
+      deframe + reassemble + pipe cost nothing measurable. What remains inside
+      <code>read</code> is TLS decrypt plus in-kernel delivery. Lag slope by connection fell
+      +0.243 → +0.294 → +0.323 → <b>+0.083 s/s over the final 10.9 h</b>, against +0.57–0.59
+      on every stock-window run.
+    </p>
+    <p>
+      <b>Two levers remain and only one of them exists.</b> Anvil's sequenced incremental L2
+      feed — a tenth the bytes — fits inside today's window with room to spare and closes this
+      completely; it is on Anvil's backlog and Anvil is not modified from here. On the
+      DepthCharge side there is <em>nothing</em>: the window is already 12 × MSS,
+      <code>CONFIG_LWIP_TCP_RECVMBOX_SIZE</code> cannot follow it up (see §07), window scaling
+      is compiled out of this vintage, and the read loop is io-bound at <code>feed 0%</code>.
+      Until the venue changes, the object runs tens of seconds to minutes behind at UK peak
+      <em>and says so</em>, which is invariant #5 doing exactly its job — the panel is honest
+      about age even when it cannot fix it.
+    </p>
+    <p>
+      The card exists because this is the first constraint in the project that is neither a
+      bug nor a design choice, and because the rule that produced it cost two sessions:
+      <b>a throughput comparison across time on a WAN path is not an A/B unless the hour is
+      controlled.</b> The 2026-08-14 evening measured 44 KiB/s and convicted the RX path; the
+      day of hourly medians withdrew that verdict and convicted the hour instead
+      (ARCHITECTURE §9, 2026-08-16). M4's Kraken and M5's Binance inherit the lesson as a
+      sizing input, and their full-depth streams are larger than Anvil's.
+    </p>
+    <p class="verdict">Resolves: <b>not in <code>firmware/</code>, and that is the finding rather than an evasion. It resolves at the venue (Anvil's delta feed, ROADMAP backlog, promoted) or not at all. The instrument that would notice it resolving is already in place — <code>-- rx</code> and the lag slope from <code>tools/board_log_lag.py</code> — so the next soak reads as a measurement rather than an impression</b></p>
   </div>
 
   <div class="strain">
@@ -2298,6 +2542,64 @@ classDiagram
     </p>
     <p class="verdict">Resolves: <b>not in firmware. <code>clkphase</code> stays at the library default because the feed wins — a ghosted header is cosmetic, a 2 msg/s feed greys the panel every few seconds. <code>S3_LCD_DIV_NUM=24</code> ships as a partial mitigation (a third off the edge rate) and helped one of the two header fields. The rest is M6: this turns the carrier board's ground plane, short leads and <code>2× 74HCT245</code> buffers from tidiness into requirements, and <code>clkphase = false</code> should be re-tested there — on a proper interconnect the noise argument may simply evaporate and the ghosting fix becomes free. Full record in <code>hardware/BRINGUP.md</code>. Still owed: CLK on a 10× probe, since M2's survey used 1× and recorded "edge softening partly attributable to the probe" — the edge rate both symptoms turn on has never been characterised</b></p>
   </div>
+
+  <div class="strain">
+    <h4>17 · Invariant #5 protects against <em>stopped</em> and against <em>wrong</em>. It has no concept of <em>old</em></h4>
+    <p>
+      This is the strain point with the largest gap between what the document claims and what
+      the object does, and it was invisible for three stages because <b>every instrument in
+      this design measures the same family of failure.</b> The RX watchdog and the gap
+      histograms measure <em>stopped</em>. The parse counters and the reject log measure
+      <em>wrong</em>. The stall probe measures <em>whose fault the stopping was</em>. A feed
+      that is running perfectly, parsing perfectly, and showing a book a hundred seconds behind
+      the market fails none of them.
+    </p>
+    <p>
+      Measured on 2026-08-11, single connection, <code>parse=0 cont=0 trunc=0 oversize=0
+      qfull=0 abandoned=0</code>, <code>no_slot=2</code> of 1,703, both cores 85–92 % idle,
+      <code>a→e worst=20 ms</code>: the web client was frozen at 12:05:02 and the panel reached
+      the same state at 12:06:38.7. <b>96–98 seconds of age, with every counter green.</b> Two
+      symptoms that had read as separate bugs are this one — the "frozen bid"
+      (<code>10.0034 x67</code> across 502 published versions) was the board faithfully
+      replaying a real stretch of history, and the "5 Hz refresh" was <code>summary</code> at
+      0.82/s of 2.00/s beside <code>book</code> at 5.60/s of 13.44/s: two independent counters,
+      the same 41 %.
+    </p>
+    <p>
+      <b>The mechanism is now measured rather than argued.</b>
+      <code>tools/anvil_freshness_probe.py</code> runs two sockets from one process — one
+      drained flat out as a reference, one sleeping 250 ms per message — and matches Anvil's
+      <em>global</em> wire <code>seq</code> across both, so staleness is a subtraction against a
+      real clock instead of an inference from a rate. Over 150 s: every frame kind thinned to
+      the same fraction (<code>book</code> 25.5 %, <code>summary</code> 25.7 %), lag rising
+      <b>linearly to 111 s with no plateau</b>, at <b>+0.745 s per second</b> by seq-matching
+      and <b>+0.745 s/s</b> predicted independently from the drain fraction. <b>Anvil queues; it
+      does not shed</b> — which withdraws the 2026-08-09 finding in ARCHITECTURE §9 and, with
+      it, the sentence in strain 12's verdict table that reads "Anvil shed the middle because
+      this socket backed up". The implied per-socket queue was ~12.4 MB and still growing.
+    </p>
+    <p>
+      The instrument that closes half of it is <code>firmware/src/staleness.hpp</code>:
+      <code>summary</code> is a fixed 2 Hz timer broadcast, so the deficit between 2.00/s and
+      what this socket receives, integrated since connect, is the age — free, from a counter the
+      adapter already keeps. ESP-IDF-free and host-tested, reset per connection, printed as
+      <code>-- age</code> beneath <code>-- rate</code>. <b>It raises no <code>Gap</code> and
+      nothing branches on it</b>, deliberately: making the panel <em>act</em> on age is a
+      vocabulary change and therefore stop-and-raise.
+    </p>
+    <p>
+      And the reason it cannot simply become a sixth <code>GapReason</code> is structural, which
+      is what makes this a design strain rather than a to-do. Invariant #5's rule is <em>only a
+      <code>Snapshot</code> clears stale</em>, which is exactly right for absence of data — every
+      existing reason is "something is missing". Age is the <em>presence of old data</em>, and
+      under queuing the board is adopting stale <code>Snapshot</code>s at 5.6/s, so a
+      <code>Gap{TooOld}</code> would be cleared ~180 ms later by the next stale frame. The panel
+      would flicker, not grey. Fixing that means the clear condition becomes "a <code>Snapshot</code>
+      that is <em>fresh</em>", which puts a wall clock inside a book that is deliberately
+      clock-free and replay-driven.
+    </p>
+    <p class="verdict">Resolves: <b>half open, and split cleanly. The <em>measurement</em> landed at stage E1 — the mechanism is settled at the desk and the board now reports its own age. What is owed is the calibration (the owner's lag-versus-uptime stopwatch run on one connection) and the decision the proposal asks for: put an age on <code>DisplaySnapshot</code> (§5) and extend invariant #5 to cover <em>old</em>, or leave the panel honest about stopped and silent about old. The recommendation is §5, because the §4 route reaches §5 anyway by the longer road. Written up for the owner in <code>docs/briefs/M3-stage-E-the-age-of-the-book.md</code>; desk evidence in <code>hardware/bench-2026-08-11-feed-lag.md</code></b></p>
+  </div>
 </section>
 
 <hr>
@@ -2332,34 +2634,37 @@ classDiagram
 
   <h3>Known M3 edits, already queued</h3>
   <ul>
-    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Nearly done</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 41.9%, flash 866 KB) and has <em>run</em> — the stage C bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. Stage D added the render task, and the half of it that can be proved on a desk <em>is</em>: <code>ladder_render.hpp</code> runs in <code>dc_tests</code> against a 64×64 grid of <code>Ink</code>, which is why the HUB75 box now carries a second line rather than only a dashed border. Both boxes go solid when the pull-the-Wi-Fi acceptance is captured on the panel.</li>
+    <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Nearly done</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 41.9%, flash 866 KB) and has <em>run</em> — the stage C bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. Stage D added the render task, and the half of it that can be proved on a desk <em>is</em>: <code>ladder_render.hpp</code> runs in <code>dc_tests</code> against a 64×64 grid of <code>Ink</code>, which is why the HUB75 box now carries a second line rather than only a dashed border. Both boxes go solid when the pull-the-Wi-Fi acceptance is captured on the panel — which by 2026-08-16 is the <em>only</em> thing standing between M3 and its tick: stage D has been flashed and soaked for 23.6 hours, the WebSocket client is ours and accepted, and the rebuilt TCP window is the default build.</li>
     <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
-    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement, <em>half-closed</em> the same day, <em>re-opened</em> on 2026-08-10 when the arrival-vs-event split could not decide it, and <em>closed</em> later that day by the bench — the cause was a −75 dBm mesh association, the link-bound arm, and the board-bound lever bundle was retired unpulled; 13 <em>opened</em> on 2026-08-10 (the board rejects ~85% of every connect's opening burst and no counter can say what the frames were); 14 <em>opened</em> on 2026-08-10 by the reconnect rebuild (the recovery is correct because of three undocumented properties of a precompiled archive, and only one of them has an assert); <b>7 closed at stage D</b> — the render path is inside the alloc probe and the probe now carries a positive control, which it needed, because two hand-written mutants were deleted by GCC's allocation DCE and "passed"; <b>15 opened at stage D</b> (the panel's double buffer is safe by cadence rather than by handshake, because the S3 flip does not wait) and <em>half-closed</em> on 2026-08-11 when the bench found the refresh rate it rests on had never been the reported one — the S3 buckets the requested clock, so the margin was right by luck; <b>16 opened 2026-08-11</b>, the one this document had no way to predict: the display half degrades the feed half through the physical layer, with no shared code path and nothing either half can measure; 1 and 3 will not.</li>
+    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement, <em>half-closed</em> the same day, <em>re-opened</em> on 2026-08-10 when the arrival-vs-event split could not decide it, and <em>closed</em> later that day by the bench — the cause was a −75 dBm mesh association, the link-bound arm, and the board-bound lever bundle was retired unpulled; 13 <em>opened</em> on 2026-08-10 (the board rejects ~85% of every connect's opening burst and no counter can say what the frames were); 14 <em>opened</em> on 2026-08-10 by the reconnect rebuild (the recovery is correct because of three undocumented properties of a precompiled archive, and only one of them has an assert); <b>7 closed at stage D</b> — the render path is inside the alloc probe and the probe now carries a positive control, which it needed, because two hand-written mutants were deleted by GCC's allocation DCE and "passed"; <b>15 opened at stage D</b> (the panel's double buffer is safe by cadence rather than by handshake, because the S3 flip does not wait) and <em>half-closed</em> on 2026-08-11 when the bench found the refresh rate it rests on had never been the reported one — the S3 buckets the requested clock, so the margin was right by luck; <b>16 opened 2026-08-11</b>, the one this document had no way to predict: the display half degrades the feed half through the physical layer, with no shared code path and nothing either half can measure; <b>17 opened 2026-08-11 at stage E</b> and it is the largest gap this document has carried — every instrument in §05 and §08 measures whether the feed <em>stopped</em> or is <em>wrong</em>, and none of them can fail while the panel shows a book a hundred seconds old, which is what it was doing when stage D passed. It also <em>withdraws</em> a claim strain 12's verdict table rests on: Anvil does not shed to a slow consumer, it queues, measured by matching wire <code>seq</code> across a throttled and an unthrottled socket; <b>13 diagnosed and closed 2026-08-13</b> — the payload the verdict demanded was finally read at the bench: <code>SPLIT@1</code>, one stray tail-byte glued ahead of clean JSON post-decryption, <code>esp_websocket_client</code>'s own offset accounting, co-timed with 17/17 errno-silent socket deaths; the lever moved off strain 12's bundle onto the client layer itself and the replacement has a brief (<code>M3-transport-own-the-websocket-client.md</code>); <b>12 amended the same day</b> — its closure is true of the stalls (a second board measured the fades from inside: 577 ms mean, 3.9 s max, real and never fatal) and not of the socket deaths, and the association join is now by-signal rather than first-answer, retiring the <code>WIFI_FAST_SCAN</code> lottery that made "move the board" a re-roll; <b>14's premise gains an expiry date</b> — the owned client removes the binary those three <code>objdump</code> facts describe; 1 and 3 will not; <b>14 closed 2026-08-14</b> when that expiry arrived — the owned client landed, one esp-tls connection replaced two library handles, and the spare-handle design with all three of its undocumented premises now exists only inside the <code>depthcharge-espws</code> control arm; <b>18 opened the same day</b>, and it is 13's price rather than a new discovery: the framing is ours, so every bug in it is ours too, and the card lists the four things that changed hands (a parser on the hot path, a fixed upgrade key, no client ping, and two task constants that are still estimates) beside the mitigation each one has; <b>14 fully closed and 11 closed 2026-08-16</b> when the acceptance passed and the old client was deleted from the tree — 14's binary can no longer be built at all, and 11's per-event <code>calloc</code>/<code>free</code> churn left with the <code>esp_event</code> dispatch it came from, leaving only the measurement gap that was never the websocket client's; <b>18 updated the same day</b> with all four of its items answered and the five confirmed review findings behind them, of which four are one species — a bound reasoned about rather than observed; <b>19 opened 2026-08-16</b>, and it is the first card in this document that resolves nowhere in this repository: with the deaths gone, the window rebuilt and the RX loop measured at <code>feed 0%</code> for twenty-four consecutive hours, the object is bound by the transatlantic path at 60–80% of Anvil's wire, and the only sized fix is a venue change on someone else's backlog.</li>
     <li>§05 — stage D gave it its rendered half. The two-state render is no longer a rule the renderer keeps: it emits <code>Ink</code>, the palette is chosen once from <code>snap.status</code>, and <code>static_assert(all_grey(kStalePalette))</code> makes a coloured stale panel a build failure. That belongs beside the watchdog here the next time this section is rewritten, together with the complement <code>test_ladder_render.cpp</code> pins — the same book renders an identical <code>Ink</code> grid Live and Stale.</li>
     <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12). It has since gained the arrival-vs-event split as well, and then the correction the bench forced on it — the first row of that split's verdict table over-claims, because the arrival stamp sits downstream of the TLS decrypt and Anvil sheds to a slow consumer, so the board-versus-link verdict moved to per-core idle. When the stall is found and fixed, the histograms stay (they are how the next one gets found) but both verdict tables become history.</li>
   </ul>
 </section>
 
 <footer>
-  Drawn from source at <b>ed92422</b> plus M3 stage D · <code>wc -l</code>:
-  engine 2,484 lines (984 of them the streaming parser) · harness 8,292 (6,579 of it tests) ·
-  firmware 5,492 · plus 962 lines of Python capture and analysis tooling in
-  <code>tools/</code>.
+  Drawn from source at <b>79c1867</b> (M3 close-out) · <code>wc -l</code>:
+  engine 2,233 lines · harness 9,247 (tests and fixtures the bulk of it) ·
+  firmware 8,111 (<code>src/</code> and <code>diag/</code>) · plus 1,462 lines of Python
+  capture and analysis tooling in <code>tools/</code>.
   Revisions before stage B counted with a tool that dropped unterminated final lines, so those
   figures are not comparable with these.<br>
-  Verified against a green <code>host-mingw</code> workflow run: 11/11 ctest, 200/200 doctest
-  in <code>dc_tests</code> (546,695 assertions) and 46/46 in <code>dc_tests_streaming</code>,
+  Verified against a green host build: 11/11 ctest, 250/250 doctest
+  in <code>dc_tests</code> (829,925 assertions) and 46/46 in <code>dc_tests_streaming</code>,
   plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1, and a clean
-  <code>pio run</code> of both firmware environments (RAM 41.9% / 137,276 B, flash 867,069 B). Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the
+  <code>pio run</code> of all five firmware environments — <code>depthcharge</code> at
+  RAM 43.3% / 141,888 B, flash 874,597 B, on the rebuilt-lwIP framework that is now the
+  default build. Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the
   parser's <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>,
   as is the render task's (zero floating-point instructions, no <code>operator new</code>).
-  The firmware's <b>feed half has now run on hardware</b> (2026-08-09: connect → first snapshot
-  → steady publish, 190 messages, zero parse errors); its <b>stale/resync acceptance has not</b>.
-  Where this document describes that half, it is describing code that compiles and has been
-  reviewed, not code that has been observed.<br>
+  The firmware has now run on hardware for <b>23.6 continuous hours</b> (2026-08-15/16:
+  <code>connects=1</code> across a 10.9 h segment, 403,823 frames, zero parse errors, zero
+  framing rejects, heap +452 B); the <b>pull-the-Wi-Fi stale/resync acceptance is the one
+  thing still un-observed</b>, and where this document describes that path it is describing
+  code that is reviewed and host-tested rather than code that has been watched.<br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
-  current work order: <code>docs/briefs/M3-live-anvil-on-the-panel.md</code>.<br>
+  last work order: <code>docs/briefs/M3-closeout-transport-and-docs.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in
   this document.
 </footer>

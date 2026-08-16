@@ -274,7 +274,16 @@ addition).
   colour. What is untested is everything downstream of `PanelCanvas`: the DMA, the pins, and
   whether it looks right.)*
 ☐ **The pull-the-Wi-Fi acceptance passes** on the bench: live → grey within ~1 s → clean
-  resync. Photo/clip committed in `hardware/`. **— the one thing left in M3.**
+  resync. Photo/clip committed in `hardware/`.
+☐ **The panel is honest about how OLD the book is, not only about whether it stopped.**
+  *(Added 2026-08-11, and it should have been here from the start — this milestone's claim is a
+  market-data terminal that is honest about what it is showing, and every DoD line above tests
+  whether the feed is stopped or wrong. None of them can fail while the panel shows a book a
+  hundred seconds behind the market, which is what it was doing when stage D passed. Met when:
+  the stats block reports accumulated age and the instantaneous drain fraction it is derived
+  from; the lag-versus-uptime curve is measured on ONE connection and committed to `hardware/`;
+  and the estimator is calibrated against that stopwatch. Work order:
+  `docs/briefs/M3-stage-E-the-age-of-the-book.md`.)*
 ☑ `firmware/README.md` documents the PlatformIO build/flash line and the `secrets.h` shape.
   *(Plus the board overrides for the N16R8, the bench acceptance procedure, and a table of what
   the statistics block should read on a healthy run.)*
@@ -1922,3 +1931,223 @@ M3 should not be ticked over it.
 
 Then tick Stage D here and in `docs/briefs/M3-stage-D-the-panel.md`, and only then tick **M3** in
 `ROADMAP.md` and mark **M4 Next**.
+
+### 2026-08-11 · Opus 5 · stage E1 — the panel was a hundred seconds behind, and nothing here could see it
+
+**The finding that opened this stage, restated because it is the reason M3 is not finished.** A
+clean bench run, single connection, effectively zero transport error — `parse=0 cont=0 trunc=0
+oversize=0 qfull=0 abandoned=0`, `no_slot=2` of 1,703, both cores 85–92% idle, `behind=2/6`,
+`a→e worst=20 ms`. The web client was paused at 12:05:02 showing `last 10.0216`,
+`bid/ask 10.0064 / 10.0081`. The panel reached that state at 12:06:38.735 and 12:06:40.028.
+**96–98 seconds.**
+
+**Stage D's acceptance passed while never measuring freshness, and so did every stage before it.**
+That is not a slip in one run; it is a gap in the instrument set. The RX watchdog measures
+*stopped*. The parse counters and the reject log measure *wrong*. The stall probe measures *whose
+fault the stopping was*. A feed that is running perfectly, parsing perfectly and a hundred seconds
+behind the market is invisible to all three — and to invariant #5, which protects against stopped
+and against wrong and has no concept of **old**. Two symptoms that had looked like separate bugs
+collapse into this one: the "frozen bid" was the board faithfully replaying a real stretch of
+history in which the bid did not move, and the "5 Hz refresh" was `summary` at 0.82/s of 2.00/s
+and `book` at 5.60/s of 13.44/s — two independent counters, the same 41%.
+
+**Done this session (E1, the desk half — no bench time).**
+
+1. **The prior finding is withdrawn, and the rule that replaces it is in the constitution.**
+   ARCHITECTURE §9 gains a 2026-08-11 amendment against the 2026-08-09 "Anvil sheds evenly" entry.
+   The original is left standing and unedited on purpose — §9 records reasoning, and the reasoning
+   is the part worth keeping. The durable rule is **measure freshness, not cadence**: rate and
+   inter-message gap cannot tell a shed stream from a queued one, and that binds M4/M5 harder than
+   it binds Anvil, because a stale *delta* stream is not idempotent.
+2. **`tools/anvil_freshness_probe.py`** — the measurement the old probe could not make. Two
+   sockets from one process, one drained flat out and one sleeping 250 ms per message, matched on
+   Anvil's **global** wire `seq` so the same broadcast is identifiable on both and "how stale is
+   this message" becomes a subtraction against a real clock.
+3. **`firmware/src/staleness.hpp`** — the on-board estimator, ESP-IDF-free and host-tested
+   (`test_staleness.cpp`, 11 cases), reset on connect, with its assumption and its calibration
+   stated in the header. `-- age` joins the stats block, printed directly under `-- rate` because
+   the age and the drain fraction it is integrated from are one reading.
+4. **The staleness-`Gap` proposal**, written up for the owner and **deliberately not implemented**
+   — it is a §4 change to the `FeedEvent` vocabulary and therefore stop-and-raise. It is in the
+   stage E brief's session log, with the threshold, the golden impact and the §4-versus-§5
+   alternative.
+5. **`hardware/bench-2026-08-11-feed-lag.md`** — the desk half complete, the board half laid out
+   with its protocol and an empty table for the owner.
+
+**The desk measurement, and it is unambiguous.** 150 s, both sockets, `wss://anvil.garethcooke.com`:
+
+```text
+reference      149.5s   2344 msgs  15.68/s   book=13.66/s  summary=2.01/s
+subject(250ms) 149.5s    598 msgs   4.00/s   book= 3.48/s  summary=0.51/s
+
+  book     25.5%   summary 25.7%      <- the SAME fraction, not per-kind coalescing
+  lag p50: 6.95 -> 20.98 -> 34.83 -> 48.72 -> 62.67 -> 76.44 -> 90.31 -> 104.34 s
+  +0.745 s/s measured by seq-matching; +0.745 s/s predicted from the drain fraction alone
+  implied queue at disconnect: ~1,746 messages, ~12.4 MB, still growing
+```
+
+**Anvil does not shed. It queues, linearly, with no ceiling anywhere in 111 seconds of backlog.**
+Two independent derivations of the growth rate agree to three decimal places, which is what rules
+out an artefact of the matching. The 2026-08-09 per-kind result — `summary` and `trade` intact,
+only `book` shed — **does not reproduce at the same drain delay**.
+
+**And a 30-minute unthrottled desk socket that settles arguments three sessions old.** Anvil is
+**15.70 msg/s** against M0's July 15.5, `summary` is **2.0003/s** (a 499.9 ms period, exact to
+0.02%), `trade` is 0.15/s, and **the socket held all 1,799 s with no drop**. So the venue has not
+slowed, the board's 6.07 msg/s is the board's, and Anvil does not close sockets on a timer — which
+eliminates one candidate for the board's every-few-minutes disconnects at the cost of leaving a
+socket open.
+
+**A first pass at those figures came from a 60-second run and reported 15.89 msg/s and 2.017/s.
+Both were artefacts of the new tool** — it computed a rate as `n/span`, where the span between
+first and last arrival holds `n−1` intervals, a +0.84% bias at n=120 that vanishes by n=3,600. The
+2.017 was taken as a real 0.85% departure from the 500 ms constant and used to justify an analysis
+of estimator drift and a predicted false alarm on every healthy connection. **There is no such
+drift.** `rate()` is now `(n−1)/span` with the reason in its docstring, and the lesson is the
+stage's own, committed by the instrument written to catch it: a measurement that answers a nearby
+question, read as answering the one that mattered. The ratio-based premise test was kept anyway —
+it is scale-free, so it survives the constant being wrong by any amount.
+
+**Decisions, with why.**
+
+- **The estimator counts `summary`, not `book`.** `summary` is a fixed 2 Hz timer broadcast, so
+  its rate is a fact about elapsed time; every other kind is event-driven and its rate is a fact
+  about trading. That is the only reason the measurement is free.
+- **It anchors on the first summary of a connection, not on the connect.** A connect lands at a
+  uniformly random phase inside the 500 ms period, so anchoring there bakes in a mean 250 ms of
+  fictional lag. Pinned by a test.
+- **It resets on connect and keeps two high-water marks.** The backlog dies with the socket, so
+  the estimate must; but a per-connection figure alone would have erased the finding 21 times on
+  the 2026-08-09 86-minute run, which is exactly why that run looked healthy. `worst_lag_ever`
+  survives reconnects.
+- **The summary counter is differenced out of the adapter rather than added to it.** `engine/` is
+  shared with the host replay and is not modified from here — no `engine/` file was touched this
+  session, and no golden moved.
+- **It raises no `Gap` and nothing branches on it.** See the proposal.
+- **The estimator's own premise is instrumented.** If summaries ever arrive faster than 2 Hz for
+  long, `AHEAD n s — 2 Hz premise suspect` prints, because every age it reports scales by that
+  denominator and nothing on the board can otherwise check it.
+
+**A correction made mid-session, recorded because it is the same species of error as the one this
+stage exists to fix.** The first version of the freshness probe reported the lag growing at
+**+1.12 s per second** — a rate above 1.0, which would mean the subject travelling backwards
+through the stream. It read as a plausible headline. It was divided by half the span where the two
+quartile centroids are three quarters of a span apart. It was caught by the drain-fraction
+cross-check disagreeing with it, and that cross-check is now a permanent line of the tool's output
+for precisely that reason: **one derivation of a number is a claim, two that agree is a
+measurement.**
+
+**One known unknown resolved without a bench, and it closes an E2 lever.**
+`CONFIG_LWIP_TCP_WND_DEFAULT` is **not reachable** on this precompiled framework. Read out of the
+shipped archive rather than from IDF source: `lwip/port/esp32/include/lwipopts.h` has
+`#define TCP_WND CONFIG_LWIP_TCP_WND_DEFAULT` with `ESP_PER_SOC_TCP_WND 0` (no per-socket
+override), and `liblwip.a`'s `tcp.c.obj` carries the value as a link-time literal —
+`.literal.tcp_alloc + 4` is `0x00001670` = **5,744**, loaded into the 16-bit `rcv_wnd` store at
+`tcp_alloc + 0xe0`, and `+8` is `0x16701670`, the two adjacent window fields set together. Defining
+the symbol in our own build cannot recompile an archive. **Reaching it means a rebuilt framework
+(pioarduino / IDF from source), which is milestone-weight and not this evening's.** Seventh time
+this vintage has decided a design, after `esp_crt_bundle`, `heap_trace_start`,
+`reconnect_timeout_ms`, `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`, the blocking `stop()` and
+`setupDMA()`. The other two E2 levers *are* reachable and are unpulled by design: `buffer_size`
+(`kWsRxBufferBytes`) and `task_prio` are config fields, while `task_core_id` does not exist in
+this vintage — so lever 3 is "priority yes, core placement no".
+
+**State of the tree.** `cmake --workflow --preset host-mingw` green: **11/11 ctest**, `dc_tests`
+200 → **211 cases**. Firmware `depthcharge` builds clean: RAM 41.9%, flash 13.3% (868,461 B, up
+from 13.2%). No `engine/` change, no golden moved, `kRxWatchdogMs` still 1000 ms, `dc_feed` still
+contains no `ESP_LOGx`.
+
+**Exact next step.** The board half of `hardware/bench-2026-08-11-feed-lag.md` — the
+lag-versus-uptime run, owner-driven, one connection, serial captured to a file, the desk
+`--reference-only` probe running as the control, and the board's own `-- age` line recorded beside
+each stopwatch figure. That pairing is the calibration, and **E2 is gated on it**: pulling levers
+before the meter is trusted is how this milestone lost two evenings already.
+
+
+### 2026-08-13 · Fable 5 + owner at the bench · the drops were named — a client-layer defect wearing the weather as a disguise
+
+**The day opened as "why does the Wi-Fi keep failing" and closed with the Wi-Fi acquitted.**
+The morning log (`device-monitor-260813-095512.log`) showed the panel greying on a ~7 s cycle,
+attempt #159 by 10:09, at rssi −78…−85 — the far-node signature, so the mesh mis-association of
+2026-08-10 looked recurred. Three facts pulled out of the capture broke that reading: the 802.11
+association **never dropped** (74 socket deaths, zero `Reason:` lines, zero rejoins, with those
+lines demonstrably printable on this rig); **74/74 TLS handshakes succeeded at normal speed** on
+the same "unusable" link; and the storm **ended by itself** mid-run at 10:09:42 with RSSI still
+−80s, after which one socket held for minutes draining a 227 s Anvil backlog. A link that fails
+established flows every ~2 s does not clear 74 consecutive multi-RTT handshakes. Full evidence
+chain, all six captures, in `hardware/bench-2026-08-13-wifi-drop-diagnosis.md` — the short form:
+
+1. **Two boards, one BSSID, one afternoon.** Board B ran `firmware/diag/link_autopsy.cpp` — a
+   minimal owned client (esp-tls + hand-rolled WS) — **pinned to the same sick node** the main
+   firmware was dying on (`EE:D3:62:AE:81:F9`, −71…−80). Result: the production stack died
+   continuously beside it (36 connects by 20:25); B held **one socket 3.7 h, 534 MB, zero
+   deaths**, surviving measured fades of 0.5–3.9 s throughout.
+2. **Every captured death is errno-silent.** A two-line errno capture in `on_event()` labelled
+   **17/17 deaths `errno=119 (EINPROGRESS)`** — stale from the connect phase; the failing read
+   set no socket error. Half arrived via `event 4`, the library's *clean-close* path. Zero
+   ECONNRESET, zero ETIMEDOUT: nothing beyond the board ever killed a flow.
+3. **The corruption was caught in the act.** 85 rejects co-timed with deaths, recurring
+   signature `SPLIT@1` — exactly one stray byte (the previous message's tail) glued ahead of
+   clean JSON, plus mid-JSON fragments delivered as whole messages. Post-decryption, so inside
+   the client's buffer path: the parked 2026-08-10 "parse-burst truncation" finding, now
+   co-located with the deaths and both attributed to `esp_websocket_client`'s offset accounting.
+4. **The strong-node "accepted residual" is the same defect.** Deaths at −39 dBm at ~1 per
+   6–10 min (climbing with household load) — the 2026-08-10 "occasional drops on a strong
+   association" were never weather.
+5. **The boot lottery, mechanised.** With `bssid=`/`ch=` now printed at association, four boots
+   drew `…:9A` −40 / `…:B3` −76 / `…:F9` −76 / `…:9A` −39: three same-SSID Deco siblings on one
+   channel, half the draws −76 with −40 available. Framework default `WIFI_FAST_SCAN` = first
+   probe response wins, and the ESP32 never roams off its draw. The 2026-08-10 mesh fix was
+   never a fix; it was a re-roll.
+6. **The 2026-08-09 §9 open defect closes.** B's per-window worst-gap instrument: ~1,140
+   windows on the sick node, mean worst-fade ~580 ms, max 3,914 ms, none fatal. The 1–2.5 s
+   stalls-with-socket-up are real RF fades, honestly reported by the watchdog, amplified by
+   weak-node draws.
+
+**Done.** Two diagnostic firmwares (`-e wifi-diag`: per-BSSID survey, STA reason codes,
+pin-to-strongest; `-e link-autopsy`: the owned-client prototype with per-death rc/errno/close
+autopsy, worst-fade tracking, sick-node pin). Main firmware: `bssid=/ch=` on the association
+line, `errno` on every `ws down`, the `depthcharge-nopp` arm (built, unused — evidence moved off
+ping/pong before it was needed), `[platformio] default_envs = depthcharge` (a bare `pio run -t
+upload` was flashing all envs, last one winning). Bench record written. **The association fix
+applied in-tree:** `WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN)` + `setSortMethod(
+WIFI_CONNECT_AP_BY_SIGNAL)` in `connect_wifi()` — builds green, **not yet flashed/bench-proven**.
+
+**Decisions, with why.**
+
+- **The client layer gets replaced, by brief, not by tonight's hands** —
+  `docs/briefs/M3-transport-own-the-websocket-client.md`. The evidence convicts the library, the
+  prototype proves the replacement shape on this exact vintage, and the soak numbers above are
+  the acceptance bars. Not attempted in-session because it crosses four invariants and the
+  house method is host-first with a work order; improvising it at 20:00 is how transport
+  sessions have been lost before.
+- **The scan-method fix went in directly** — two lines, evidence in hand, reversible, and every
+  boot until it lands is a coin-flip onto a −76 node.
+- **`depthcharge-nopp` is kept but demoted** to a negative-result run if ever wanted.
+- **Stage E interaction, recorded:** during storms the book lagged to 171 s+ and each socket
+  death "rescued" it via fresh-snapshot backlog skip (`seq+113984` ≈ 11 min in one hole).
+  Killing the deaths removes that accidental un-lagging — E's staleness work gets *more*
+  visible, not less. Also: one workstation sleep (~17:45–19:50) gapped the captures; board-side
+  cumulative counters bridge it, noted in the bench record.
+
+**State of the tree.** Host workflow untouched by today (no `engine/`/`harness/` change).
+Firmware: `depthcharge`, `depthcharge-ps`, `depthcharge-nopp`, `wifi-diag`, `link-autopsy` all
+build green. Everything uncommitted; **run the owner code-review skill over the diff before
+committing** (diag sketches + `ws_transport` edits + `platformio.ini` + docs).
+
+**Exact next step.** Flash the scan-fix `depthcharge` build and power-cycle five times: every
+boot must land ≥ −45 dBm on `…:9A` (the acceptance for the two-line fix). Then the E-gated bench
+run above resumes as written — with the caveat that its lag measurements should be read knowing
+socket deaths no longer reset the backlog once the client brief lands. The client brief is ready
+to schedule as its own sitting.
+
+**Addendum, 21:40 — the five-boot acceptance ran, and FAILED.** Draws:
+`9A −59 / B3 −86 / 9A −64 / 9A −67 / F9 −73` — two of five on weak siblings with
+`ALL_CHANNEL_SCAN` + `BY_SIGNAL` demonstrably in the running build (boot 2 joined −86 with a
+~−60 node up). The driver''s sorted join is not reliable across mesh siblings on this vintage;
+the explicit scan-then-join fallback is promoted into
+`M3-transport-own-the-websocket-client.md` as its deliverable 0, with the bar restated
+*relative* (join the strongest sibling visible in your own scan) because every sibling read
+~20 dB below its afternoon figure at 21:40 — absolute-dBm bars are the wrong shape. The
+**exact next step** above amends accordingly: the five-boot check is done and failed; the
+next session starts at the brief, deliverable 0 first.

@@ -50,6 +50,7 @@
 #include "heap_probe.hpp"
 #include "ladder_render.hpp"
 #include "panel.hpp"
+#include "rx_budget.hpp"
 
 namespace depthcharge::fw {
 
@@ -66,9 +67,9 @@ class RenderTask {
 public:
     RenderTask(SnapshotChannel& channel, const FeedTask& feed, const FramePipe& pipe,
                HeapProbe& heap, const CoreIdleProbe& idle, const LinkQuality& link,
-               Panel& panel) noexcept
+               const RxBudget& rx, Panel& panel) noexcept
         : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap), idle_(idle), link_(link),
-          panel_(panel) {}
+          rx_(rx), panel_(panel) {}
 
     // Creates the task pinned to Core 1 — the other half of the two-core split.
     // Bytes, not words (see feed_task.hpp). The task formats several 64-bit
@@ -132,7 +133,13 @@ private:
 
     // Per-window rates, derived from the running counters. Separate from
     // print_stats() because it is the only part that carries state across calls.
-    void print_rates(const FramePipeStats& p, std::uint64_t events_out) noexcept;
+    //
+    // It also prints the age line, because the age and the drain fraction it is
+    // derived from must be read together — a lag figure with no ratio beside it
+    // is the shape of number this milestone has already been misled by twice.
+    void print_rates(const FramePipeStats& p, const FeedTask::Stats& f,
+                     std::uint64_t events_out) noexcept;
+    void print_rx() noexcept;
 
     SnapshotChannel& channel_;
     const FeedTask& feed_;
@@ -140,7 +147,14 @@ private:
     HeapProbe& heap_;
     const CoreIdleProbe& idle_;
     const LinkQuality& link_;
+    const RxBudget& rx_;
     Panel& panel_;
+
+    // The RX budget's previous snapshot and window anchor — this task's own,
+    // like drawn_at_block_ below, because the diffing instrument lives with
+    // the printer, not with the counter it reads.
+    RxBudget rx_prev_{};
+    std::int64_t rx_block_us_ = 0;
 
     DisplaySnapshot received_{};
 
@@ -193,6 +207,10 @@ private:
         std::uint32_t chunks = 0;
         std::uint64_t events = 0;
         std::uint32_t drawn = 0;
+        // `summary` frames, whose rate is a CLOCK rather than a market
+        // observation (staleness.hpp) — so its per-window fraction of 2.00/s is
+        // the instantaneous drain rate the accumulated age is integrated from.
+        std::uint64_t summaries = 0;
     };
     Window prev_{};
     bool have_prev_ = false;
