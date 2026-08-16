@@ -38,19 +38,19 @@ struct Bench {
     std::int64_t now = 0;
     bool socket = false;
     bool wifi = true;
-    // The last-byte stamp the transport feeds in. Left at 0 — "nothing yet" — by
+    // The last-DATA stamp the transport feeds in. Left at 0 — "nothing yet" — by
     // every test that predates the silence recycle, which is exactly the
     // behaviour a caller that never fills the field in must get: the supervisor
     // measures silence from the connect edge it observes for itself, so an unset
     // stamp can never age a socket that has only just come up.
-    std::int64_t last_rx = 0;
+    std::int64_t last_data = 0;
 
     SupervisorDecision step() {
         SupervisorInput in;
         in.now_us = now;
         in.socket_connected = socket;
         in.wifi_associated = wifi;
-        in.last_rx_us = last_rx;
+        in.last_data_us = last_data;
         const SupervisorDecision d = sup.poll(in);
         now += kSupervisePeriodUs;
         return d;
@@ -281,12 +281,12 @@ TEST_CASE("the holdoff line returns after the feed recovers") {
 namespace {
 
 // A socket that is up and delivering. `feed()` advances the clock while keeping
-// the last-byte stamp current, which is what a healthy connection looks like to
+// the last-data stamp current, which is what a healthy connection looks like to
 // the supervisor; `starve()` advances it while leaving the stamp where it was.
 struct SocketBench : Bench {
     SocketBench() {
         socket = true;
-        last_rx = now;
+        last_data = now;
         step();   // the up-edge, so the supervisor has seen this socket connect
     }
 
@@ -304,7 +304,7 @@ private:
     SupervisorDecision run(std::int64_t span, bool bytes) {
         const std::int64_t until = now + span;
         while (now < until) {
-            if (bytes) { last_rx = now; }
+            if (bytes) { last_data = now; }
             const SupervisorDecision d = step();
             if (d.action == SupervisorAction::StartAttempt) { return d; }
         }
@@ -364,6 +364,37 @@ TEST_CASE("the 2026-08-16 Anvil stall costs nothing") {
     CHECK(b.sup.attempts() == 0u);
 }
 
+TEST_CASE("CONTROL TRAFFIC MUST NOT KEEP A SILENT SOCKET ALIVE — the ping hazard") {
+    // The regression turning the client ping on could have introduced, pinned as
+    // the contract it is. `last_data_us` must be advanced by DATA and by nothing
+    // else: the board now provokes a pong every kPingPeriodUs (ws_ping.hpp), and
+    // a transport that fed byte-arrival into this field would refresh the clock
+    // with its own control traffic — so a peer that answers pongs and publishes
+    // nothing could never be recycled, which is the one case the mechanism
+    // exists for and is exactly the 2026-08-16 00:12 stall.
+    //
+    // WHAT THIS TEST CAN AND CANNOT DO, because overstating it would be worse
+    // than not writing it. The supervisor takes a number; it cannot see what the
+    // transport chose to put in it, and no host test can — `WsTransport` is the
+    // ESP-IDF half. So this pins the POLICY end (silence is measured against
+    // whatever advances this field, without exception) and documents the rule
+    // the caller owes. The transport end is one line, `on_chunk`, and the
+    // comment there carries the same reasoning.
+    SocketBench b;
+
+    // A pong every 10 s for an hour, if the caller were wrong about the field:
+    // six polls of silence, then a refresh, over and over. The recycle must
+    // still be reached, because a pong is not data and never touches the clock.
+    for (int i = 0; i < 360; ++i) { b.starve(10 * 1000 * 1000LL); }
+    CHECK(b.sup.attempts() >= 1u);
+
+    // And the converse, so the test cannot pass by the clock never advancing at
+    // all: real data on the same cadence holds the socket open indefinitely.
+    SocketBench live;
+    for (int i = 0; i < 360; ++i) { live.feed(10 * 1000 * 1000LL); }
+    CHECK(live.sup.attempts() == 0u);
+}
+
 TEST_CASE("the recycle's attempt behaves like any other from there on") {
     // Once the decision is out, the transport tears the socket down and opens a
     // replacement — so the supervisor sees the socket go away and come back, and
@@ -399,7 +430,7 @@ TEST_CASE("the recycle's attempt behaves like any other from there on") {
     // Down, then up with data: a clean ReportConnected and a clear outage.
     b.step();
     b.socket = true;
-    b.last_rx = b.now;
+    b.last_data = b.now;
     const SupervisorDecision up = b.step();
     REQUIRE(up.action == SupervisorAction::ReportConnected);
     CHECK(up.attempt == 2u);
@@ -410,7 +441,7 @@ TEST_CASE("the recycle's attempt behaves like any other from there on") {
 }
 
 TEST_CASE("the silence clock starts at the connect, not at the epoch") {
-    // A caller that never fills `last_rx_us` in — which is every test written
+    // A caller that never fills `last_data_us` in — which is every test written
     // before this feature, and would be a transport that forgot the store — gets
     // a supervisor that measures from the up-edge it observed itself. Without
     // that, a stamp of 0 against a clock that is hours into a run would read as
@@ -418,7 +449,7 @@ TEST_CASE("the silence clock starts at the connect, not at the epoch") {
     Bench b;
     b.now = 9 * kSilenceRecycleUs;   // a board that has been up a long time
     b.socket = true;
-    b.last_rx = 0;                   // never stamped
+    b.last_data = 0;                   // never stamped
 
     const std::int64_t connected_at = b.now;
     for (int i = 0; i < 40; ++i) {
@@ -443,9 +474,9 @@ TEST_CASE("a socket that dies normally is not labelled a silence recycle") {
     // "recycling a live socket" for a socket that had already gone.
     Bench b;
     b.socket = true;
-    b.last_rx = b.now;
+    b.last_data = b.now;
     b.step();
-    b.socket = false;   // and the last-byte stamp stays where the feed left it
+    b.socket = false;   // and the last-data stamp stays where the feed left it
 
     SupervisorDecision d;
     while (d.action != SupervisorAction::StartAttempt) {
@@ -481,7 +512,7 @@ TEST_CASE("socket_is_silent is the one spelling both cores decide with") {
 TEST_CASE("the policy's invariants hold over an arbitrary walk of inputs") {
     // A property check rather than another example. The supervisor is a
     // deterministic reducer over (now, socket_connected, wifi_associated,
-    // last_rx_us), and the two things that must be true of EVERY trace through
+    // last_data_us), and the two things that must be true of EVERY trace through
     // it are cheap to state and expensive to notice by example:
     //
     //   1. Two attempts are never closer together than one backoff. Anything
@@ -501,7 +532,7 @@ TEST_CASE("the policy's invariants hold over an arbitrary walk of inputs") {
     };
 
     std::int64_t now = 0;
-    std::int64_t last_rx = 0;
+    std::int64_t last_data = 0;
     bool socket = false;
     std::int64_t previous_attempt = -1;
     int attempts = 0;
@@ -512,13 +543,13 @@ TEST_CASE("the policy's invariants hold over an arbitrary walk of inputs") {
         // are exercised for long stretches.
         if (next(400) == 0) { socket = !socket; }
         const bool delivering = socket && next(10) != 0;
-        if (delivering) { last_rx = now; }
+        if (delivering) { last_data = now; }
 
         SupervisorInput in;
         in.now_us = now;
         in.socket_connected = socket;
         in.wifi_associated = (next(20) != 0);
-        in.last_rx_us = last_rx;
+        in.last_data_us = last_data;
 
         const SupervisorDecision d = sup.poll(in);
 

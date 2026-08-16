@@ -51,6 +51,7 @@
 #include "ladder_render.hpp"
 #include "panel.hpp"
 #include "rx_budget.hpp"
+#include "ws_ping.hpp"
 
 namespace depthcharge::fw {
 
@@ -67,9 +68,9 @@ class RenderTask {
 public:
     RenderTask(SnapshotChannel& channel, const FeedTask& feed, const FramePipe& pipe,
                HeapProbe& heap, const CoreIdleProbe& idle, const LinkQuality& link,
-               const RxBudget& rx, Panel& panel) noexcept
+               const RxBudget& rx, const PingProbe& ping, Panel& panel) noexcept
         : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap), idle_(idle), link_(link),
-          rx_(rx), panel_(panel) {}
+          rx_(rx), ping_(ping), panel_(panel) {}
 
     // Creates the task pinned to Core 1 — the other half of the two-core split.
     // Bytes, not words (see feed_task.hpp). The task formats several 64-bit
@@ -148,6 +149,12 @@ private:
     const CoreIdleProbe& idle_;
     const LinkQuality& link_;
     const RxBudget& rx_;
+    // Const, and §6 #5 is the reason rather than tidiness — see
+    // WsTransport::ping_probe(). This task draws the panel; handing it anything
+    // it could read as "the venue is answering, so we are live" is exactly the
+    // frozen-ladder-reading-LIVE outcome the invariant forbids. It prints it and
+    // does nothing else with it.
+    const PingProbe& ping_;
     Panel& panel_;
 
     // The RX budget's previous snapshot and window anchor — this task's own,

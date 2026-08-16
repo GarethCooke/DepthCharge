@@ -182,15 +182,28 @@ struct SupervisorInput {
     // that window cannot succeed, and it is not free — it costs a retry cycle
     // of grey panel.
     bool wifi_associated = false;
-    // When the last byte came off the socket, on the same clock as `now_us`.
+    // When the last DATA arrived on the socket, on the same clock as `now_us`.
+    //
+    // DATA, NOT BYTES, AND THE DISTINCTION IS LOAD-BEARING SINCE THE CLIENT PING
+    // WENT ON (ws_ping.hpp). This field used to be fed from every read that
+    // produced bytes, which was the same quantity while data frames were all
+    // that ever arrived. They are not any more: the board provokes a pong every
+    // kPingPeriodUs, and a caller that fed byte-arrival here would refresh this
+    // clock with its own control traffic — so a peer that answers pongs and
+    // publishes nothing would never be recycled, which is precisely the case
+    // this whole mechanism exists for.
+    //
+    // The rule for any caller, stated because this class cannot enforce it: feed
+    // this from something that only a *book event* can advance. Anything a
+    // healthy-but-silent peer can produce on its own belongs nowhere near it.
     //
     // Zero means "nothing yet", and unlike the two clocks inside this class that
     // is SAFE here rather than the encoding bug the note on those warns about:
-    // the silence is measured from `max(last_rx_us, the connect)`, and the
+    // the silence is measured from `max(last_data_us, the connect)`, and the
     // connect edge is observed by poll() itself. So a caller that never fills
     // this field in gets a supervisor that simply never recycles, which is the
     // behaviour this class had before the field existed.
-    std::int64_t last_rx_us = 0;
+    std::int64_t last_data_us = 0;
 };
 
 class WsSupervisor {
@@ -211,7 +224,7 @@ public:
 
         // The socket's own up-edge, observed here rather than trusted from the
         // caller. It is what lets the silence be measured from the connect when
-        // no byte has arrived yet — and what makes `last_rx_us == 0` mean
+        // nothing has arrived yet — and what makes `last_data_us == 0` mean
         // "unknown" instead of "silent since the epoch".
         if (in.socket_connected) {
             if (!socket_up_) {
@@ -224,7 +237,7 @@ public:
 
         // The most recent instant this socket is known to have been alive.
         const std::int64_t alive_since_us =
-            (in.last_rx_us > socket_up_since_us_) ? in.last_rx_us : socket_up_since_us_;
+            (in.last_data_us > socket_up_since_us_) ? in.last_data_us : socket_up_since_us_;
         // A socket that is up and has said nothing for kSilenceRecycleUs is
         // treated from here on exactly as a dead one: the outage machinery below
         // is the same code, and the transport's StartAttempt is the same

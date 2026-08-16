@@ -34,41 +34,20 @@
 #include <cstdint>
 
 #include "esp_tls.h"
+#include "anvil_endpoint.hpp"
 #include "ws_frame.hpp"
 
 #include "frame_pipe.hpp"
 #include "frame_reassembler.hpp"
 #include "rx_budget.hpp"
 #include "stall_probe.hpp"
+#include "ws_ping.hpp"
 #include "ws_supervisor.hpp"
 
 namespace depthcharge::fw {
 
-// THE ENDPOINT, IN THE FEWEST SPELLINGS THAT STILL COMPILE. Ticker 101 on the
-// deployed demo — the M0/M1/M3 subject, hardcoded for M3 (the brief's "one
-// panel, one ticker, one venue"). Multi-ticker is M7.
-//
-// There used to be five constants here, because the library parsed a `wss://`
-// URI while the DNS warm resolved a bare host and the two could drift. Nothing
-// parses a URI any more, so there are three facts and one derived spelling:
-//
-//   kAnvilHost      the authority — resolved, sent as `Host:`, checked against
-//                   the certificate's SAN by esp-tls
-//   kAnvilPath      the request target of the upgrade
-//   kAnvilPort      the port, as esp_tls_conn_new_sync wants it (an int)
-//   kAnvilPortText  the same port, as getaddrinfo wants it (a service string),
-//                   held to the line above by the static_assert
-//
-// The `wss://host/path` form survives only where a human reads it — one log
-// line in start(), composed at the printf rather than stored, so there is no
-// second copy of the authority to go stale.
-inline constexpr char kAnvilHost[] = "anvil.garethcooke.com";
-inline constexpr char kAnvilPath[] = "/ws?ticker=101";
-inline constexpr std::uint16_t kAnvilPort = 443;
-inline constexpr char kAnvilPortText[] = "443";
-static_assert(kAnvilPort == 443 && kAnvilPortText[0] == '4' && kAnvilPortText[1] == '4' &&
-                  kAnvilPortText[2] == '3' && kAnvilPortText[3] == '\0',
-              "kAnvilPort and kAnvilPortText must state the same port");
+// The endpoint — host, path, port — is nvil_endpoint.hpp, shared with the
+// diag client so the two cannot drift. See that file for why it moved.
 
 // The client's Sec-WebSocket-Key, and the accept value it obliges the server to
 // return: base64(SHA1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")), RFC 6455
@@ -95,23 +74,33 @@ inline constexpr char kWsAccept[] = "D0+kBNqSZmwk6149E3G25IPQoN4=";
 // kRxWatchdogMs (1000 ms) greys the panel and stays exactly where it is.
 inline constexpr std::uint32_t kReadTimeoutMs = 1000;
 
-// Client->server pings: OFF, and now for a reason rather than pending a
-// measurement.
+// Client->server pings: ON, and the question they answer is not the one the
+// 60 s arm was built for.
 //
-// The open question was the half-open TCP connection — bytes stop, the
-// association holds, nothing reports it — which the RX watchdog greys the panel
-// for in 1 s but cannot make the socket admit. A client ping's only job there
-// was to PROVOKE the silence into an error the socket would report.
+// THE OLD QUESTION IS STILL CLOSED. A ping was originally proposed to PROVOKE a
+// half-open TCP connection into an error the socket would report, and that is
+// answered from the other side: `WsSupervisor` acts on the silence directly
+// (kSilenceRecycleUs, five minutes, host-tested), which needs no server
+// cooperation and no write into a fade. Nothing below re-opens it, and the
+// recycle remains the only recovery path.
 //
-// It is answered from the other side: `WsSupervisor` acts on the silence
-// directly (kSilenceRecycleUs, five minutes, host-tested), which needs no server
-// cooperation, no write into a fade on a link whose whole problem was writes
-// into fades, and no bench evening to settle. `depthcharge-ping` still builds
-// the 60 s arm; nothing needs it, and it is a candidate for deletion.
-#ifndef DC_WS_PING_MS
-#define DC_WS_PING_MS 0
-#endif
-inline constexpr std::uint32_t kClientPingMs = DC_WS_PING_MS;
+// THE NEW QUESTION IS WHOSE FAULT THE STALENESS IS. `staleness.hpp` says how old
+// the book is; it cannot say whether the age is this socket's server-side send
+// queue (ROADMAP A7 is then the fix) or lag upstream of it in the broadcaster
+// (A7 would not help). A round-trip separates them, because Anvil's vendored
+// Crow queues a pong behind everything already posted to this connection. The
+// argument, the bound and what may NOT be concluded from a fast pong are all in
+// `ws_ping.hpp`; the policy is host-tested in `harness/tests/test_ws_ping.cpp`
+// and the cadence constant lives there with it.
+//
+// The switch survives as a control arm rather than as a default, inverted from
+// what it used to be: `depthcharge-noping` builds the pingless firmware, so a
+// bench session can still attribute a change to this and nothing else. It is
+// `DC_WS_PING` / `kClientPingEnabled`, and it is declared in `ws_ping.hpp`
+// beside the thing it switches — `PingProbe::render` has to know about it too,
+// so that the pingless arm says "disabled at build" rather than printing "no
+// round-trip yet" forever and reading exactly like a venue that stopped
+// answering. Two spellings of one build flag is how those two ends drift.
 
 // The RX task. Core 0 by the brief, which is the thing the old client could
 // never do: esp_websocket_client_config_t in this vintage has no task_core_id,
@@ -232,9 +221,14 @@ public:
     // Public because WsFrameParser is a template over this type, not because
     // anything else may call them: every one runs on the RX task, inside
     // parser_.feed(), on bytes that task just read.
-    void on_chunk(const WsChunk& c) noexcept { reassembler_.on_chunk(c); }
+    // THE SILENCE RECYCLE'S CLOCK IS STAMPED HERE, not at the read, and moving
+    // it was forced by turning the client ping on. See `last_data_us_`.
+    void on_chunk(const WsChunk& c) noexcept {
+        last_data_us_.store(c.arrival_us, std::memory_order_relaxed);
+        reassembler_.on_chunk(c);
+    }
     void on_ping(const std::uint8_t* payload, std::uint32_t len) noexcept;
-    void on_pong() noexcept { pipe_.count_control(); }
+    void on_pong() noexcept;
     void on_close(std::uint16_t code, const char* reason, std::uint32_t reason_len) noexcept;
     // Deliberately empty. The parser latches the error and stops reading, and
     // rx_main() acts on it after feed() returns — because the socket cannot be
@@ -301,8 +295,18 @@ public:
     // instrument, and instruments are read, never steered.
     const RxBudget& rx_budget() const noexcept { return budget_; }
 
+    // The client-ping round-trip (ws_ping.hpp): written only by the RX task,
+    // rendered by the statistics block. Const for the same reason, and with one
+    // more of its own — §6 #5. Nothing may branch on this to decide the panel is
+    // live: a server can answer pongs perfectly while publishing nothing, so a
+    // caller that could turn the panel green on control traffic would be drawing
+    // a frozen ladder that reads LIVE. Const access makes "report only" the
+    // shape of the type rather than a rule someone has to keep.
+    const PingProbe& ping_probe() const noexcept { return probe_; }
+
 private:
     RxBudget budget_;
+    PingProbe probe_;
 
     // Writes `len` bytes or reports failure; esp_tls_conn_write may take fewer.
     bool write_all(const void* data, std::size_t len) noexcept;
@@ -380,7 +384,6 @@ private:
     int close_code_ = -1;             // the server's close frame, if it sent one
     char close_reason_[64] = {};
     std::uint32_t deaths_ = 0;
-    std::int64_t last_ping_us_ = 0;   // client->server, only when kClientPingMs > 0
 
     // The read buffer, once, in the object. 4 KiB of BSS rather than 4 KiB of
     // task stack — the RX task's stack has to hold an mbedtls handshake and this
@@ -391,18 +394,34 @@ private:
     //
     // The three words that cross tasks, and the only three.
     //
-    // `socket_up_` and `last_rx_us_` are written by the RX task and read by
+    // `socket_up_` and `last_data_us_` are written by the RX task and read by
     // supervise() on loopTask; `connect_requested_` is written by supervise()
     // and consumed by the RX task. All three are branched on rather than merely
     // reported, which is the bar that decides what is atomic here while every
     // diagnostic counter in this firmware is not.
     //
-    // `last_rx_us_` is the silence recycle's input (kSilenceRecycleUs). It is
+    // `last_data_us_` is the silence recycle's input (kSilenceRecycleUs). It is
     // atomic and not a plain int64 for one reason: a torn 64-bit read on this
     // 32-bit core would not merely misreport a number, it would hand the
     // supervisor a garbage age and could tear down a healthy socket. Stamped at
-    // the connect as well as at every read, so the value always describes THIS
-    // socket and never the one before it.
+    // the connect as well as at every data chunk, so the value always describes
+    // THIS socket and never the one before it.
+    //
+    // IT COUNTS DATA, NOT BYTES, AND TURNING THE CLIENT PING ON IS WHAT FORCED
+    // THAT. This used to be stamped at the read, on any bytes at all, which was
+    // right while the only things arriving were data frames. A client ping
+    // manufactures a pong every kPingPeriodUs, and a pong is bytes — so under
+    // the old rule OUR OWN traffic would have refreshed this clock and the
+    // five-minute recycle could never have fired against a peer that answers
+    // pongs and publishes nothing. That is not a hypothetical peer: it is
+    // precisely the 2026-08-16 00:12 stall, and the recycle is the only recovery
+    // path there is. Stamping on data chunks makes the test strictly stronger —
+    // "no DATA for five minutes" rather than "no bytes for five minutes" — and
+    // restores the meaning the constant was sized against.
+    //
+    // The stamp is `c.arrival_us`, which is the value the read took BEFORE
+    // parsing, so the old comment's property is preserved exactly: a read that
+    // costs an unusually long feed still cannot age its own arrival.
     //
     // PRICED RATHER THAN ASSUMED, because 64 bits is not free here: the LX7 has
     // no 64-bit atomic instruction, so `nm` on the linked image shows
@@ -416,7 +435,7 @@ private:
     // a spinlock nothing is contending.
     std::atomic<bool> socket_up_{false};
     std::atomic<bool> connect_requested_{false};
-    std::atomic<std::int64_t> last_rx_us_{0};
+    std::atomic<std::int64_t> last_data_us_{0};
 
     TaskHandle_t rx_task_ = nullptr;
 

@@ -444,3 +444,203 @@ and that changed the ask.
 No commit made; the tree is dirty with the six files above and ctest is green. M4 is still
 **Next**, and it inherits one more rule than it did this morning (§9, 2026-08-16 eve): size
 the bytes you will *render*, not the bytes the venue offers.
+
+---
+
+### 2026-08-16 (D5) · Opus 5 · the venue gets pinged, and the recycle nearly lost its clock
+
+**Context.** A7 is now underway Anvil-side, which frees the two DepthCharge-side items that were
+queued behind it. The owner asked for both.
+
+**Item 1 was already done, and the finding is that the log said otherwise.** `staleness.hpp`'s
+`SecondsText` and every accessor behind `age`/`worst`/`run`/`over` have been 64-bit since
+`1dea077` — the *same commit* that added the §9 soak row whose closing sentence reads "Fix owed
+before the next soak". So the row recorded a defect and shipped its fix together, and the
+sentence has been read as outstanding ever since. Closed explicitly in §9 rather than by editing
+that row, per the table's rule. One residual is deliberate and is stated there so a future reader
+counting fields does not think it was missed: `worst_ahead_us_` is still a clamped uint32, and
+cannot produce a false negative because the test that fires on it is the uncapped per-mille ratio.
+
+**Item 2, D5, is done and is the substantial half.** `firmware/src/ws_ping.hpp` — `PingProbe`,
+ESP-IDF-free, the sixth instrument written to that rule — with `harness/tests/test_ws_ping.cpp`
+(13 cases). The client ping is **on by default**; `depthcharge-ping` inverts to
+`depthcharge-noping` as the control arm. A `-- ping` line prints directly under `-- age`.
+
+**What it buys, which is the reason to have built it rather than the reason it was on the list.**
+The ping's original question — provoke a half-open socket into an error — stays closed; the
+silence recycle owns recovery. The question it answers now is one nothing here could answer:
+`staleness.hpp` says how old the book is and cannot say *whose fault*. A pong queues behind
+everything already posted to this connection, so the round-trip prices **this socket's
+server-side send queue**. Age high + rtt high is our own undrained queue and A7 is the fix; age
+high + rtt low is lag upstream in the broadcaster and A7 would not help. That split is the
+diagnosis, and it is why the two lines are adjacent and share a vocabulary.
+
+**The thing that would have shipped as a silent regression, and it is the entry §9 is written
+around.** The silence recycle's clock was fed from *byte* arrival. A ping manufactures a pong
+every 10 s, and a pong is bytes — so the board's own control traffic would have refreshed the
+detector, and a peer that answers pongs while publishing nothing could never have been recycled.
+That peer is not hypothetical: it is the 2026-08-16 00:12 stall, and the recycle is the only
+recovery path there is. `SupervisorInput::last_rx_us` is now `last_data_us`, stamped in
+`on_chunk` from the same pre-parse `arrival_us` the read used — strictly stronger, no precision
+lost. **General rule: an instrument that generates traffic must not feed a detector that measures
+traffic.**
+
+**Three design points pinned rather than commented.** One ping in flight at a time, because RFC
+6455 §5.5.2 lets a peer answer several with one pong and a correlation key cannot create the
+responses it would correlate. An unsolicited pong (§5.5.3) is counted, never treated as an answer
+— the round-trip it would fabricate is small and plausible. And **nothing branches on any of it**:
+§6 #5 means a pong must never turn the panel green, so the type exposes no `healthy()`/`live()`
+predicate at all and the render task holds it `const`.
+
+**Review, in two passes, and the second one is the one that mattered.** The first pass ran
+mid-build and was partial; the owner asked whether the code had actually been reviewed, and the
+honest answer was "not completely". The full pass found the worst item.
+
+*First pass — both the sibling instrument's scars arriving unchanged in a new file.*
+(1) The peak had no run-level survivor, so the deepest reading this probe can take — a round-trip
+that outlives its own socket — was banked at `note_disconnect` and erased by the `note_connect`
+seconds later. That is exactly how 21 reconnects made the 86-minute run of 2026-08-09 look
+healthy. Fixed with `worst_rtt_ever_us_` and a `bank_peak` helper, mirroring `StalenessEstimator`.
+(2) `render` returned early on "no reading on this socket yet" and printed a shrug over a
+74-second finding it was holding. Fixing it also collapsed two spellings ("outstanding" /
+"waiting") of one quantity into one — caught by a test asserting the old wording.
+
+*Second pass — and the first item is the one this project would least like to ship.*
+(3) **The header claimed the single-writer design put this file "in a stronger position than any
+other counter in this firmware". That is false, and `staleness.hpp` had already written the
+warning against making it** — verbatim: "do not copy their sentence into this file", because
+64-bit stores on the LX7 are two word stores and the render task reads across cores. The claim
+was corrected into the split it should always have been: the *durations* are safe, but for a
+stated reason (a round-trip cannot outlive its socket, and `kSilenceRecycleUs` bounds that at
+five minutes, so the high word is always zero — and if that constant ever grows past ~71.6
+minutes the guarantee lapses); the *timestamp* `ping_sent_us_` has no such bound and can put one
+absurd `waiting` on one log line past 71.6 minutes of uptime, exactly as the age clock can. A
+false safety claim in a header is worse than none, in a file whose entire failure mode is a
+confident wrong number.
+(4) The pingless arm printed "no round-trip yet" on every statistics block forever — on the line,
+indistinguishable from a venue that is being asked and is not answering, which is the *opposite*
+finding. `DC_WS_PING`/`kClientPingEnabled` moved from `ws_transport.hpp` into `ws_ping.hpp` so
+`render()` can say "disabled at build" instead, and so the flag has one spelling rather than two.
+(5) `connections()` counted connect *attempts* — `note_connect` runs before DNS/TCP/TLS — so the
+name overstated it. Renamed `connect_attempts()`.
+
+*Third pass — the two items the second pass had deferred, taken on the owner's word.*
+(6) **`kUsPerMs` was a new named constant used by one file while three siblings inlined `1000u`
+at four sites** — the repeated-literal case, arriving from the other direction. Moved to
+`gap_histogram.hpp` beside the other shared helpers and adopted at all five sites. **It is
+`std::uint32_t`, and the width is the finding**: every pre-existing site divides a `uint32`, so
+the obvious `std::uint64_t` spelling would have promoted `stall_probe`'s per-event `gap_us` and
+`recovery_us`, `reject_log`'s age and `render_task`'s window to 64-bit division — and the LX7 has
+no 64-bit divide instruction, so each becomes a libgcc call. A tidy-up that silently added four
+runtime calls to per-event paths would have been a poor trade for a name.
+(7) **The `kClientPingEnabled == false` branch of `render()` is now covered.** The second pass
+called it an accepted gap; it is one `add_executable`. `dc_tests_noping` builds
+`test_ws_ping_disabled.cpp` with `-D DC_WS_PING=0` — the same one-source-two-link-configs trick
+`dc_tests_streaming` already uses — and pins the property that only exists in that arm: the line
+must never claim a reading. Its first case asserts the flag actually reached the target, because
+without that the other three would pass vacuously against the enabled render.
+
+*Verified, not changed:* the render task's stack is 6,144 B and the statistics block's frame grew
+by the 128 B of `char ping[128]` beside the existing `char age[208]` — ~2%, on a task whose
+documented greedy consumer is `vsnprintf` rather than these buffers.
+
+*The one limit rather than a defect:* no host test can
+catch a future session repointing `last_data_us` back at byte-arrival. `WsTransport` is the
+ESP-IDF half and is not host-buildable, and a strong typedef would not help either — both
+quantities are `esp_timer_get_time()` results of the same type, differing only in *where* they
+are taken, which no type can express. What exists instead is the policy-end contract test, the
+comment at the single stamping site, and the §9 rule. Stated so nobody later mistakes the
+coverage for more than it is.
+
+**Green.** `cmake --workflow --preset host-mingw` 11/11 (266 cases, 847,548 assertions).
+`depthcharge`, `depthcharge-noping`, `depthcharge-ps` all build. RAM 43.3%, flash 13.4%.
+
+**Not done / next, and none of it is faked.**
+
+1. **Nothing is flashed.** Every claim above is a desk claim. The bench reading that matters is
+   the first `-- ping` line against a real Anvil socket, and the number to expect on a healthy
+   one is **~87 ms** — the transatlantic RTT. Anything much larger, with `-- age` also large, is
+   the queue; anything ~87 ms with `-- age` large is upstream, and that would be a finding.
+2. **The A2 half is still owed by Anvil**, and it is one sentence: the pong-ordering this rests
+   on is stock vendored Crow, read from source and never captured under induced backpressure.
+   Until it is a contract, the number is evidence, not a guarantee.
+3. **The hand-over is still unsent** — unchanged from the entry above.
+4. **Now unblocked, and deliberately not taken:** the previous entry left `render_task.cpp`'s
+   `KiB`-computed / `"KB/s"`-printed mislabel as the one instance standing, because it "could not
+   be compiled or flashed in this session". It can be compiled now. It is a one-line fix and it
+   is the owner's call whether it rides with this change or its own.
+
+---
+
+### 2026-08-16 (A7) · Opus 5 · Anvil answered the same day, and the staleness problem is closed
+
+**Context.** [`docs/anvil-handback-2026-08-16.md`](../anvil-handback-2026-08-16.md) arrived
+answering the A1–A7 ask: **A7, A2, A3 part 1 and A6 are done, pushed and deployed.** Two
+integration tasks landed here and both are done.
+
+**1. `&depth=27`, and it is the entire A7 integration.** `kAnvilPath` is now
+`/ws?ticker=101&depth=27`. `engine/` did not move — the adapter already accepted 83–126 levels a
+side and truncated above `kMaxSnapshotLevels`, exactly as the ask predicted it would.
+
+**Measured here rather than taken on trust, because that is this milestone's whole scar tissue.**
+`tools/capture_anvil.py` gained a `--depth` argument (it could not otherwise capture what the
+board subscribes to, and a trace that does not match the firmware is a golden describing a
+different stream). A 90-second capture is committed as
+`harness/replay/anvil_101_depth27_20260816.ndjson` with three ctest cases — `dc_replay`,
+`dc_replay_streaming` and `dc_ladder` — kept **alongside** the full-depth traces rather than
+replacing them, because the shallow book is the new normal and the deep one is what every golden
+before today was derived from. Priced by `tools/anvil_frame_economics.py`:
+
+| | 2026-08-09 baseline | `depth=27` |
+|---|---|---|
+| `book` mean | 8,428 B | **2,471 B** |
+| levels / frame | ~205 | **60.0** (30 a side — the tier, confirmed from outside) |
+| 90 s of wire | 10.4 MB | **2.84 MB = 27.3%** |
+| sustained | 112.6 KiB/s | **30.8 KiB/s** |
+
+Against the soak's worst measured hour of 56 KiB/s: **1.8× headroom where there was 0.5×.** This
+repo predicted 27.8%; Anvil's independent deployed-server figure of 2,476 B agrees to 0.2%.
+
+**The one contract fact that binds M4/M5: depth is served in TIERS** — 1,2,3,5,8,10,15,20,30,…,
+rounding **up** and never down. Ask 27, receive 30. Anvil's reason is sound (`depth` arrives from
+an unauthenticated query string, so free-form depth would cost one serialisation per distinct
+depth in use, per ticker, per tick). The generalisation is in §9: **a venue's depth parameter is
+a request, not a contract, and an adapter must not assume it got what it asked for.** The tier's
+cost, stated because Anvil sized it as "a few percent": 9.7% of `book` bytes the panel never draws.
+
+**2. `docs/vendor/anvil-protocol.md` re-pinned at `b4d31c2`** — Anvil flagged it stale and it was.
+It gains §3 `depth` (with the tier ladder), §3 **Keepalive**, §4 **Slow consumers**, and the
+`/api/book?depth=` fix. **Two notes this file has been carrying for weeks now close**: the
+2026-08-11 slow-consumer note (§4 documents it in Anvil's own words, citing our figures, and the
+client rule is now contract — *measure freshness against your own clock, never infer it from
+message rate*), and the A2 pong-ordering caveat.
+
+**3. A correction we owed ourselves.** `ws_ping.hpp` said the pong ordering was "read from
+Anvil's source and has never been captured under induced backpressure — read this number as
+evidence and not as a guarantee". Anvil captured it: their probe stops reading until frames back
+up, then sends one ping and reports the pong's **position in the byte stream** rather than its
+RTT — because a slow reader inflates the round-trip whether or not the server reordered anything.
+**425,890 bytes as 149 frames; the pong at index 148, last, zero after it.** D5 now rests on a
+measured property, and the correction is made in the header, ROADMAP and §9 rather than left to
+rot the way the age-clock "fix owed" sentence did.
+
+**4. A premise in our own ask was wrong.** We cited `GET /api/book?depth=` as proof that "the
+name, concept and validation already exist". It took the parameter and **silently ignored it** —
+there was no validation to reuse, and Anvil fixed the REST surface as part of A7. Recorded in §9:
+arguing from a parameter's existence is not arguing from its behaviour.
+
+**What changed in the backlog.** A7/A2/A6 closed; A3 part 1 closed, part 2 open and sized M;
+**A2b is new** (the 2 min 56 s stall, split out of A2 — Anvil's leading hypothesis is fan-out
+head-of-line blocking driven by A3, which would free spontaneously when the stalled socket
+disconnected, matching our unexplained recovery). **A1 gained an ordering constraint we had not
+seen:** the per-ticker sequence is gap-detectable *because* the queue is unbounded and lossless,
+so if A3 part 2 is resolved by dropping `book` frames that property dies — benign under full
+replaces, fatal under deltas. **A3 must be decided before A1**, not alongside it.
+
+**Green.** Host 15/15 (three new replay cases). `depthcharge` builds.
+
+**Not done / next.** Still nothing flashed — and the flash is now more interesting than it was
+this morning, because the board should come up on a third of the bytes. The bench readings to
+take on the first run: `-- age` should stop climbing, and `-- ping` should sit near **87 ms**.
+A7 is the fix for the staleness that three sessions attributed to this firmware; nobody has yet
+seen it work on the panel.

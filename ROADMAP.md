@@ -42,48 +42,73 @@ where there is evidence to carry. Closed items move to the bottom rather than be
 Anvil; each is a note of what DepthCharge is waiting on, working around, or has measured
 from the outside. They live on Anvil's own backlog.
 
-**The hand-over document is [`docs/anvil-handover-2026-08-16.md`](docs/anvil-handover-2026-08-16.md)**
-— these items written for an Anvil session, with the evidence and the file-level detail. Give
-it to an Anvil CC; keep this table as the index. Anvil's own backlog is one bullet at the tail
-of its `docs/anvil-plan.md`, and its claim is the one this repo withdrew (A3), so the first
-thing the hand-over asks for is that the section be rebuilt around these IDs.
+**The ask was [`docs/anvil-handover-2026-08-16.md`](docs/anvil-handover-2026-08-16.md); the reply
+is [`docs/anvil-handback-2026-08-16.md`](docs/anvil-handback-2026-08-16.md).** Anvil answered the
+same day: **A7, A2, A3 part 1 and A6 are done, pushed and deployed**, its backlog is rebuilt
+around these IDs, and one item is new (**A2b**). Both sides now cite the same letters.
 
-| ID | Item                            | Standing                                                          |
-| -- | ------------------------------- | ----------------------------------------------------------------- |
-| A7 | `depth` parameter on `/ws`      | **Do first** — cheapest, and it closes the staleness gap outright |
-| A1 | Sequenced incremental L2 feed   | Right long-term; **no longer blocking** if A7 lands               |
-| A2 | Heartbeat / keepalive           | Mostly answerable on this side — see D5                           |
-| A3 | Per-socket send-queue behaviour | **Unbounded** — answered by Anvil's source; document it           |
-| A4 | Chaos flag for gap testing      | Nice-to-have; near-required alongside A1                          |
-| A5 | Feeder realism                  | Nice-to-have                                                      |
-| A6 | TLS-chain rotation              | Lock-step dependency; a one-line ask, worth now                   |
+| ID  | Item                            | Standing                                                      |
+| --- | ------------------------------- | ------------------------------------------------------------- |
+| A7  | `depth` parameter on `/ws`      | ✅ **DONE + INTEGRATED 2026-08-16** — 112.6 → 30.8 KiB/s       |
+| A6  | TLS-chain rotation              | ✅ **DONE** — in Anvil's `deploy/README.md`, lock-step flagged |
+| A2  | Client pings / keepalive        | ✅ **DONE** — and the ordering is now *measured*, closing D5   |
+| A3  | Per-socket send-queue behaviour | ◐ **pt 1 documented**; pt 2 (bounding it) open, owner's call  |
+| A2b | The 2 min 56 s stall            | ☐ **NEW, open** — split out of A2; two Anvil hypotheses       |
+| A1  | Sequenced incremental L2 feed   | ☐ Sized, not started — **and A3 pt 2 must be decided first**  |
+| A4  | Chaos flag for gap testing      | ☐ Open; near-required alongside A1                            |
+| A5  | Feeder realism                  | ☐ Open; nothing here is blocked on it                         |
 
-The detail below runs in ID order **except A7, which comes first because it is both the
-cheapest item here and the largest win** — measured 2026-08-16, and it demoted A1.
+**Nothing on this side is blocked on Anvil any more.** The two integration tasks the hand-back
+asked for are both done: `&depth=27` is in `kAnvilPath`, and `docs/vendor/anvil-protocol.md` is
+re-pinned at `b4d31c2`.
 
-**A7 · A `depth` parameter on `/ws`** — `?ticker=101&depth=32`, truncating that socket's
-`snapshot`/`book` frames; default unchanged so the web client is untouched.
+The detail below runs in ID order **except A7, which comes first because it was the cheapest
+item here and the largest win** — and it is now closed.
 
-- **Measured 2026-08-16** across both committed captures (`tools/anvil_frame_economics.py`,
-  written for this): `book` frames are **98% of Anvil's wire** at a mean **8,428 bytes**, and
-  they carry **~205 levels** — `ANVIL_BOOK_DEPTH` defaults to 0, "all resting levels", which is
-  deliberate for the web client's scrollable ladder. **DepthCharge renders 27 a side and
-  discards the rest.**
-- **Truncated to 27/side the whole stream falls to 27.8% of its current size — 110.4 KiB/s
-  becomes ~31 KiB/s**, against the soak's measured floor of 56 KiB/s. It fits inside the *worst*
-  hour of the day with ~2× headroom, with no protocol redesign, no sequencing and no resync.
-- `GET /api/book?ticker=&depth=` already takes exactly this parameter, and `/ws`'s `onaccept`
-  already parses `?ticker=` out of the upgrade — so the concept, the name and the plumbing all
-  exist. The one real design question is Anvil's: per-socket depth breaks the
-  serialise-once-fan-out-to-all path (answer: serialise once per distinct depth in use).
-- **Nothing in `engine/` changes to consume it** — the adapter takes 83–126 levels/side today
-  and truncates above `kMaxSnapshotLevels`; shallower is trivially in contract. New traces and
-  goldens would be owed once the wire changes, not before.
+**~~A7 · A `depth` parameter on `/ws`~~ — DONE Anvil-side, DEPLOYED, and INTEGRATED here
+2026-08-16.** `kAnvilPath` is `/ws?ticker=101&depth=27`. That one constant is the entire
+integration; `engine/` did not move, exactly as the ask predicted.
+
+- **Verified on this side rather than taken on trust** — the ask's own lesson was that a nearby
+  measurement gets read as answering the question that mattered.
+  `harness/replay/anvil_101_depth27_20260816.ndjson` (90 s, 1,399 frames, committed and now a
+  ctest case) priced by `tools/anvil_frame_economics.py`: **`book` mean 8,428 → 2,471 B**,
+  **112.6 → 30.8 KiB/s**, **27.3% of the 2026-08-09 baseline**. This repo predicted 27.8%.
+  Anvil's own deployed-server figure of 2,476 B agrees to **0.2%**.
+- **Against the 23.6 h soak's worst measured hour (56 KiB/s): 1.8× headroom, where it was 0.5×.**
+  That is the staleness fix, and it needed no protocol redesign, no sequencing and no resync.
+- **DEPTH IS SERVED IN TIERS** — 1,2,3,5,8,10,15,20,30,40,50,75,100,150,200,300,500,1000, then
+  unlimited. A request rounds **up**, never down, so asking 27 is **served 30** and the adapter
+  truncates the last three. Not in the ask; it came out of Anvil's review, and the reason is
+  sound — `depth` arrives from an unauthenticated query string, so free-form depth would have
+  cost one serialisation per distinct depth in use, per ticker, per tick.
+- The tier's cost, stated because Anvil sized it as "a few percent": 30 served against 27
+  rendered is **9.7% of `book` bytes** the panel never draws. Trivially worth paying; if a later
+  ladder ever offers 27 exactly, that is where the remaining tenth is.
+- **A premise in our own ask was wrong, and it is worth recording.** We cited
+  `GET /api/book?depth=` as proof that "the name, concept and validation already exist". The
+  parameter existed and was **silently ignored** — there was no validation to reuse, and Anvil
+  fixed the REST surface as part of A7. Arguing from the existence of a parameter is not the
+  same as arguing from its behaviour.
 
 **A1 · Sequenced incremental L2 feed.** Promoted 2026-08-11 to the thing that makes the
-hardware work at all; **demoted 2026-08-16 by A7** — a query parameter gets ~80% of the benefit
-for ~2% of the work, so this is no longer blocking and should be judged on its own merits. On
-those it is still the best answer, and the firmware side is still out of levers.
+hardware work at all; **demoted 2026-08-16 by A7, which has now shipped** — the query parameter
+took the stream to 27.3% for one constant on each side, so this is not blocking anything and is
+judged purely on its own merits. On those it is still the better design.
+
+- **Anvil sized it 2026-08-16 and the prerequisite is small.** The per-ticker monotonic book
+  sequence is **S and independent of Stage 4 in both directions**, so it lands well before it:
+  the publish loop already stamps per ticker each tick, and a second counter adds no cross-thread
+  state, no lock and no engine change. One scoping point buys that size — **books only**. A
+  sequence that also orders *trades* against books needs the broadcaster to merge-sort two
+  independent sources, and a delta feed does not need it.
+- **NEW AND ORDER-CHANGING: A3 part 2 must be decided BEFORE A1, not alongside it.** Our own note
+  said the two "have to be answered together"; Anvil sharpened it into a direction. The
+  per-ticker sequence is genuinely gap-detectable end-to-end **because** the per-socket queue is
+  unbounded and therefore lossless. If A3 part 2 is resolved by *dropping* `book` frames, that
+  property dies — benign under full replaces, **fatal under deltas**. So the queue decision
+  constrains the sequence design, and taking A1 first would risk building on a guarantee A3 is
+  about to remove.
 
 - *Sized 2026-08-16.* "A tenth the bytes" was a 3× under-claim: **a median of one level changes
   between consecutive `book` frames** (mean 1.1, p99 3, max 4 over 90 s), so an upper-bound
@@ -112,25 +137,65 @@ those it is still the best answer, and the firmware side is still out of levers.
   object runs tens of seconds behind at UK peak and honestly says so (ARCHITECTURE §9,
   2026-08-16) — but the *smaller feed* no longer has to be this item. A7 is.
 
-**A2 · Heartbeat / keepalive.** Two reasons, and the first one is probably ours.
+**~~A2 · Client pings / keepalive~~ — DONE 2026-08-16, and the ordering is MEASURED.**
+`PROTOCOL.md` §3 gains a **Keepalive** subsection: a client ping is always answered, no rate
+limit and no payload cap (our 10 s cadence is explicitly fine), the server **never initiates** a
+ping in v1 and **never uses pongs to detect dead clients**, and — the load-bearing sentence —
+**the pong is queued behind whatever is already waiting for that socket.**
 
-- Without one, DepthCharge's ~80 ms-republish liveness watchdog false-greys a
-  quiet-but-live book (strain 10). **2026-08-16: Crow answers an unsolicited client PING with a
-  PONG with no application code, and the pong cannot overtake anything already queued on that
-  socket** — so a client-side ping measures **the server's write-path backlog for this
-  connection**, which is stronger than TCP liveness and still blind to producer-side lag in the
-  broadcaster. Ours to build (D5); the Anvil half shrinks to "please treat that ordering as a
-  contract, and say so in `PROTOCOL.md`" — they never claimed it, it is stock vendored Crow.
-- **Observed 2026-08-16 00:12:** the WS endpoint went silent mid-stream for **2 min 56 s** on
-  a live TCP connection and then resumed on the same connection, while plain HTTPS to the
-  same host answered 200 in 0.5 s throughout. *Attribution corrected 2026-08-16:* the earlier
-  wording here ("so the WS server wedged") over-read it. nginx is excluded (`proxy_read_timeout
-  3600s`), but a healthy HTTPS request on a **different** connection cannot prove *this* flow
-  was healthy, so a server stall and a single transatlantic flow stalling in RTO backoff are
-  not separable from here. One unreproduced observation; worth Anvil's eyes, not a verdict.
+- **D5's "still owed" is closed, and closed properly.** This repo had recorded that the ordering
+  was read from Anvil's source and *never captured under induced backpressure*, so the number
+  was evidence rather than a guarantee. Anvil captured it: `tests/tools/pong_ordering_probe.py`
+  stops reading until frames back up in the send queue, then sends one ping and reports the
+  pong's **position in the byte stream** rather than its RTT — because a slow reader inflates the
+  round-trip whether or not the server reordered anything, so timing alone cannot separate a
+  server-side queue from a client-side one. **425,890 bytes drained as 149 frames; the pong at
+  index 148 — last, with zero frames after it.** Read it as a guarantee.
+- Two things would still silently break it, recorded as "please don't change" rather than as
+  defects: a ping after a two-way close handshake is never ponged, and the behaviour depends on
+  `max_payload` staying default with `CROW_ENFORCE_WS_SPEC` undefined. `PROTOCOL.md` now says to
+  re-run the probe on a Crow upgrade rather than assume it survived.
+- The request for a **server-side heartbeat is withdrawn** and recorded as such on both sides.
 
-**A3 · Per-socket send-queue behaviour.** *The open question is closed: it queues, without
-bound.* What remains is documenting it, and Anvil's call on whether to bound it.
+**A2b · The 2 min 56 s stall — NEW, open, and Anvil split it out for a good reason.** Our A2
+carried two unrelated things: a doc confirmation and an open-ended investigation. Sizing the pair
+as "S, mostly withdrawn" hid the second behind the first.
+
+- Our framing is preserved intact: nginx is exonerated, but a successful request on a
+  **different** connection cannot prove that flow was healthy, so from outside the evidence
+  cannot separate a server stall from one transatlantic flow in RTO backoff.
+- **Two Anvil-internal hypotheses fit the signature** (total silence on a healthy TCP connection,
+  spontaneous recovery, HTTPS unaffected), neither confirmed: **fan-out head-of-line blocking**
+  — the broadcaster holds one mutex across the *entire* fan-out, so one stalled socket's
+  unbounded queue stalls every socket on every ticker, and it would free **spontaneously** when
+  that socket disconnected, which matches the unexplained recovery; or **engine-thread publish
+  starvation** — the ~2 Hz summary walk touches every resting order, and the broadcaster skips a
+  ticker whose sequence has not moved, producing silence on a healthy connection.
+- The first hypothesis is Anvil's leading candidate and **makes A3 part 2 look much less
+  optional**.
+- The fix Anvil recorded is **server-side telemetry rather than a wire heartbeat** — broadcaster
+  last-tick and worst fan-out duration, engine last-publish per ticker, on `/api/health` — so the
+  next stall is diagnosable from outside, including by us. **D5 already splits half of this from
+  our side** (`age` high + `rtt` high = our queue; `age` high + `rtt` low = upstream); the
+  telemetry would say *which* upstream cause, which our instrument structurally cannot.
+
+**A3 · Per-socket send-queue behaviour.** *Part 1 (document it) is **DONE 2026-08-16**; part 2
+(bound it) remains open and is the owner's call.*
+
+- **Part 1 shipped.** `PROTOCOL.md` §4 carries **"Slow consumers — the server queues, it does not
+  shed"**: no cap, no drop rule, no coalescing, no disconnect threshold, unbounded in v1, lag
+  linear with no plateau — with our measured figures cited in Anvil's text. The client rule we
+  asked for is now **contract**: measure freshness against your own clock, never infer it from
+  message rate. Our withdrawn bullet is retired into a *Closed* section with the record intact,
+  and it names the distinction the original conflated — coalescing *does* exist, but it is the
+  ~14 Hz book tick, which is upstream and global, not per socket.
+- **Part 2 is sized M, not S.** Crow exposes no queue depth and no send-completion callback, so
+  any bound needs a patch to the vendored header plus an atomic counter to keep the check off the
+  broadcaster thread. Our stated preference — disconnected rather than served 100-second-old
+  data — is recorded.
+- **A7 narrows it for us but does not close it:** a *full-depth* socket that stops reading still
+  costs the server the original ~110 KiB/s. Our own socket is now a third of that.
+- **And it is now coupled to A1 in a direction we had not seen** — see A1.
 
 - The earlier wording here said "coalescing / even backpressure-shedding", on the strength of
   a 2026-08-09 rate-and-gap measurement; that conclusion is **withdrawn**
@@ -153,6 +218,12 @@ feed's gap-recovery path cannot be proven without one.
 
 **A5 · Feeder realism** — Hawkes arrivals / mirror mode / FrontierView execution-algo
 participant. DepthCharge is its future test client.
+
+**~~A6 · TLS-chain rotation~~ — DONE 2026-08-16.** The note is in Anvil's `deploy/README.md`
+beside the certbot step: it records that the firmware pins ISRG Root X1 as its sole anchor with
+no fallback and no console, that routine renewals are invisible to us, and that a CA change or a
+lost cross-sign is a silent handshake failure fixable only by reflash — flagged as a **lock-step
+change: coordinate the firmware update first, then rotate.** The original ask, for the record:
 
 **A6 · TLS-chain rotation** — a DepthCharge-firmware-pinned dependency: an Anvil CA/chain
 change means a lock-step firmware update. *Sharpened 2026-08-16:* the firmware pins **ISRG
@@ -204,20 +275,29 @@ Anvil's *trend* workload.
 page itself is scheduled work (MP) inside the portfolio repo and does **not** count toward
 the threshold.
 
-**D5 · Ping the venue instead of waiting on it — the liveness watchdog gets a clock.**
-*[A] — small, host-testable, and it retires most of A2.* **Found 2026-08-16 in Anvil's vendored
-Crow:** an unsolicited client PING is answered with a PONG by the library, no application code
-involved, and the pong goes into the *same* per-connection write queue as data — it **cannot
-overtake frames already queued**, so a round-trip prices the server's write-path backlog for
-this connection. Stronger than TCP liveness, and honestly bounded: it is **blind to
-producer-side lag** (a pong is posted ahead of frames the broadcaster has not handed over yet),
-the ordering is one-sided, and this is read from source, never yet captured under induced
-backpressure — worth a desk experiment before any firmware depends on it. Work: send on a
-cadence from the RX task, feed the round-trip into `SupervisorInput`, and let the panel
-distinguish "quiet book" from "minutes behind". Wants the Anvil half of A2 first, which costs
-Anvil a sentence.
-
 ### Closed
+
+**~~D5 · Ping the venue instead of waiting on it — the liveness watchdog gets a clock.~~**
+*[A] — **DONE 2026-08-16**, host-green and building on all three firmware arms; unflashed.*
+`firmware/src/ws_ping.hpp` (`PingProbe`, ESP-IDF-free) + `harness/tests/test_ws_ping.cpp`; the
+client ping is on by default and `depthcharge-noping` is the control arm. The board prints a
+`-- ping` line directly under `-- age`, because the pair is the diagnosis: **age high + rtt high
+= our own undrained queue (A7 is the fix); age high + rtt low = lag upstream in the broadcaster
+(A7 would not help).** That split is the thing no instrument here could make before.
+
+- **Shipped with it, and it would have been a silent regression otherwise:** the silence
+  recycle's clock moved from byte-arrival to **data**-arrival (`SupervisorInput::last_data_us`,
+  stamped in `on_chunk`). A ping manufactures a pong every 10 s, and a pong is bytes — so the
+  board's own control traffic would have kept `kSilenceRecycleUs` from ever firing against a
+  peer that answers pongs and publishes nothing, which is exactly the 2026-08-16 00:12 stall.
+  ARCHITECTURE §9 carries the general rule.
+- **~~Still owed: the Anvil half of A2~~ — CLOSED 2026-08-16, the same day.** This said the
+  ordering was read from source and never captured under induced backpressure, so the number was
+  evidence rather than a guarantee. Anvil captured it — pong last of 149 frames, zero after it —
+  and `PROTOCOL.md` §3 Keepalive now states it as contract. **D5 rests on a measured property.**
+  Detail under A2 above.
+- Bounds that do not go away: it is **blind to producer-side lag** by construction, and nothing
+  branches on it — §6 #5 means a pong can never turn the panel green.
 
 **~~M3 close-out~~** — transport brief closes, docs catch up, Anvil ask rewritten. DONE
 2026-08-16 (`66e2f77`…`79c1867` plus the docs commit):
