@@ -692,67 +692,29 @@ TEST_CASE("the two supervisors compose: rejoin brings the station back, then the
     CHECK(wifi.poll(ws.now, true).rejoin == false);
 }
 
-TEST_CASE("a refused attempt is retried in a second, not a cycle") {
-    // THE 2026-08-10 RECOVERY TERM. An AP that is refusing answers in ~60 ms, so
-    // waiting out kWifiRejoinCycleUs before trying again means noticing that it
-    // has stopped refusing up to a whole cycle late. That was worth more of the
-    // 25.6 s grey than anything else still under this file's control.
-    using depthcharge::fw::kWifiRefusedRetryUs;
-    using depthcharge::fw::kWifiRejoinAfterUs;
-    using depthcharge::fw::kWifiRejoinCycleUs;
-
-    depthcharge::fw::WifiSupervisor sup;
-    std::int64_t now = 1000;
-    const auto step = [&](bool associated, bool failed) {
-        now += kSupervisePeriodUs;
-        return sup.poll(now, associated, failed);
-    };
-
-    step(true, false);
-
-    // Station down, and the framework's own WL_CONNECT_FAILED is already
-    // latched. That must NOT shorten the first takeover: it is left over from
-    // the framework's retry and says nothing about an attempt of ours.
-    std::int64_t first_at = 0;
-    const std::int64_t from = now;
-    while (first_at == 0) {
-        if (step(false, true).rejoin) { first_at = now; }
-        REQUIRE(now - from < 2 * kWifiRejoinAfterUs);
-    }
-    CHECK(first_at - from >= kWifiRejoinAfterUs);
-
-    // From here every attempt is refused, so retries come at the fast cadence.
-    std::int64_t previous = first_at;
-    for (int k = 0; k < 5; ++k) {
-        std::int64_t at = 0;
-        while (at == 0) {
-            if (step(false, true).rejoin) { at = now; }
-        }
-        CHECK(at - previous >= kWifiRefusedRetryUs);
-        CHECK(at - previous < kWifiRejoinCycleUs);
-        previous = at;
-    }
-}
-
-TEST_CASE("an attempt that is merely still running is never preempted") {
-    // The other side of the same gate, and the one that could do harm: while
-    // WL_CONNECT_FAILED is NOT set the attempt may still be in flight, and a
-    // retry on top of it is how this code could turn a recoverable outage into a
-    // permanent one. That case keeps the full cycle.
+TEST_CASE("no rejoin ever preempts an association that could still succeed") {
+    // THE 2026-08-16 LIVELOCK, reduced to the one property that would have
+    // caught it. A rejoin begins with WiFi.disconnect(), so it destroys whatever
+    // association attempt is in flight; the cadence must therefore always leave
+    // room for one to finish, unconditionally and whatever the station reports.
+    //
+    // The version of this file that shipped on 2026-08-10 asserted the opposite
+    // for one case — see the case below for the bench run that convicted it.
     using depthcharge::fw::kObservedAssociationUs;
     using depthcharge::fw::kWifiRejoinCycleUs;
 
     depthcharge::fw::WifiSupervisor sup;
     std::int64_t now = 1000;
-    const auto step = [&](bool failed) {
-        now += kSupervisePeriodUs;
-        return sup.poll(now, false, failed);
-    };
 
     std::int64_t previous = 0;
     int seen = 0;
-    while (seen < 4) {
-        if (step(false).rejoin) {
+    while (seen < 8) {
+        now += kSupervisePeriodUs;
+        // Two arguments and no third. The supervisor used to take a
+        // WL_CONNECT_FAILED flag here and shorten the cadence on it; that
+        // parameter is gone, so the property below is now structural rather than
+        // conditional — there is no input that can buy a faster retry.
+        if (sup.poll(now, /*associated=*/false).rejoin) {
             if (previous != 0) {
                 CHECK(now - previous >= kWifiRejoinCycleUs);
                 CHECK(now - previous >= kObservedAssociationUs);
@@ -761,4 +723,106 @@ TEST_CASE("an attempt that is merely still running is never preempted") {
             ++seen;
         }
     }
+}
+
+namespace {
+
+// A station that behaves the way the 2026-08-16 bench log says the real one
+// does, which is the whole point: the two outcomes take VERY different amounts
+// of time, and that asymmetry is what the old fast path was built on and what
+// broke it.
+//
+//   * a refusal comes back in ~60 ms   (measured 2026-08-10: rejoin #1 at
+//     23:02:10.419, Reason 202 at 23:02:10.473)
+//   * an association takes ~4 s        (measured 2026-08-16: begin() at
+//     uptime 3786 ms, `wifi up` at 7821 ms)
+//   * and WiFi.disconnect() throws away whatever was in flight
+//
+// The last line is the one nothing modelled before. `WL_CONNECT_FAILED` is
+// STICKY: once the AP has refused once, the flag stays set for as long as no
+// later attempt resolves — and if every attempt is aborted before it can
+// resolve, that is forever.
+struct FakeStation {
+    static constexpr std::int64_t kRefusalUs = 60 * 1000;
+    static constexpr std::int64_t kAssociateUs = depthcharge::fw::kObservedAssociationUs;
+
+    std::int64_t opens_at = 0;        // when the AP stops refusing us
+    std::int64_t attempt_started = -1;
+    bool associated = false;
+    bool refused_latched = false;
+    int refusals = 0;                 // what the AP actually answered
+
+    // WiFi.disconnect() then WiFi.begin(): the in-flight attempt dies here.
+    void rejoin(std::int64_t now) {
+        attempt_started = now;
+    }
+
+    void tick(std::int64_t now) {
+        if (associated || attempt_started < 0) { return; }
+        if (now < opens_at) {
+            if (now - attempt_started >= kRefusalUs) {
+                refused_latched = true;
+                ++refusals;
+                attempt_started = -1;
+            }
+            return;
+        }
+        if (now - attempt_started >= kAssociateUs) { associated = true; }
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a station whose AP stops refusing gets back on, without being reset") {
+    // THE BENCH RUN THIS FILE EXISTS TO PREVENT A SECOND TIME.
+    //
+    // 2026-08-16, Deco blocking the board: 388 rejoin calls produced TWO
+    // AUTH_FAIL responses from the AP. If each call had been a real attempt
+    // being refused there would have been ~388 of them, one per call, 60 ms
+    // apart. They were not reaching the AP at all — the 1 s refused-retry
+    // cadence was aborting each attempt before it could resolve, so the station
+    // never re-associated and the only thing that recovered the board was a
+    // power cycle (`rst:0x1 (POWERON)` in the log, four seconds before the
+    // association that "worked").
+    //
+    // The fast path was measured on 2026-08-10 against an AP that was ACTIVELY
+    // REFUSING, where a 60 ms answer really does make 1 s generous. It was then
+    // read as covering the case it exists for — an AP that has STOPPED refusing
+    // — where the attempt needs seconds and the retry destroys it. Same species
+    // as the four supersessions in ARCHITECTURE §9: a measurement that answered
+    // a nearby question, read as answering the one that mattered.
+    using depthcharge::fw::kWifiRejoinAfterUs;
+
+    FakeStation sta;
+    depthcharge::fw::WifiSupervisor sup;
+    std::int64_t now = 1000;
+
+    // The AP refuses for the first two minutes, then quietly opens.
+    sta.opens_at = now + 120 * 1000 * 1000LL;
+    const std::int64_t opened_at = sta.opens_at;
+
+    // Give it ten minutes of wall clock after that to get back on. The real
+    // board had five and did not.
+    const std::int64_t give_up_at = opened_at + 10 * 60 * 1000 * 1000LL;
+    int rejoins = 0;
+    while (!sta.associated && now < give_up_at) {
+        now += kSupervisePeriodUs;
+        sta.tick(now);
+        const auto d = sup.poll(now, sta.associated);
+        if (d.rejoin) {
+            ++rejoins;
+            sta.rejoin(now);
+        }
+    }
+
+    REQUIRE(sta.associated);
+    // Back on within a couple of cycles of the AP opening — not "eventually".
+    CHECK(now - opened_at < kWifiRejoinAfterUs + 3 * depthcharge::fw::kWifiRejoinCycleUs);
+
+    // And the counting check that names the real defect rather than its symptom:
+    // while the AP was refusing, EVERY rejoin must have produced an answer from
+    // it. A rejoin count far above the refusal count means attempts are being
+    // thrown away before they arrive, which is exactly the 388-vs-2 signature.
+    INFO("rejoins ", rejoins, " refusals ", sta.refusals);
+    CHECK(sta.refusals >= rejoins - 1);
 }

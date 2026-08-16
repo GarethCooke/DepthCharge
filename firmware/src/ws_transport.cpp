@@ -271,12 +271,18 @@ void WsTransport::supervise() noexcept {
     // this costs loopTask nothing and cannot stall the 250 ms poll. The
     // disconnect() first is what clears WL_CONNECT_FAILED, which the framework
     // latches on AUTH_FAIL and which begin() alone does not reset.
-    // WL_CONNECT_FAILED is Arduino latching "that attempt is over and it lost"
-    // (WiFiGeneric.cpp:1065 on AUTH_FAIL, :1088 on ASSOC_FAIL). Distinguishing
-    // it from a plain "not associated" is what lets a refused retry come back in
-    // a second instead of five — the bench measured the refusal itself at 60 ms.
-    const bool wifi_refused = (WiFi.status() == WL_CONNECT_FAILED);
-    if (const auto w = wifi_supervisor_.poll(now, in.wifi_associated, wifi_refused); w.rejoin) {
+    // WL_CONNECT_FAILED used to be read here and passed to the supervisor, where
+    // it bought a one-second retry instead of the full cycle. It is not read any
+    // more, and the post-mortem in ws_supervisor.hpp is why: the flag is sticky,
+    // so on 2026-08-16 it latched for a whole outage and the fast path it
+    // unlocked aborted every association before it could complete — 388 rejoins,
+    // two answers from the AP, and the board only came back on a power cycle.
+    //
+    // The diagnostic that replaces it costs nothing and cannot be missed:
+    // Arduino's own `Reason: NNN` lines, which this build already prints because
+    // CORE_DEBUG_LEVEL is 3. Count those against the `rejoining (#N)` lines below
+    // and a livelock is one grep.
+    if (const auto w = wifi_supervisor_.poll(now, in.wifi_associated); w.rejoin) {
         ESP_LOGW(kTag, "wifi down %d ms and the framework has stopped trying — rejoining (#%u)",
                  static_cast<int>(w.down_us / 1000), static_cast<unsigned>(w.attempt));
         WiFi.disconnect();
