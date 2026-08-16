@@ -317,3 +317,54 @@ socket connect). The tell that it is genuinely fixed rather than lucky is the ra
 10 s cadence every rejoin should now draw its own `Reason: 202` from the AP while it is
 still blocked, so `rejoining (#N)` and `Reason: 202` lines should be roughly one for one
 instead of 388 to 2.
+
+---
+
+### 2026-08-16 (09:45) · Claude Opus 5 · the re-run passed, M3 is done, and the passing run found the next thing
+
+**M3 is ticked.** `hardware/bench-2026-08-16-pull-the-wifi-acceptance.md` is the record and
+carries both runs, because the failing one is the more valuable.
+
+**Verified from the log rather than from the report** — the pattern that caught the
+power-cycle earlier this morning:
+
+- **One `rst:0x` in the whole log, and it is the flash boot before the test.** No reset
+  between the outage and the recovery: the station rejoined unaided.
+- **One rejoin call, one AP answer.** The 388-to-2 signature is gone; the first takeover
+  succeeded outright, which beats the one-for-one ratio predicted as the tell.
+- Deauth 09:37:48.857 → `LIVE at v573` 09:38:07.516 = **18.7 s**, inside the 10–20 s
+  predicted before the run. `connects=2`, `sock_gaps=1`.
+- The panel greyed at 09:37:43.659, **5.2 s before the deauth** — the RX watchdog fires on
+  data stopping, not on the socket dying, which is invariant #5's strict reading behaving
+  exactly as ARCHITECTURE §9 (2026-08-09) says it must.
+
+**And the passing run surfaced strain 21, which is why reading the log still mattered.** The
+recovery landed on a **−70 dBm** node where boot's explicit scan had joined at **−40**, and
+the watchdog greys went from 1 to **14 in three minutes**. `connect_wifi()` surveys and joins
+the strongest by name; the rejoin path cannot, because a blocking all-channel scan on
+loopTask would stall the supervise poll. `ALL_CHANNEL_SCAN` + `BY_SIGNAL` narrow that lottery
+and do not close it — the same finding §9 recorded on 2026-08-13 for the boot path, which was
+fixed there and left here. The board does not roam, so one unlucky rejoin is the association
+for the rest of the run.
+
+It does not fail the DoD (grey, then clean resync, both observed) and it is not a regression
+from this morning's fix — it has been true since 2026-08-10. It is simply the first time
+anyone measured what it costs. On the backlog with the numbers, and the fix has a known
+shape: `WsSupervisor` decides while the RX task does the blocking work, and `WifiSupervisor`
+wants the identical split.
+
+**Owed after M3, none of it blocking:**
+
+1. **Rejoin scan-then-join off loopTask** (strain 21) — one session, policy half host-testable.
+2. **Weak-node 1 h soak** — the transport brief's last unticked bar. The board is sitting on
+   a −75 dBm association by accident right now, which is most of the setup.
+3. **Ghosting re-check** with `clkphase = false` (`hardware/BRINGUP.md`).
+
+**Next milestone: M4, the Kraken adapter**, marked **Next** in the ROADMAP, and it inherits
+two rules rather than one. Size the venue's byte rate before writing the adapter — the object
+already runs at 60–80% of Anvil's wire and Kraken's full-depth stream is larger (strain 19).
+And put at least one criterion in its DoD that the harness structurally cannot stage, because
+M3's did, almost by accident, and it was the only thing that caught a defect making the object
+unusable after any Wi-Fi interruption (strain 20).
+
+MP stage 2 (real hardware photos/video on the portfolio) is ungated by this tick.
