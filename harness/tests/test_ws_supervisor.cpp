@@ -8,18 +8,15 @@
 // boot connection spent a year of bench runs with no handshake immunity.
 //
 // What is tested here is only the arithmetic: when an attempt goes out, which
-// attempt it is, and the two guarantees the constants exist to provide — that an
-// attempt is never disturbed inside its own budget, and that a retry never comes
-// back to a handle whose task has not finished dying. Which handle gets opened,
-// and what the library does with it, is WsTransport's half and stays on the
-// board.
+// attempt it is, and the guarantee the constants exist to provide — that an
+// attempt is never disturbed inside its own budget. What the platform does with
+// a decision is WsTransport's half and stays on the board.
 #include <doctest/doctest.h>
 
 #include <cstdint>
 
 #include "ws_supervisor.hpp"
 
-using depthcharge::fw::kClientSelfExitUs;
 using depthcharge::fw::kHandshakeBudgetUs;
 using depthcharge::fw::kReconnectBackoffUs;
 using depthcharge::fw::kRetryCycleUs;
@@ -127,26 +124,13 @@ TEST_CASE("later attempts come one full retry cycle apart") {
     }
 }
 
-TEST_CASE("a retry never returns to a handle that is still dying") {
-    // The two-handle invariant, checked as behaviour rather than only as the
-    // static_assert in the header. Handles alternate, so attempt N and attempt
-    // N+2 share one — and the one attempt N used became reusable
-    // kClientSelfExitUs after the socket that triggered it aborted.
-    Bench b;
-    b.socket = true;
-    b.step();
-    const std::int64_t died = b.now;
-    b.socket = false;
-
-    const std::int64_t first = b.run_to_attempt(died);
-    REQUIRE(first >= 0);
-    const std::int64_t second = b.run_to_attempt(died + first);
-    REQUIRE(second >= 0);
-
-    // Attempt #2 reopens the handle that was live when the feed died at `died`,
-    // whose task exits kClientSelfExitUs later.
-    CHECK(first + second > kClientSelfExitUs);
-}
+// The two-handle case that used to sit here — "a retry never returns to a handle
+// that is still dying" — went with the two handles on 2026-08-16. It asserted
+// `first + second > kClientSelfExitUs`, a property of how long
+// `esp_websocket_client`'s task slept before a handle became reusable, and this
+// firmware now owns one esp-tls connection that `esp_tls_conn_destroy()` frees
+// at once. Keeping it would have meant keeping a constant that describes a
+// library the build no longer contains, in order to test a rule nothing obeys.
 
 TEST_CASE("an unassociated station holds the attempt without spending a cycle") {
     Bench b;
@@ -274,6 +258,7 @@ TEST_CASE("the holdoff line returns after the feed recovers") {
     }
     CHECK(second_run == 1);
 }
+
 
 // ---------------------------------------------------------------------------
 // The association supervisor — the 2026-08-10 permanent grey.

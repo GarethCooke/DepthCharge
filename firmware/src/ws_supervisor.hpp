@@ -9,9 +9,8 @@
 // how every reconnect change before this one was evaluated, at roughly one
 // sample per evening.
 //
-// WsTransport owns the platform half: which client handle to open, the DNS warm,
-// the logging. This owns the *policy* and the constants, and the constants are
-// the interesting part, because two of them are not ours.
+// WsTransport owns the platform half: the socket, the RX task, the DNS warm, the
+// logging. This owns the *policy* and the constants.
 #pragma once
 
 #include <cstdint>
@@ -19,60 +18,25 @@
 namespace depthcharge::fw {
 
 // =============================================================================
-// What the shipped library does. Measured, not assumed.
+// Every constant here is now ours, and that is new.
 // =============================================================================
 //
-// `esp_websocket_client` in Arduino-ESP32 2.0.14 is a precompiled archive, so
-// these two numbers were read out of it with xtensa objdump rather than from a
-// version of the IDF source that may or may not be the one that was built:
+// This file used to open with two numbers that were not: `kClientWaitTimeoutMs`
+// (10 s) and `kClientSelfExitUs` (5 s), read out of the precompiled
+// `esp_websocket_client` archive with xtensa objdump because the library's own
+// blocking behaviour bounded what a reconnect policy was allowed to do — a
+// socket that aborted put its task to sleep for five seconds, and
+// `esp_websocket_client_stop()` blocked for whatever was left of that. The
+// two-handle design existed to route around it, and a static_assert here kept a
+// retry from returning to a handle whose task had not finished dying.
 //
-//   .literal.esp_websocket_client_init + 0x30 = 0x2710 = 10000
-//       `client->wait_timeout_ms = WEBSOCKET_RECONNECT_TIMEOUT_MS` (10 s).
-//
-//   .text.esp_websocket_client_task + 0x3b5:
-//       bnei a5, 3, ...          ; if (state != WEBSOCKET_STATE_WAIT_TIMEOUT)
-//       l32i.n a5, a2, 56        ; wait_timeout_ms
-//       srai   a10, ..., 1       ; / 2
-//       callx8 <vTaskDelay>      ; vTaskDelay(wait_timeout_ms / 2) == 5000 ticks
-//
-// So a socket that aborts puts the client's own task to sleep for FIVE SECONDS
-// before it looks at anything again, and at a 1 kHz tick those are milliseconds.
-//
-// This is the whole reason the file exists. `esp_websocket_client_stop()` sets
-// `client->run = false` and then blocks on
-// `xEventGroupWaitBits(STOPPED_BIT, ..., portMAX_DELAY)` — the task cannot
-// observe the flag until it wakes, so stop() blocks for whatever is LEFT of that
-// 5 s. Our own reconnect backoff is spent inside the same 5 s window, which
-// makes the two anti-correlated and the sum a constant:
-//
-//   2026-08-09 bench, run C:  backoff 2445 ms + blocked in stop() 2545 ms
-//                             = 4990 ms, against the 5000 ms above.
-//   grey = 5000 + 4018 (connect) + 435 (Anvil's snapshot) = 9453 ms,
-//   against the panel's own `grey for 9451 ms`.
-//
-// **Shortening the backoff therefore buys nothing.** It moves time out of a
-// vTaskDelay and into a blocking call on loopTask, and the panel greys for
-// exactly as long. That is the M3 residual brief's Part 2 premise, and it is
-// false; what replaces it is that the transport keeps a second, already-built
-// client handle and simply opens that one, leaving the sleeper to expire on its
-// own clock instead of waiting for it. See ws_transport.hpp.
-inline constexpr std::int64_t kClientWaitTimeoutMs = 10000;
-
-// How long after its socket aborts the library's task takes to go away, given
-// `disable_auto_reconnect = true` — which the transport now sets, so the task
-// sets `run = false` on its first WAIT_TIMEOUT pass and exits after exactly one
-// of these sleeps rather than looping forever waiting to reconnect itself.
-// (`.text.esp_websocket_client_task + 0x36e` loads `config->auto_reconnect` and
-// branches to the `run = false` store; `.text.esp_websocket_client_init + 0x535`
-// is the `auto_reconnect = !config->disable_auto_reconnect` that feeds it.)
-//
-// A handle is reusable once that has happened, and not before:
-// `esp_websocket_client_start()` returns ESP_FAIL while `state >= INIT`.
-inline constexpr std::int64_t kClientSelfExitUs = (kClientWaitTimeoutMs / 2) * 1000;
-
-// =============================================================================
-// Ours.
-// =============================================================================
+// All of that went with the library on 2026-08-16. The transport owns one
+// esp-tls connection and `esp_tls_conn_destroy()` returns at once, so there is
+// no sleeper to dodge, no spare handle to alternate with, and no reason for this
+// file to know anything about a third party's object code. The archaeology is
+// preserved in ARCHITECTURE §9 (2026-08-09, 2026-08-10) and in this file's git
+// history, where it belongs; what is left below is arithmetic this project can
+// change on its own evidence.
 
 // How often the transport is expected to call poll(). Not enforced here — it is
 // loopTask's vTaskDelay — but the backoff is stated in terms of it, so it would
@@ -81,10 +45,10 @@ inline constexpr std::int64_t kSupervisePeriodUs = 250 * 1000;
 
 // How long after the feed dies the first reconnect attempt goes out.
 //
-// This used to be 2 s, and used to be free: it was spent inside the library's
-// 5 s sleep, so it cost the panel nothing. Now that the transport opens a spare
-// handle instead of waiting for the sleeper, every microsecond of it is grey
-// panel, so it is one poll period — the pass after the one that noticed.
+// This used to be 2 s, and used to be free: it was spent inside the old
+// library's 5 s sleep, so it cost the panel nothing. Nothing sleeps any more, so
+// every microsecond of it is grey panel — hence one poll period, the pass after
+// the one that noticed.
 //
 // Not zero. The pass that first sees the socket down only records when it went
 // down (there is no earlier timestamp to use), so one period is what the shape
@@ -119,24 +83,13 @@ static_assert(kHandshakeBudgetUs >= kObservedRecoveryUs,
 
 // The interval between the START of one attempt and the start of the next, when
 // the first one neither succeeded nor reported anything. Backoff plus budget, so
-// that an attempt of ours is never disturbed inside its own budget: restarting a
-// client mid-handshake is the single way this policy could make an outage
-// permanent, and it is ruled out on a clock we own rather than on anything the
-// library says.
+// that an attempt of ours is never disturbed inside its own budget: asking for a
+// fresh socket mid-handshake is the single way this policy could make an outage
+// permanent, and it is ruled out on a clock we own.
 inline constexpr std::int64_t kRetryCycleUs = kReconnectBackoffUs + kHandshakeBudgetUs;
 
 static_assert(kRetryCycleUs > kHandshakeBudgetUs,
               "supervisor grace must exceed a full client reconnect or it preempts one");
-
-// The two-handle invariant, and the reason it is stated as a sum rather than
-// eyeballed. The transport alternates between handle A and handle B, so the
-// tightest case is a failed attempt: the feed dies at T (handle A aborts, and A
-// becomes reusable at T + kClientSelfExitUs); we open B at T + backoff; B fails
-// almost at once; the next attempt falls at T + backoff + kRetryCycleUs and
-// wants A back. If that lands before A has exited, `esp_websocket_client_start`
-// refuses it and the outage costs an extra cycle for nothing.
-static_assert(kReconnectBackoffUs + kRetryCycleUs > kClientSelfExitUs,
-              "a retry must not come back to a handle whose task is still sleeping");
 
 // =============================================================================
 // The policy.
@@ -170,8 +123,8 @@ struct SupervisorInput {
     // the drops this was written for are the AP steering the board off one mesh
     // node and onto another: the socket dies, and for the next second or two
     // there is no route for DNS or TCP to travel over. An attempt fired into
-    // that window cannot succeed, and it is not free — it burns a handle for
-    // kClientSelfExitUs and a retry cycle for kRetryCycleUs.
+    // that window cannot succeed, and it is not free — it costs a retry cycle
+    // of grey panel.
     bool wifi_associated = false;
 };
 

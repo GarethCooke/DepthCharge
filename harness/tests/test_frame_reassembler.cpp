@@ -338,33 +338,21 @@ TEST_CASE("a binary frame is reassembled like a text one") {
     CHECK(f.slots.published[0] == "{\"binary\":true}");
 }
 
-TEST_CASE("a server-fragmented message is counted so the assumption is observable") {
-    // Anvil has never done this — the counter exists so that if it ever starts,
-    // the bench log says so rather than the ladder just misbehaving.
-    //
-    // THIS IS THE OLD CLIENT'S WORLD, and it is kept because that build arm is
-    // kept: esp_websocket_client's DATA event carries no FIN bit, so every chunk
-    // reaches here saying `fin = true` (the field's default) and a fragment is
-    // indistinguishable from a whole frame. The first fragment therefore
-    // publishes on its own and the parser rejects the partial JSON — the
-    // documented limitation, pinned so that deleting the arm is a deliberate act
-    // rather than a silent one. The case below is the same stream through the
-    // frame layer this project now owns.
-    Fixture f;
-    f.re.on_chunk(WsChunk{kOpText, 0, 4, "abcd", 4});          // fragment 1, "complete"
-    f.re.on_chunk(WsChunk{kOpContinuation, 0, 4, "efgh", 4});  // server continuation
-
-    CHECK(f.slots.continuation == 1);
-    CHECK(f.slots.published.size() >= 1);
-    CHECK(f.slots.published[0] == "abcd");
-    CHECK(f.slots.free_count == kSlots);
-}
-
 TEST_CASE("with FIN on the chunk a fragmented message is held and published whole") {
-    // What ws_frame.hpp delivers: the frame layer reads FIN off the wire, so a
-    // non-final fragment says so and the message stays open across it. Same two
-    // fragments as the case above, same counter, one message instead of two
-    // halves and a parse error.
+    // Anvil has never fragmented — the `continuation` counter exists so that if
+    // it ever starts, the bench log says so rather than the ladder just
+    // misbehaving. What is pinned here is that the counter moves AND the message
+    // survives.
+    //
+    // A case above this one used to pin the opposite, and folding it away on
+    // 2026-08-16 is worth a sentence because it is the shape of the whole
+    // milestone. `esp_websocket_client`'s DATA event carried no FIN bit, so every
+    // chunk arrived saying `fin = true` (the field's default) and a fragment was
+    // indistinguishable from a whole frame: the first fragment published on its
+    // own and the parser rejected the partial JSON. That was a documented
+    // limitation with a test pinning it, kept only while the espws build arm was
+    // kept, and it went with the arm. ws_frame.hpp reads FIN off the wire, so a
+    // non-final fragment says so and the message stays open across it.
     Fixture f;
     WsChunk first{kOpText, 0, 4, "abcd", 4};
     first.fin = false;

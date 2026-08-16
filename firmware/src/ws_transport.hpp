@@ -1,54 +1,40 @@
 // firmware/src/ws_transport.hpp — Wi-Fi + TLS WebSocket, and nothing else.
 //
-// Everything ESP-IDF-shaped lives on this side of the line: Wi-Fi, mbed-TLS,
-// esp_websocket_client, and the driving of the reassembler. What crosses into
-// the rest of the firmware is a FramePipe slot of verbatim wire bytes — which is
-// exactly what the harness's TraceReader hands the adapter, and why the engine
-// cannot tell the difference (invariant #1).
+// Everything ESP-IDF-shaped lives on this side of the line: Wi-Fi, esp-tls, the
+// socket, and the driving of the frame parser and the reassembler. What crosses
+// into the rest of the firmware is a FramePipe slot of verbatim wire bytes —
+// which is exactly what the harness's TraceReader hands the adapter, and why the
+// engine cannot tell the difference (invariant #1).
 //
-// The reassembly *logic* is deliberately not here: it is in
-// frame_reassembler.hpp, free of ESP-IDF so the host suite can test it. This
-// class is the adapter between Espressif's event callback and that state
-// machine, and it owns no engine state and never touches the book.
+// THE WEBSOCKET CLIENT IS OURS. `esp_websocket_client` was removed on
+// 2026-08-16 after the bench convicted it (ARCHITECTURE §9, 2026-08-13: 17/17
+// errno-silent deaths, 85 co-timed `SPLIT@1` framing rejects) and the
+// replacement's soak acquitted this one (23.6 h, connects=1 across a 10.9 h
+// segment, zero deaths, zero rejects). With it went the two-handle design, the
+// 5 s sleeper it was built to dodge, the esp_event dispatch hop and the
+// DC_OWNED_WS switch that kept both arms buildable while the question was open.
+//
+// The frame *layer* and the reassembly *logic* are deliberately not here: they
+// are in ws_frame.hpp and frame_reassembler.hpp, free of ESP-IDF so the host
+// suite can test them. This class is the platform half — a socket, a task, and
+// the autopsy — and it owns no engine state and never touches the book.
 #pragma once
 
-// Arduino.h FIRST, and not by accident. esp_websocket_client.h pulls in
-// esp_event.h -> esp_netif.h -> lwip/inet.h, which defines INADDR_NONE as a
-// macro; Arduino's IPAddress.h then declares `extern IPAddress INADDR_NONE;`
-// and the macro rewrites the declaration into a syntax error. Including
-// Arduino.h first makes IPAddress.h win, which is the order the framework
-// expects. Doing it here rather than in the .cpp means no future includer of
-// this header can get it wrong.
+// Arduino.h FIRST, and not by accident. The lwIP headers this file and its .cpp
+// reach (esp_tls.h, and lwip/sockets.h + lwip/netdb.h over there) define
+// INADDR_NONE as a macro; Arduino's IPAddress.h then declares
+// `extern IPAddress INADDR_NONE;` and the macro rewrites the declaration into a
+// syntax error. Including Arduino.h first makes IPAddress.h win, which is the
+// order the framework expects. Doing it here rather than in the .cpp means no
+// future includer of this header can get it wrong.
 #include <Arduino.h>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 
-// WHICH WEBSOCKET CLIENT. 1 = ours, over esp-tls; 0 = esp_websocket_client.
-//
-// The default is ours, and the arm is kept for the same reason `depthcharge-ps`
-// and `depthcharge-nopp` were kept: a claim about the library ("its framing is
-// what breaks, not the link") is only settled by building both and flashing them
-// at the same node on the same evening. Everything ABOVE the client is shared
-// between the arms by construction — the same Wi-Fi association code, the same
-// scan-then-join, the same supervisors, the same reassembler, the same feed task
-// — so a difference in death rate has exactly one candidate.
-//
-// It goes when the bench acceptance passes (3 h strong-node soak, zero
-// errno-silent deaths, zero rejects), and this whole switch goes with it. Until
-// then `pio run -e depthcharge-espws` is the control.
-#ifndef DC_OWNED_WS
-#define DC_OWNED_WS 1
-#endif
-
-#if DC_OWNED_WS
 #include "esp_tls.h"
 #include "ws_frame.hpp"
-#else
-#include "esp_event.h"
-#include "esp_websocket_client.h"
-#endif
 
 #include "frame_pipe.hpp"
 #include "frame_reassembler.hpp"
@@ -58,29 +44,28 @@
 
 namespace depthcharge::fw {
 
-// Ticker 101 on the deployed demo — the M0/M1/M3 subject, hardcoded for M3 (the
-// brief's "one panel, one ticker, one venue"). Multi-ticker is M7.
-inline constexpr char kAnvilUri[] = "wss://anvil.garethcooke.com/ws?ticker=101";
-
-// The same authority, spelled apart, because the DNS warm below resolves it
-// itself and this vintage of the client exposes no way to ask it what it parsed
-// out of the URI. They must agree; a mismatch shows up as a `dns=` figure that
-// is always a cache miss while the socket connects perfectly, which is a
-// misleading instrument rather than a broken one — so it is worth an eye on
-// every edit of the line above.
+// THE ENDPOINT, IN THE FEWEST SPELLINGS THAT STILL COMPILE. Ticker 101 on the
+// deployed demo — the M0/M1/M3 subject, hardcoded for M3 (the brief's "one
+// panel, one ticker, one venue"). Multi-ticker is M7.
+//
+// There used to be five constants here, because the library parsed a `wss://`
+// URI while the DNS warm resolved a bare host and the two could drift. Nothing
+// parses a URI any more, so there are three facts and one derived spelling:
+//
+//   kAnvilHost      the authority — resolved, sent as `Host:`, checked against
+//                   the certificate's SAN by esp-tls
+//   kAnvilPath      the request target of the upgrade
+//   kAnvilPort      the port, as esp_tls_conn_new_sync wants it (an int)
+//   kAnvilPortText  the same port, as getaddrinfo wants it (a service string),
+//                   held to the line above by the static_assert
+//
+// The `wss://host/path` form survives only where a human reads it — one log
+// line in start(), composed at the printf rather than stored, so there is no
+// second copy of the authority to go stale.
 inline constexpr char kAnvilHost[] = "anvil.garethcooke.com";
-inline constexpr char kAnvilPortText[] = "443";
-
-#if DC_OWNED_WS
-// The same authority again, in the pieces an owned client actually connects
-// with. kAnvilUri above is now only a log line, which is an improvement worth
-// noticing: the mismatch hazard the comment above warns about — a URI the
-// library parsed one way and a host we resolved another — cannot exist when
-// nothing else parses the URI.
-inline constexpr std::uint16_t kAnvilPort = 443;
 inline constexpr char kAnvilPath[] = "/ws?ticker=101";
-// kAnvilPortText above is this same fact in the spelling the espws arm's URI
-// needs; the assert is what keeps an edit to one from making the other lie.
+inline constexpr std::uint16_t kAnvilPort = 443;
+inline constexpr char kAnvilPortText[] = "443";
 static_assert(kAnvilPort == 443 && kAnvilPortText[0] == '4' && kAnvilPortText[1] == '4' &&
                   kAnvilPortText[2] == '3' && kAnvilPortText[3] == '\0',
               "kAnvilPort and kAnvilPortText must state the same port");
@@ -110,20 +95,20 @@ inline constexpr char kWsAccept[] = "D0+kBNqSZmwk6149E3G25IPQoN4=";
 // kRxWatchdogMs (1000 ms) greys the panel and stays exactly where it is.
 inline constexpr std::uint32_t kReadTimeoutMs = 1000;
 
-// Client->server pings: OFF by default, and that is a measurement waiting to be
-// taken rather than a conclusion.
+// Client->server pings: OFF by default, and that is a measurement waiting to
+// be taken rather than a conclusion.
 //
-// The old client pinged every 10 s with a 20 s pong deadline. The prototype that
-// held one socket for 3.7 h / 534 MB pinged never, and the RX watchdog plus the
-// supervisor covered every real case the bench produced. What a client ping
-// covers that they do not is a half-open TCP connection with the association
-// still up — where bytes stop and nothing reports it — and the watchdog greys
-// the panel for that in 1 s but cannot make the socket admit it is dead.
+// The open question was the half-open TCP connection — bytes stop, the
+// association holds, nothing reports it — which the RX watchdog greys the panel
+// for in 1 s but cannot make the socket admit. A client ping's only job there
+// was to PROVOKE the silence into an error the socket would report.
 //
-// So: default off, with `depthcharge-ping` building the other arm at 60 s, and
-// the answer is a bench figure rather than an argument. 60 s and not 10: this
-// is a keepalive against a dead flow, not a latency probe, and every ping is a
-// write on a link whose whole problem was writes into fades.
+// `depthcharge-ping` builds the 60 s arm and the answer is still a bench
+// figure rather than an argument. The prototype that held one socket for 3.7 h
+// / 534 MB pinged never, and the RX watchdog plus the supervisor covered every
+// real case the bench produced. 60 s and not 10: this is a keepalive against a
+// dead flow, not a latency probe, and every ping is a write on a link whose
+// whole problem was writes into fades.
 #ifndef DC_WS_PING_MS
 #define DC_WS_PING_MS 0
 #endif
@@ -143,7 +128,6 @@ inline constexpr std::uint32_t kClientPingMs = DC_WS_PING_MS;
 inline constexpr std::uint32_t kRxTaskStack = 6144;
 inline constexpr UBaseType_t kRxTaskPriority = 5;
 inline constexpr BaseType_t kRxTaskCore = 0;
-#endif  // DC_OWNED_WS
 
 // Wi-Fi modem sleep: OFF here, ON in the `depthcharge-ps` build environment.
 //
@@ -166,34 +150,6 @@ inline constexpr BaseType_t kRxTaskCore = 0;
 #define DC_WIFI_POWER_SAVE 0
 #endif
 inline constexpr bool kWifiPowerSave = (DC_WIFI_POWER_SAVE != 0);
-
-#if !DC_OWNED_WS
-// WebSocket ping/pong: ON here, OFF in the `depthcharge-nopp` build environment.
-//
-// The old client's knob, kept with the old client. Its owned-arm successor is
-// kClientPingMs above, which is a different question asked of a different
-// mechanism — this one turns off machinery we did not write, that one turns on
-// machinery we did.
-//
-// The second experiment run through a two-arm build, after power save. The
-// 2026-08-13 pinned A/B run showed this stack dying on a weak node while a
-// minimal client (no pings, no pong deadline — firmware/diag/link_autopsy.cpp)
-// streamed beside it untouched on the same BSSID at the same RSSI. The client's
-// ping/pong machinery is the loudest difference, so it gets the same treatment
-// power save got: both arms buildable without editing a line, and the result
-// read off the bench rather than argued from the library source.
-//
-// The OFF arm cannot simply zero either field — this vintage substitutes
-// defaults for both, read out of the shipped archive rather than the docs:
-// ping_interval_sec 0 becomes 10 s (init+0x54f), and pingpong_timeout_sec 0
-// becomes 120 s (init+0x58a), NOT disabled. The honest spellings are a
-// day-long ping interval and `disable_pingpong_discon = true`, which the
-// object code honours (init+0x545 stores a zero deadline only on that flag).
-#ifndef DC_WS_PINGPONG
-#define DC_WS_PINGPONG 1
-#endif
-inline constexpr bool kWsPingPong = (DC_WS_PINGPONG != 0);
-#endif  // !DC_OWNED_WS
 
 // The RX buffer, deliberately smaller than an Anvil book frame.
 //
@@ -235,19 +191,12 @@ public:
     // 8- and 32-bit fields, the same unsynchronised-diagnostics trade as every
     // counter in this firmware.
     WsTransport(FramePipe& pipe, LinkQuality& link) noexcept
-        : pipe_(pipe), link_(link), reassembler_(pipe, kFrameCapacity)
-#if DC_OWNED_WS
-          ,
-          parser_(*this)
-#endif
-    {
-    }
+        : pipe_(pipe), link_(link), reassembler_(pipe, kFrameCapacity), parser_(*this) {}
 
     // Blocks until the station has an IP or `timeout_ms` elapses.
     bool connect_wifi(const char* ssid, const char* password,
                       std::uint32_t timeout_ms = 30000) noexcept;
 
-#if DC_OWNED_WS
     // Creates the RX task on Core 0 and asks it for the first connection.
     // Recovery here is transport-driven, never seq-driven — on reconnect Anvil
     // sends a fresh snapshot and the phase-1 book adopts it (protocol §4).
@@ -261,15 +210,8 @@ public:
     // the reason is gone and the second context goes with it: ~10 KiB of heap
     // for the spare's buffers, its 6 KiB task stack, `disable_auto_reconnect`,
     // the live_/spare bookkeeping and the guard that stopped a retired handle's
-    // DATA reaching the reassembler.
-    //
-    // Two things in ws_supervisor.hpp are now describing a library this build
-    // does not contain — `kClientSelfExitUs` and the
-    // `kReconnectBackoffUs + kRetryCycleUs > kClientSelfExitUs` assert that kept
-    // a retry off a handle still asleep. They are deliberately NOT touched: the
-    // policy is the host-tested part and the espws arm still needs them, so they
-    // go when that arm goes, in one commit, rather than leaving the control
-    // built against a supervisor the experiment has already edited.
+    // DATA reaching the reassembler. `kClientSelfExitUs` and the two-handle
+    // assert went with the arm on 2026-08-16.
     bool start() noexcept;
 
     // Polls the socket's state and runs the two supervisors. Same shape and the
@@ -300,63 +242,8 @@ public:
     // destroyed from inside a callback that is walking a buffer owned by the
     // read that is still on the stack.
     void on_protocol_error(WsProtocolError) noexcept {}
-#else
-    // Builds BOTH client handles and starts one of them. Recovery here is
-    // transport-driven, never seq-driven — on reconnect Anvil sends a fresh
-    // snapshot and the phase-1 book adopts it (protocol §4).
-    //
-    // Two handles, and this is the change the 2026-08-10 measurement forced.
-    // A dropped socket puts the library's task to sleep for 5 s (see
-    // ws_supervisor.hpp), and the only ways to get a live socket back before it
-    // wakes are to wait for it — `esp_websocket_client_stop()` blocks on exactly
-    // that — or to not need it. So there are two clients, both built once here,
-    // and a reconnect starts the one that is idle while the other expires on its
-    // own clock. Nothing blocks; the whole 5 s leaves the grey path.
-    //
-    // The costs, in full: ~10 KiB of heap for the spare's rx/tx buffers, taken
-    // once at boot and never in steady state (invariant #7 untouched); one extra
-    // 6 KiB task stack for the ~5 s the sleeper overlaps the new connection; and
-    // `disable_auto_reconnect = true`, without which the sleeper would wake at
-    // 10 s and open a SECOND live socket to Anvil behind our back. Only one TLS
-    // context is ever live, because `esp_websocket_client_abort_connection()`
-    // closes the transport at the drop — which the 2026-08-09 bench saw as
-    // `free=172708 (+47780)` the instant the socket died.
-    bool start() noexcept;
-
-    // Call periodically from a normal task context — NOT from the event handler,
-    // which esp_websocket_client.h explicitly forbids for stop()/start().
-    //
-    // This exists because the client's own recovery does not cover every way a
-    // socket ends. On a CLEAN server-side close, esp_websocket_client's task
-    // sets WEBSOCKET_STATE_CLOSING, echoes the close frame, then breaks out of
-    // its `while (client->run)` loop and calls vTaskDelete(NULL). auto_reconnect
-    // is only consulted in WEBSOCKET_STATE_WAIT_TIMEOUT, which is reached solely
-    // from the abort/error path — so a clean close leaves the client dead with
-    // no task and nothing to restart it.
-    //
-    // Invariant #5 survives that on its own: either CLOSED becomes
-    // Gap{Disconnect}, or the RX watchdog fires, and either way the panel greys
-    // honestly. But it greys FOREVER, and on a bench that reads as an
-    // intermittent hang hours into a healthy run — the hardest possible thing to
-    // diagnose. Anvil is redeployed from time to time, so this is not a
-    // hypothetical.
-    //
-    // The decision of WHEN is not here: it is WsSupervisor, which is host-tested.
-    // What is here is the platform half — which handle to open, the DNS warm,
-    // and the logging. The trigger is this function's own poll of
-    // esp_websocket_client_is_connected() and nothing else — deliberately, after
-    // a first attempt drove it from the event stream instead and never fired
-    // once on the bench. See on_event() for what that cost.
-    void supervise() noexcept;
-
-    bool connected() const noexcept {
-        const esp_websocket_client_handle_t c = clients_[live_.load(std::memory_order_relaxed)];
-        return c != nullptr && esp_websocket_client_is_connected(c);
-    }
-#endif  // DC_OWNED_WS
 
 private:
-#if DC_OWNED_WS
     static void rx_trampoline(void* arg) noexcept;
 
     // The whole socket lifecycle, on one task: connect when asked, read until it
@@ -424,19 +311,6 @@ private:
     // Sends a client ping if kClientPingMs says one is due. False means the
     // write failed, the socket has been closed, and the caller must not read it.
     bool maybe_ping(std::int64_t now) noexcept;
-#else
-    static void event_trampoline(void* arg, esp_event_base_t base, std::int32_t id,
-                                 void* event_data) noexcept;
-    void on_event(std::int32_t id, esp_websocket_event_data_t* data) noexcept;
-
-    // Starts the idle handle and makes it the live one. Returns false if the
-    // library refused, which happens when the idle handle's previous task has
-    // not exited yet — `esp_websocket_client_start()` rejects any handle whose
-    // state is still >= INIT. The supervisor's constants are asserted to make
-    // that rare rather than impossible, so it is reported and retried, never
-    // assumed away.
-    bool open_spare(const SupervisorDecision& d) noexcept;
-#endif
 
     // Scans for `ssid`, prints every sibling that answers with its channel and
     // signal, and hands back the strongest. False means the scan found none, in
@@ -495,7 +369,6 @@ private:
     // synchronisation of its own.
     FrameReassembler<FramePipe> reassembler_;
 
-#if DC_OWNED_WS
     WsFrameParser<WsTransport> parser_;
 
     // The socket, and everything that dies with it. All RX-task-private: the
@@ -520,24 +393,12 @@ private:
     // `socket_up_` is written by the RX task and read by supervise() on
     // loopTask; `connect_requested_` is written by supervise() and consumed by
     // the RX task. Both are branched on rather than merely reported, which is
-    // the same bar the old `live_` had to clear and the reason they are atomic
-    // while every diagnostic counter in this firmware is not.
+    // the bar that decides what is atomic here while every diagnostic counter in
+    // this firmware is not.
     std::atomic<bool> socket_up_{false};
     std::atomic<bool> connect_requested_{false};
 
     TaskHandle_t rx_task_ = nullptr;
-#else
-    // A and B. Both built in start(), both registered for events, exactly one
-    // started at a time.
-    static constexpr std::size_t kClientCount = 2;
-    esp_websocket_client_handle_t clients_[kClientCount] = {nullptr, nullptr};
-
-    // Which of them is the live one. Written by supervise()'s caller context and
-    // read inside the event callback, so it is atomic — unlike every diagnostic
-    // counter in this firmware, this one is BRANCHED ON, and a torn read would
-    // route a data chunk to the reassembler from a handle that is being retired.
-    std::atomic<std::uint8_t> live_{0};
-#endif
 
     WsSupervisor supervisor_;
 
