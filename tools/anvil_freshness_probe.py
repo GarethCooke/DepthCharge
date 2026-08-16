@@ -200,7 +200,10 @@ def rate(n: int, span_s: float) -> float:
 def _rate_table(sockets: list[Socket]) -> None:
     print()
     print("  per-kind rates — the mechanism test that does not need a clock")
-    print(f"    {'socket':<12}{'span':>7}{'msgs':>8}{'msg/s':>9}{'KB/s':>9}   per-kind /s")
+    # Binary, not decimal: the divisor below is 1024. This column was labelled
+    # "KB/s" until 2026-08-16, which is how a 56/110.4 ratio got quoted as "60-80%"
+    # in four documents. The arithmetic was always right; only the label was wrong.
+    print(f"    {'socket':<12}{'span':>7}{'msgs':>8}{'msg/s':>9}{'KiB/s':>9}   per-kind /s")
     for s in sockets:
         span = s.span_s()
         if span <= 0:
