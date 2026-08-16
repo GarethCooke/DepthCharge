@@ -92,6 +92,39 @@ static_assert(kRetryCycleUs > kHandshakeBudgetUs,
               "supervisor grace must exceed a full client reconnect or it preempts one");
 
 // =============================================================================
+// The silence recycle: a socket that is up and saying nothing is a dead socket.
+// =============================================================================
+//
+// THE GAP THIS CLOSES, found live on 2026-08-16 at 00:12. The policy below gates
+// everything on `socket_connected`, and a silent-but-open TCP connection reads
+// as connected — so the transport would hold it forever. The RX watchdog greys
+// the panel honestly within a second, which covers HONESTY; nothing covered
+// RECOVERY. On a true half-open (peer gone, no FIN, no RST) the object would sit
+// grey behind a "healthy" transport for the rest of the run.
+//
+// FIVE MINUTES, AND THE NUMBER IS THE WHOLE DESIGN. The first draft of this said
+// fifteen seconds — comfortably above Anvil's ~600 ms worst healthy gap and the
+// 3.9 s RF fades of 2026-08-13, comfortably below an evening of grey. Four
+// minutes later the same night refuted it: Anvil went silent mid-stream for
+// **2 min 56 s** and then resumed **on the same TCP connection**, no death, no
+// reconnect, the board LIVE the instant bytes flowed. A 15 s recycle would have
+// torn down a good connection and paid a reconnect plus a fresh-snapshot cycle
+// for nothing.
+//
+// So the threshold is not sized against weather, it is sized against SERVER
+// STALLS, and it sits between the two failure modes with one measurement each:
+// a real Anvil stall recovers in ~3 min on the held socket; a true half-open
+// never recovers. Five minutes costs a half-open five minutes of grey instead of
+// forever, and costs a stall like that one nothing. It moves on evidence — the
+// signature to count in a log is a run of `-- rx  wait 99% / 0 reads` windows on
+// a live socket.
+inline constexpr std::int64_t kSilenceRecycleUs = 5 * 60 * 1000 * 1000LL;
+
+static_assert(kSilenceRecycleUs > 3 * 60 * 1000 * 1000LL,
+              "the recycle must outlast the 2m56s Anvil stall measured on 2026-08-16, "
+              "or it tears down connections that were about to recover");
+
+// =============================================================================
 // The policy.
 // =============================================================================
 
@@ -114,6 +147,11 @@ struct SupervisorDecision {
     // and the station was not associated. One line in the log, not one every
     // 250 ms for as long as the Wi-Fi is out.
     bool wifi_holdoff = false;
+    // True when the outage this attempt belongs to was opened by silence on a
+    // socket that is still up, rather than by the socket going down. The
+    // transport needs to know, because the two are different actions over there:
+    // one opens a socket, the other has to tear one down first.
+    bool silence_recycle = false;
 };
 
 struct SupervisorInput {
@@ -126,6 +164,15 @@ struct SupervisorInput {
     // that window cannot succeed, and it is not free — it costs a retry cycle
     // of grey panel.
     bool wifi_associated = false;
+    // When the last byte came off the socket, on the same clock as `now_us`.
+    //
+    // Zero means "nothing yet", and unlike the two clocks inside this class that
+    // is SAFE here rather than the encoding bug the note on those warns about:
+    // the silence is measured from `max(last_rx_us, the connect)`, and the
+    // connect edge is observed by poll() itself. So a caller that never fills
+    // this field in gets a supervisor that simply never recycles, which is the
+    // behaviour this class had before the field existed.
+    std::int64_t last_rx_us = 0;
 };
 
 class WsSupervisor {
@@ -144,7 +191,30 @@ public:
     SupervisorDecision poll(const SupervisorInput& in) noexcept {
         SupervisorDecision out;
 
+        // The socket's own up-edge, observed here rather than trusted from the
+        // caller. It is what lets the silence be measured from the connect when
+        // no byte has arrived yet — and what makes `last_rx_us == 0` mean
+        // "unknown" instead of "silent since the epoch".
         if (in.socket_connected) {
+            if (!socket_up_) {
+                socket_up_ = true;
+                socket_up_since_us_ = in.now_us;
+            }
+        } else {
+            socket_up_ = false;
+        }
+
+        // The most recent instant this socket is known to have been alive.
+        const std::int64_t alive_since_us =
+            (in.last_rx_us > socket_up_since_us_) ? in.last_rx_us : socket_up_since_us_;
+        // A socket that is up and has said nothing for kSilenceRecycleUs is
+        // treated from here on exactly as a dead one: the outage machinery below
+        // is the same code, and the transport's StartAttempt is the same
+        // instruction. The only difference reaches the log.
+        const bool silent =
+            in.socket_connected && (in.now_us - alive_since_us) >= kSilenceRecycleUs;
+
+        if (in.socket_connected && !silent) {
             if (attempt_in_flight_) {
                 out.action = SupervisorAction::ReportConnected;
                 out.elapsed_us = in.now_us - attempt_started_us_;
@@ -156,12 +226,15 @@ public:
             return out;
         }
 
-        // First pass of an outage: there is no earlier timestamp than this one,
-        // so this pass can only record when it noticed. The backoff is measured
-        // from here.
+        // First pass of an outage. A socket that went DOWN has no timestamp
+        // earlier than this poll, so this pass can only record when it noticed;
+        // a socket that went SILENT does have one — the last byte — and using it
+        // is what makes `feed down N ms` report the five minutes rather than the
+        // poll period. Either way the backoff is measured from the value stored
+        // here, so a silence recycle's attempt goes out on the very next pass.
         if (!outage_open_) {
             outage_open_ = true;
-            disconnected_since_us_ = in.now_us;
+            disconnected_since_us_ = silent ? alive_since_us : in.now_us;
             return out;
         }
 
@@ -188,6 +261,13 @@ public:
         note_attempt_begun(in.now_us);
         out.action = SupervisorAction::StartAttempt;
         out.attempt = attempts_;
+        // `silent`, not "this outage began in silence". The two differ from the
+        // second attempt onward: once the transport has torn the socket down the
+        // outage is still open, but there is no longer a live socket to recycle,
+        // and a retry labelled as one would print `socket up but silent` over a
+        // socket that is definitively gone. What the transport is asking is
+        // "must I drop something first", and only the live reading answers it.
+        out.silence_recycle = silent;
         return out;
     }
 
@@ -227,6 +307,14 @@ private:
     bool outage_open_ = false;
     bool attempt_in_flight_ = false;
     bool wifi_holdoff_reported_ = false;
+
+    // The silence half. `socket_up_since_us_` carries the same validity-flag
+    // discipline as the two clocks above and for the same reason: it is only
+    // ever read when `socket_up_` says an up-edge has been seen on this run, so
+    // a board whose first connect lands at t = 0 cannot be read as a socket that
+    // has been silent forever.
+    std::int64_t socket_up_since_us_ = 0;
+    bool socket_up_ = false;
 };
 
 // =============================================================================

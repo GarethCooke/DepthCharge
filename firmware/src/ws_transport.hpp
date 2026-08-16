@@ -95,20 +95,19 @@ inline constexpr char kWsAccept[] = "D0+kBNqSZmwk6149E3G25IPQoN4=";
 // kRxWatchdogMs (1000 ms) greys the panel and stays exactly where it is.
 inline constexpr std::uint32_t kReadTimeoutMs = 1000;
 
-// Client->server pings: OFF by default, and that is a measurement waiting to
-// be taken rather than a conclusion.
+// Client->server pings: OFF, and now for a reason rather than pending a
+// measurement.
 //
 // The open question was the half-open TCP connection — bytes stop, the
 // association holds, nothing reports it — which the RX watchdog greys the panel
 // for in 1 s but cannot make the socket admit. A client ping's only job there
 // was to PROVOKE the silence into an error the socket would report.
 //
-// `depthcharge-ping` builds the 60 s arm and the answer is still a bench
-// figure rather than an argument. The prototype that held one socket for 3.7 h
-// / 534 MB pinged never, and the RX watchdog plus the supervisor covered every
-// real case the bench produced. 60 s and not 10: this is a keepalive against a
-// dead flow, not a latency probe, and every ping is a write on a link whose
-// whole problem was writes into fades.
+// It is answered from the other side: `WsSupervisor` acts on the silence
+// directly (kSilenceRecycleUs, five minutes, host-tested), which needs no server
+// cooperation, no write into a fade on a link whose whole problem was writes
+// into fades, and no bench evening to settle. `depthcharge-ping` still builds
+// the 60 s arm; nothing needs it, and it is a candidate for deletion.
 #ifndef DC_WS_PING_MS
 #define DC_WS_PING_MS 0
 #endif
@@ -390,13 +389,34 @@ private:
 
     // The two words that cross tasks, and the only two.
     //
-    // `socket_up_` is written by the RX task and read by supervise() on
-    // loopTask; `connect_requested_` is written by supervise() and consumed by
-    // the RX task. Both are branched on rather than merely reported, which is
-    // the bar that decides what is atomic here while every diagnostic counter in
-    // this firmware is not.
+    // The three words that cross tasks, and the only three.
+    //
+    // `socket_up_` and `last_rx_us_` are written by the RX task and read by
+    // supervise() on loopTask; `connect_requested_` is written by supervise()
+    // and consumed by the RX task. All three are branched on rather than merely
+    // reported, which is the bar that decides what is atomic here while every
+    // diagnostic counter in this firmware is not.
+    //
+    // `last_rx_us_` is the silence recycle's input (kSilenceRecycleUs). It is
+    // atomic and not a plain int64 for one reason: a torn 64-bit read on this
+    // 32-bit core would not merely misreport a number, it would hand the
+    // supervisor a garbage age and could tear down a healthy socket. Stamped at
+    // the connect as well as at every read, so the value always describes THIS
+    // socket and never the one before it.
+    //
+    // PRICED RATHER THAN ASSUMED, because 64 bits is not free here: the LX7 has
+    // no 64-bit atomic instruction, so `nm` on the linked image shows
+    // `__atomic_load_8` and `__atomic_store_8` — ESP-IDF's own newlib
+    // implementations, a short critical section each. That is a lock taken ~40
+    // times a second on the RX task and 4 times a second on loopTask, tens of
+    // cycles apiece, against a read path measured at `feed 0%` of its budget. A
+    // 32-bit millisecond stamp would have been lock-free and would have wrapped
+    // at 49.7 days, which is the class of ceiling the age clock was just widened
+    // out of (ARCHITECTURE §9, 2026-08-16) — not a trade worth repeating to save
+    // a spinlock nothing is contending.
     std::atomic<bool> socket_up_{false};
     std::atomic<bool> connect_requested_{false};
+    std::atomic<std::int64_t> last_rx_us_{0};
 
     TaskHandle_t rx_task_ = nullptr;
 

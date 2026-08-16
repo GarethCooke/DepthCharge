@@ -253,6 +253,10 @@ void WsTransport::supervise() noexcept {
     SupervisorInput in;
     in.now_us = now;
     in.socket_connected = connected();
+    // The silence recycle's input. Written by the RX task at the connect and at
+    // every read that produced bytes, so "socket up and this is old" is the
+    // whole of the half-open detector — no client ping, no server cooperation.
+    in.last_rx_us = last_rx_us_.load(std::memory_order_relaxed);
     // WiFi.status(), not esp_wifi_sta_get_ap_info(): the question this gate asks
     // is "could a TCP connection possibly succeed", and that needs an IP, which
     // is what Arduino's status tracks and an AP record does not.
@@ -312,8 +316,24 @@ void WsTransport::supervise() noexcept {
             // stamped inside the policy, so the ~4 s the RX task is about to
             // spend inside esp_tls_conn_new_sync is charged to the attempt that
             // asked for it rather than to the one after.
-            ESP_LOGW(kTag, "feed down %d ms — asking the RX task for a socket (attempt #%u)",
-                     static_cast<int>(d.elapsed_us / 1000), static_cast<unsigned>(d.attempt));
+            //
+            // Two log lines, because they are two different events and a bench
+            // reading one as the other would be reading a healthy socket being
+            // recycled as a socket that died. `silence_recycle` means the socket
+            // is STILL UP and the RX task has to tear it down before it can open
+            // the replacement — see rx_main()'s timeout branch, which is the only
+            // place that can, because it is the task holding the socket.
+            if (d.silence_recycle) {
+                ESP_LOGW(kTag,
+                         "socket up but silent for %d s — recycling it (attempt #%u); a wedged"
+                         " peer that never sends a FIN looks exactly like this",
+                         static_cast<int>(d.elapsed_us / 1000000),
+                         static_cast<unsigned>(d.attempt));
+            } else {
+                ESP_LOGW(kTag, "feed down %d ms — asking the RX task for a socket (attempt #%u)",
+                         static_cast<int>(d.elapsed_us / 1000),
+                         static_cast<unsigned>(d.attempt));
+            }
             connect_requested_.store(true, std::memory_order_relaxed);
             break;
 
@@ -394,6 +414,10 @@ void WsTransport::rx_main() noexcept {
         if (rc > 0) {
             budget_.on_read(at_us - read_began_us, static_cast<std::uint32_t>(rc));
             socket_bytes_ += static_cast<std::uint64_t>(rc);
+            // The silence recycle's clock, reset by the only thing that proves
+            // the socket is alive: bytes off it. Stored before the parse, so a
+            // read that costs an unusually long feed cannot age its own arrival.
+            last_rx_us_.store(at_us, std::memory_order_relaxed);
             parser_.feed(rx_buf_, static_cast<std::uint32_t>(rc), at_us);
             budget_.on_feed(esp_timer_get_time() - at_us);
             if (parser_.failed()) {
@@ -414,6 +438,39 @@ void WsTransport::rx_main() noexcept {
             // greys the panel for silence is the feed task's 1 s RX watchdog,
             // which is a statement about DATA and belongs there.
             budget_.on_wait(at_us - read_began_us);
+
+            // THE SILENCE RECYCLE'S PLATFORM HALF, and this is the only branch
+            // it can live in: a socket that has stopped speaking takes exactly
+            // this path, once a second, forever.
+            //
+            // BOTH HALVES OF THE PREDICATE, and the second one is not
+            // belt-and-braces. The first draft tore the socket down on the flag
+            // alone, reasoning that a `connect_requested_` seen while `tls_` is
+            // non-null could only have come from the silence rule. It cannot:
+            // supervise() samples `connected()` and stores the flag several
+            // lines apart, with an ESP_LOGW that mallocs and takes the UART
+            // mutex in between, and it runs on loopTask on the other core. A
+            // connect that outran kRetryCycleUs (7.25 s — the two upgrade-timeout
+            // deaths in the 2026-08-15 soak took 9.7 and 9.9 s) can therefore
+            // have its request land AFTER open_socket() cleared it, on a socket
+            // that came up a moment ago. On the old code that flag was latent and
+            // was spent at the next death; here it would have killed a healthy
+            // connection inside one read timeout.
+            //
+            // So the RX task checks the thing itself rather than trusting what
+            // the flag implies — the same rule ARCHITECTURE §9 has paid for
+            // twice: supervise on observed state, not on reported events.
+            //
+            // The flag is deliberately NOT consumed here. die() drops the socket,
+            // the next pass of the loop finds `tls_ == nullptr`, and the exchange
+            // at the top spends the request on the replacement — one teardown and
+            // one attempt, charged to the attempt the supervisor already stamped,
+            // with no second 7 s retry cycle of grey in between.
+            if (connect_requested_.load(std::memory_order_relaxed) &&
+                (at_us - last_rx_us_.load(std::memory_order_relaxed)) >= kSilenceRecycleUs) {
+                die("rx-silence", 0, 0);
+                continue;
+            }
             if (!maybe_ping(at_us)) { continue; }
         } else {
             // Unless the floor moved: the association can fall inside the
@@ -442,6 +499,13 @@ bool WsTransport::open_socket() noexcept {
     const std::int64_t t0 = esp_timer_get_time();
     opened_us_ = t0;
     last_ping_us_ = t0;
+    // The silence clock belongs to THIS socket from the moment it is attempted,
+    // so a five-minute-old stamp from the connection before it cannot recycle the
+    // replacement the instant it comes up. WsSupervisor guards the same case from
+    // its own side (it measures from the connect edge it observes); both, because
+    // the supervisor's correctness must not depend on this line and this line
+    // makes the instrument mean what its name says.
+    last_rx_us_.store(t0, std::memory_order_relaxed);
 
     esp_tls_cfg_t cfg = {};
     // The production trust anchor, unchanged and still pinned: ISRG Root X1/X2
