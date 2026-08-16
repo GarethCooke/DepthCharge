@@ -418,7 +418,9 @@ four brownouts at 06:41 / 11:13 / 13:15 ×2 are the owner switching the panel's 
   come off the wire into the board. Nothing left to optimise in the RX path.
 - **Lag still grows, slower.** Per-connection slopes +0.243, +0.294, +0.323, and **+0.083
   over the final 10.9 h segment** (13:15–00:06) — against +0.57–0.59 on every 5744 run. The
-  residual is path bandwidth (60–80% of a 110 KiB/s wire); the sized fix is still Anvil's
+  residual is path bandwidth (60–80% of a 110 KiB/s wire — *superseded 2026-08-16: the ratio is
+  **51–79%**, and the sized fix is a `depth` parameter rather than the delta feed; ARCHITECTURE
+  §9, 2026-08-16 eve*); the sized fix is still Anvil's
   delta feed, and until then the object runs behind at peak and says so.
 - **The staleness clock saturated at 4294.9 s** — `SecondsText` and the whole
   `lag_us/window_us/worst_*` chain were uint32 µs (71.6 min), so `age`, `worst`, `run` and
