@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "fake_slots.hpp"
 #include "frame_reassembler.hpp"
 
 using depthcharge::fw::FrameReassembler;
@@ -43,61 +44,9 @@ namespace {
 constexpr std::size_t kCap = 64;
 constexpr std::uint8_t kSlots = 2;
 
-// Stands in for FramePipe. Records every published message and every counter,
-// and — the point of a fake rather than a mock — actually models slot ownership,
-// so a double-release or a leaked slot shows up as a wrong free count.
-struct FakeSlots {
-    char storage[kSlots][kCap]{};
-    bool in_flight[kSlots]{};
-    std::uint8_t free_count = kSlots;
-
-    std::vector<std::string> published;
-    // The arrival half of M3's stall instrument: `arrivals` is every whole
-    // message the socket delivered, `published_at` only the ones that survived
-    // to the feed task. The two differing is the point — see the note in
-    // FrameReassembler::finish().
-    std::vector<std::int64_t> arrivals;
-    std::vector<std::int64_t> published_at;
-    std::uint32_t oversize = 0;
-    std::uint32_t abandoned = 0;
-    std::uint32_t continuation = 0;
-    std::uint32_t control = 0;
-    std::uint32_t chunks = 0;
-    std::uint32_t acquire_failures = 0;
-
-    bool acquire(std::uint8_t& slot) noexcept {
-        for (std::uint8_t i = 0; i < kSlots; ++i) {
-            if (!in_flight[i]) {
-                in_flight[i] = true;
-                --free_count;
-                slot = i;
-                return true;
-            }
-        }
-        ++acquire_failures;
-        return false;
-    }
-    char* buffer(std::uint8_t slot) noexcept { return storage[slot]; }
-    void release(std::uint8_t slot) noexcept {
-        REQUIRE(in_flight[slot]);   // a double release is a bug, not a no-op
-        in_flight[slot] = false;
-        ++free_count;
-    }
-    bool publish(std::uint8_t slot, std::uint32_t len, std::int64_t arrival_us) noexcept {
-        REQUIRE(in_flight[slot]);
-        published.emplace_back(storage[slot], len);
-        published_at.push_back(arrival_us);
-        in_flight[slot] = false;
-        ++free_count;
-        return true;
-    }
-    void note_arrival(std::int64_t at_us) noexcept { arrivals.push_back(at_us); }
-    void count_oversize() noexcept { ++oversize; }
-    void count_abandoned() noexcept { ++abandoned; }
-    void count_continuation() noexcept { ++continuation; }
-    void count_control() noexcept { ++control; }
-    void count_chunk() noexcept { ++chunks; }
-};
+// Stands in for FramePipe — fake_slots.hpp, shared with test_ws_frame.cpp, which
+// drives the same object at the firmware's real 16 KiB geometry.
+using FakeSlots = dc::testing::FakeSlotPool<kCap, kSlots>;
 
 struct Fixture {
     FakeSlots slots;

@@ -26,7 +26,9 @@
 #include <vector>
 
 #include "alloc_probe.hpp"
+#include "fake_slots.hpp"
 #include "frame_reassembler.hpp"
+#include "reject_log.hpp"
 #include "ws_frame.hpp"
 
 using depthcharge::fw::FrameReassembler;
@@ -52,48 +54,11 @@ constexpr std::size_t kCap = 16 * 1024;
 constexpr std::size_t kReadSize = 4096;
 constexpr std::uint8_t kSlots = 2;
 
-// Stands in for FramePipe, like test_frame_reassembler.cpp's fake: it models
-// slot ownership so a leak or a double release fails loudly instead of quietly.
-struct Pipe {
-    std::vector<char> storage{std::vector<char>(kSlots * kCap)};
-    bool in_flight[kSlots]{};
-    std::uint8_t free_count = kSlots;
-
-    std::vector<std::string> published;
-    std::uint32_t oversize = 0, abandoned = 0, continuation = 0, control = 0, chunks = 0;
-    std::uint32_t arrivals = 0;
-
-    bool acquire(std::uint8_t& slot) noexcept {
-        for (std::uint8_t i = 0; i < kSlots; ++i) {
-            if (!in_flight[i]) {
-                in_flight[i] = true;
-                --free_count;
-                slot = i;
-                return true;
-            }
-        }
-        return false;
-    }
-    char* buffer(std::uint8_t slot) noexcept { return storage.data() + (std::size_t(slot) * kCap); }
-    void release(std::uint8_t slot) noexcept {
-        REQUIRE(in_flight[slot]);
-        in_flight[slot] = false;
-        ++free_count;
-    }
-    bool publish(std::uint8_t slot, std::uint32_t len, std::int64_t) noexcept {
-        REQUIRE(in_flight[slot]);
-        published.emplace_back(buffer(slot), len);
-        in_flight[slot] = false;
-        ++free_count;
-        return true;
-    }
-    void note_arrival(std::int64_t) noexcept { ++arrivals; }
-    void count_oversize() noexcept { ++oversize; }
-    void count_abandoned() noexcept { ++abandoned; }
-    void count_continuation() noexcept { ++continuation; }
-    void count_control() noexcept { ++control; }
-    void count_chunk() noexcept { ++chunks; }
-};
+// Stands in for FramePipe — fake_slots.hpp, the same fake test_frame_reassembler
+// .cpp drives at its 64-byte capacity, here at the firmware's real geometry.
+// This file used to carry a second, thinner copy of it; the two had drifted, and
+// this one had lost `acquire_failures` and the arrival/published-at pair.
+using Pipe = dc::testing::FakeSlotPool<kCap, kSlots>;
 
 // The transport's half, recorded. Data chunks go downstream to the real
 // reassembler; control frames are captured as the transport would capture them
@@ -339,6 +304,12 @@ TEST_CASE("SPLIT@1: a frame that ends one byte into a read does not glue that by
     // either neighbour, the second is the exact signature the bench reject log
     // scans for, checked here so a future regression is named rather than merely
     // red.
+    //
+    // The second one calls `reject_log.hpp`'s own `find_second_frame_header`
+    // rather than re-spelling `{"type":` in a std::string::find. The 2026-08-15
+    // review's point: a regression test for a bench signature is only worth what
+    // it catches, and two independent spellings of that signature can drift
+    // apart — at which point the desk stops testing the thing the board reports.
     const std::string first = message(1, 4093);   // + 4 bytes of 16-bit header = 4097
     const std::string second = message(2, kBookFrameBytes);
     const std::vector<std::uint8_t> first_frame = frame(kOpText, first);
@@ -355,9 +326,11 @@ TEST_CASE("SPLIT@1: a frame that ends one byte into a read does not glue that by
     for (const std::string& m : c.pipe.published) {
         INFO("message of ", m.size(), " bytes");
         CHECK(m.front() == '{');
-        // The reject log's own signature: a second `{"type":` anywhere past the
-        // start means two messages landed in one slot.
-        CHECK(m.find(R"({"type":)", 1) == std::string::npos);
+        // The reject log's own scanner, on the reject log's own terms: it
+        // returns the offset of a second `{"type":` and 0 when there is only
+        // one, which is what the board prints as `SPLIT@N`.
+        CHECK(depthcharge::fw::find_second_frame_header(
+                  m.data(), static_cast<std::uint32_t>(m.size())) == 0u);
     }
 }
 
