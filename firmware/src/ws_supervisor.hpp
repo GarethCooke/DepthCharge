@@ -124,6 +124,24 @@ static_assert(kSilenceRecycleUs > 3 * 60 * 1000 * 1000LL,
               "the recycle must outlast the 2m56s Anvil stall measured on 2026-08-16, "
               "or it tears down connections that were about to recover");
 
+// ONE SPELLING OF "THIS SOCKET HAS STOPPED SPEAKING", because there are two
+// places that have to agree about it and they run on different cores.
+//
+// `WsSupervisor::poll()` below decides, on loopTask. `WsTransport::rx_main()`
+// acts, on the RX task — and it has to test the condition itself rather than
+// trust the request flag, because the flag can arrive stale: supervise() samples
+// the socket state and stores the request several lines apart, with a malloc-ing
+// log call in between, so a connect that outran `kRetryCycleUs` can land a
+// request on a socket that has only just come up. The first version of the
+// recycle trusted the flag and would have torn that socket down.
+//
+// Two call sites comparing against the same constant is how the two drift; one
+// `constexpr` function that both call is how they cannot. It is also the whole
+// of the recycle's arithmetic, so it is directly host-testable without a board.
+constexpr bool socket_is_silent(std::int64_t now_us, std::int64_t alive_since_us) noexcept {
+    return (now_us - alive_since_us) >= kSilenceRecycleUs;
+}
+
 // =============================================================================
 // The policy.
 // =============================================================================
@@ -212,7 +230,7 @@ public:
         // is the same code, and the transport's StartAttempt is the same
         // instruction. The only difference reaches the log.
         const bool silent =
-            in.socket_connected && (in.now_us - alive_since_us) >= kSilenceRecycleUs;
+            in.socket_connected && socket_is_silent(in.now_us, alive_since_us);
 
         if (in.socket_connected && !silent) {
             if (attempt_in_flight_) {

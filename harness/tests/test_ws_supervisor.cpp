@@ -456,6 +456,95 @@ TEST_CASE("a socket that dies normally is not labelled a silence recycle") {
     CHECK(d.attempt == 1u);
 }
 
+TEST_CASE("socket_is_silent is the one spelling both cores decide with") {
+    // The predicate the RX task tests before it tears a socket down, tested
+    // directly rather than only through the policy — because the transport's use
+    // of it is the half that cannot be reached from the desk, and a constant
+    // compared in two places is a constant that drifts.
+    using depthcharge::fw::socket_is_silent;
+
+    CHECK_FALSE(socket_is_silent(0, 0));
+    CHECK_FALSE(socket_is_silent(kSilenceRecycleUs - 1, 0));
+    CHECK(socket_is_silent(kSilenceRecycleUs, 0));
+    CHECK(socket_is_silent(kSilenceRecycleUs + 1, 0));
+
+    // Offset from an arbitrary epoch: it is a difference, not an absolute.
+    const std::int64_t base = 9'876'543'210;
+    CHECK_FALSE(socket_is_silent(base + kSilenceRecycleUs - 1, base));
+    CHECK(socket_is_silent(base + kSilenceRecycleUs, base));
+
+    // A stamp from the future — supervise() reads `now` before it loads the
+    // atomic, so the last byte can land in between — must never read as silent.
+    CHECK_FALSE(socket_is_silent(base, base + 5000));
+}
+
+TEST_CASE("the policy's invariants hold over an arbitrary walk of inputs") {
+    // A property check rather than another example. The supervisor is a
+    // deterministic reducer over (now, socket_connected, wifi_associated,
+    // last_rx_us), and the two things that must be true of EVERY trace through
+    // it are cheap to state and expensive to notice by example:
+    //
+    //   1. Two attempts are never closer together than one backoff. Anything
+    //      tighter is the supervisor preempting its own handshake, which is the
+    //      single way this policy could turn a recoverable outage permanent.
+    //   2. A socket that is connected and delivering never produces a
+    //      StartAttempt, whatever the Wi-Fi flag or the history says.
+    //
+    // The walk is a fixed pseudo-random sequence — same shape as the reassembler
+    // suite's slot-leak walk, and deterministic for the same reason: a property
+    // that fails once in twenty runs is a property nobody fixes.
+    WsSupervisor sup;
+    std::uint32_t rng = 20260816u;
+    const auto next = [&rng](std::uint32_t n) {
+        rng = rng * 1103515245u + 12345u;
+        return (rng >> 16) % n;
+    };
+
+    std::int64_t now = 0;
+    std::int64_t last_rx = 0;
+    bool socket = false;
+    std::int64_t previous_attempt = -1;
+    int attempts = 0;
+
+    for (int i = 0; i < 200000; ++i) {
+        // Flip the socket occasionally; when it is up, deliver bytes most of the
+        // time and go quiet the rest, so both the healthy and the silent paths
+        // are exercised for long stretches.
+        if (next(400) == 0) { socket = !socket; }
+        const bool delivering = socket && next(10) != 0;
+        if (delivering) { last_rx = now; }
+
+        SupervisorInput in;
+        in.now_us = now;
+        in.socket_connected = socket;
+        in.wifi_associated = (next(20) != 0);
+        in.last_rx_us = last_rx;
+
+        const SupervisorDecision d = sup.poll(in);
+
+        if (d.action == SupervisorAction::StartAttempt) {
+            ++attempts;
+            if (previous_attempt >= 0) {
+                INFO("attempt ", attempts, " at ", now, " after ", previous_attempt);
+                CHECK(now - previous_attempt >= kReconnectBackoffUs);
+            }
+            previous_attempt = now;
+            // An attempt is only ever raised against a station that could carry
+            // it — the holdoff gate, checked as a property rather than by example.
+            CHECK(in.wifi_associated);
+        }
+        if (delivering) {
+            CHECK(d.action != SupervisorAction::StartAttempt);
+            CHECK_FALSE(d.silence_recycle);
+        }
+        now += kSupervisePeriodUs;
+    }
+
+    // The walk has to have actually exercised the machinery, or the two
+    // properties above are vacuously true over a trace where nothing happened.
+    CHECK(attempts > 20);
+}
+
 // ---------------------------------------------------------------------------
 // The association supervisor — the 2026-08-10 permanent grey.
 // ---------------------------------------------------------------------------

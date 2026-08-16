@@ -459,7 +459,10 @@ void WsTransport::rx_main() noexcept {
             //
             // So the RX task checks the thing itself rather than trusting what
             // the flag implies — the same rule ARCHITECTURE §9 has paid for
-            // twice: supervise on observed state, not on reported events.
+            // twice: supervise on observed state, not on reported events. The
+            // predicate is `socket_is_silent()` from ws_supervisor.hpp, the same
+            // function the policy decides with, because two call sites comparing
+            // against one constant is how the two ends of this drift apart.
             //
             // The flag is deliberately NOT consumed here. die() drops the socket,
             // the next pass of the loop finds `tls_ == nullptr`, and the exchange
@@ -467,7 +470,7 @@ void WsTransport::rx_main() noexcept {
             // one attempt, charged to the attempt the supervisor already stamped,
             // with no second 7 s retry cycle of grey in between.
             if (connect_requested_.load(std::memory_order_relaxed) &&
-                (at_us - last_rx_us_.load(std::memory_order_relaxed)) >= kSilenceRecycleUs) {
+                socket_is_silent(at_us, last_rx_us_.load(std::memory_order_relaxed))) {
                 die("rx-silence", 0, 0);
                 continue;
             }
@@ -763,6 +766,13 @@ void WsTransport::autopsy(const char* what, int rc, int saved_errno) noexcept {
     char mbed[96] = "n/a";
     if (rc < 0) { mbedtls_strerror(rc, mbed, sizeof(mbed)); }
 
+    // `deaths_` counts SOCKET ENDS, and since 2026-08-16 that includes one this
+    // firmware chose: `[rx-silence]`, the supervisor's five-minute recycle. The
+    // ordinal series is deliberately shared — every socket end deserves an
+    // autopsy and an ordinal — but the acceptance bar this milestone cleared is
+    // phrased as "zero errno-silent deaths", so a future soak's `socket end #N`
+    // count no longer means quite what it did. Read the label, not the number:
+    // `[read]` and `[clean-close]` are the wire's; `[rx-silence]` is ours.
     ++deaths_;
     ESP_LOGW(kTag, "socket end #%u [%s]: %d ms, %llu bytes, %u data / %u ctrl frames",
              static_cast<unsigned>(deaths_), what, static_cast<int>(lifetime_ms),
