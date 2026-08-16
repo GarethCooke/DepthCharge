@@ -644,3 +644,64 @@ this morning, because the board should come up on a third of the bytes. The benc
 take on the first run: `-- age` should stop climbing, and `-- ping` should sit near **87 ms**.
 A7 is the fix for the staleness that three sessions attributed to this firmware; nobody has yet
 seen it work on the panel.
+
+---
+
+### 2026-08-16 (soak) · the >=90-minute bar is cleared, and two things on record are corrected
+
+**4h 51m of monitor, 3.88 h on a single connection** (`device-monitor-260816-175433.log`, 6.8 MB).
+The bar the merge commit set — a >=90-minute single-connection soak — is cleared more than twice
+over. Both corrections below are to claims *this session* made, and both are recorded rather than
+quietly amended.
+
+**1. "age 0.2 s, flat" was a 13-minute reading. The 3.88-hour answer is a STEP.**
+
+| window | mean age |
+|---|---|
+| 18:54-19:32 | 0.40 s |
+| 19:32-20:11 | 0.87 s |
+| 20:11-20:50 | 0.99 s |
+| **20:50-21:29** | **3.52 s** |
+| 21:29-22:07 | 6.77 s |
+| 22:08-22:47 | 7.42 s |
+
+Least-squares slope over the connection: **+0.000672 s/s**, against the control's +0.25 s/s —
+**372x shallower** — and a cumulative deficit of **15 of 27,964 summaries (0.054%)** against the
+control's 24.9%. So the verdict is unchanged and the merge stands; what is wrong is the word
+*flat*. **The mechanism is worth keeping**: a socket draining at exactly 100% keeps pace with the
+broadcast but can never *repay* a deficit, so any hit it takes becomes a permanent offset. Age
+under A7 is therefore a staircase of absorbed incidents, not a ramp — and reading a short window
+as proof of flatness is the same short-sample error this milestone has now made twice.
+
+**2. The step is the path, and the stall probe says so without being asked.**
+`-- holes : n=766 board=1 link=765 mixed=0 unknown=0 | burst=761 cadence=3`. **765 of 766 holes
+are link-attributed; the firmware caused one in 4.8 hours.** They are `burst`-shaped — a gap then
+a lump — i.e. delayed-then-delivered congestion, not loss. It is not the association: rssi held
+**-40 to -47 dBm** all evening. It is corroborated by the venue: Anvil's `seq` rate rose
+**180 -> 189/s** and inbound **30.2 -> 33-35 KiB/s** across the evening, consistent with the known
+midnight peak. The hole count is concentrated in the 21:00 hour (297) exactly where the step is.
+
+**3. THE RECONNECT ITEM IN THE MERGE COMMIT IS NOW PROVEN, not argued.** That commit lists as
+unproven: *"the reconnect path re-sending `&depth=27` is a source-level argument, never observed —
+connects=1 in both runs."* At **18:54** the socket dropped (`sock_gaps=1`, `connects=2`; panel grey
+4,341 ms; `socket up: dns 78 ms, connect+upgrade 3887 ms` on attempt #2). The replacement socket
+then ran **3.88 h at ~100.3% drain**. Had `&depth=27` not been re-sent on the fresh upgrade, that
+connection would have been full-depth and would have degraded to ~75% drain with a +0.25 s/s ramp,
+exactly like the control. It did not. **The depth subscription demonstrably survives a reconnect.**
+
+**4. `worst_rtt_ever_us_` earned itself on the bench.** At the drop the line reads
+`-- ping : no round-trip yet (run 5056 ms)` — a ping was in flight when the socket died, and that
+5,056 ms reading is the deepest the probe took. It exists *only* because the code review added a
+run-level survivor; without it `note_connect` would have erased it seconds later. The review
+finding was justified by the sibling instrument's history; it is now justified by an observation.
+
+**5. Clean everywhere else.** `parse=0 price=0 ticker=0 unknown=0 trunc=0` throughout;
+`ping 1298/1298` — every ping answered across 4.8 h; heap back to baseline exactly
+(`free=50180 (+0)` after 85k+ frames, one -1024 B `largest` step at the reconnect then flat); the
+71.6-minute uptime tearing bound was crossed at ~19:06 with no absurd reading in 1,750 age samples
+or 1,298 ping samples. 762 watchdog greys are the panel honestly reporting >1 s book holes and
+recovering in 98-430 ms each.
+
+**Still open, unchanged:** the new build never saturated (mean 2,100 B per read against the
+4,096 B buffer ceiling), so its margin to failure is bounded below at ~2.4x and still not measured
+from above. That wants a synthetic-load or busy-venue run, not a longer soak.
