@@ -429,6 +429,17 @@ and that changed the ask.
    block; the A1 baseline claim was backwards on the race that matters to a delta client; and
    "~1 MB of RAM" / "on the feed since 2026-07" were both unsupported.
 
+6. **"60–80% of the wire" was arithmetic, not measurement, and it is 51–79%.** 56/110.4 = 50.7%.
+   Cause: both probes divide by 1024 and printed "KB/s", so with two spellings in play the ratio
+   got eyeballed rather than divided, then quoted five times. Probe labels fixed at the source;
+   corrected in place in ROADMAP and DESIGN (living documents) and **left standing in this brief
+   and in §9's rows**, per the amendment log's own rule — with the correction recorded above
+   them (§9, 2026-08-16 eve). The firmware's identical mislabel (`render_task.cpp` computes KiB,
+   prints "KB/s") is deliberately the one instance left: it could not be compiled or flashed in
+   this session, and an unbuilt firmware edit is worse to leave behind than a wrong label.
+   Nothing parses either string. **So the three appearances above — lines ~81, ~248 and ~365 —
+   are superseded where they stand.**
+
 **Not done / next.** Nothing has been given to Anvil yet — the hand-over is written, not sent.
 No commit made; the tree is dirty with the six files above and ctest is green. M4 is still
 **Next**, and it inherits one more rule than it did this morning (§9, 2026-08-16 eve): size
