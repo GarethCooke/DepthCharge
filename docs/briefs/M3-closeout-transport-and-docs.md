@@ -234,8 +234,8 @@ owned arm.
 
 **Owed, in priority order.**
 
-1. **The pull-the-Wi-Fi acceptance** — grey stale state, then clean resync, photographed.
-   Owner, at the bench. It is the whole of M3's remaining DoD.
+1. **Re-run the pull-the-Wi-Fi acceptance on the fixed build.** It ran the same morning
+   and **failed**, which is recorded below.
 2. **The weak-node 1 h soak** — the transport brief's last unticked bar. Pin or re-roll to a
    −7x sibling for an hour; fades may grey, nothing may die.
 3. **The ghosting re-check** with `clkphase = false` — is the header speckle gone, and did
@@ -246,3 +246,74 @@ None of the three is agentic work. **The next agentic milestone is M4, the Krake
 and it inherits one sizing input from this session: a venue's byte rate is a design input,
 and Kraken's full-depth stream is larger than Anvil's against a path that already runs at
 60–80% of the wire (DESIGN strain 19).
+
+---
+
+### 2026-08-16 (09:00) · Claude Opus 5 · the acceptance ran, and it failed — the station could not rejoin
+
+The owner ran the pull-the-Wi-Fi test an hour after the close-out landed. **Half of it
+passed and half of it failed, and the failing half was a real defect that every host test
+and a 23.6-hour soak had missed.**
+
+**What passed.** Blocking the board in Deco greyed the panel exactly as invariant #5
+requires — the photograph shows white/grey only, no hue anywhere. The socket autopsy named
+the cause correctly (`socket end #2 [read]: 125756 ms, 9027305 bytes`,
+`errno=113 (ECONNABORTED)`, `rssi=0 assoc=0`), the WS supervisor printed its holdoff line
+exactly once, and the Wi-Fi supervisor took over on schedule.
+
+**What failed.** The station never came back. `device-monitor-260816-085158.log`:
+
+| | |
+| --- | --- |
+| 08:57:39.362 | `Reason: 1 - UNSPECIFIED` — Deco deauths |
+| 08:57:42.230 | `Reason: 202 - AUTH_FAIL` — Arduino's one retry, refused, **2,868 ms later** |
+| 08:57:44.703 | `wifi down 5249 ms … rejoining (#1)` — our takeover |
+| … | #2 … #388, one per second, never associating |
+
+**388 rejoin calls produced two `AUTH_FAIL` responses from the AP.** Every rejoin begins
+with `WiFi.disconnect()`; an association needs ~4 s; the 1 s refused-retry cadence
+destroyed each attempt before it could resolve. `WL_CONNECT_FAILED` is sticky, so once
+latched it selected the fast path forever. The earlier "recovery" at 08:52 was not one —
+`rst:0x1 (POWERON)`, a power cycle, four seconds before the association that worked.
+
+**Fixed and host-tested the same morning** (`e032a7f`, branch `m3/wifi-rejoin-livelock`).
+The full reasoning is ARCHITECTURE §9's 2026-08-16 (pm) row; the short version is that the
+fast path was sized against the time to be *refused* (60 ms, measured) when the quantity it
+had to respect was the time to be *accepted* (4,035 ms, also now measured).
+
+**Decisions, with why.**
+
+1. **The regression is a station model, not another example case.** `FakeStation` encodes
+   the three facts that matter — 60 ms to be refused, 4 s to be accepted, `disconnect()`
+   destroys whatever is in flight — and drives an AP that stops refusing part-way through.
+   It fails on the old code with the station still unassociated ten minutes after the AP
+   opened, which is the bench behaviour reproduced on the desk. No example-based test would
+   have caught this, because every individual decision the old policy made looked correct.
+2. **`kWifiRejoinAfterUs` was fixed too, and it was not in the original diagnosis.** The
+   review of the fix caught that the *first* takeover had no assert on it at all and
+   justified its five seconds with a "28 ms" figure for Arduino's own retry. Today's log
+   measures that retry at **2,868 ms**, and if the AP accepts it is a full association. Same
+   defect, one constant over. Both are now asserted at ≥ 2× the measured association.
+3. **A refusals counter was drafted and dropped.** It would have made the 388-vs-2 ratio
+   visible on the stats block, but it samples a sticky flag at 250 ms and therefore reads
+   *one* in the broken case and *one* in the healthy case. An instrument that cannot
+   separate the two worlds it was built for is worse than none. The signal that actually
+   diagnosed this is already free and event-driven: Arduino's `Reason:` lines.
+4. **The asserts now demand a factor, not an inequality.** The 2026-08-10 version was
+   satisfied at exactly 1.0× by a constant that turned out to be an under-estimate. Setting
+   the cycle back to five seconds is now a compile error — verified by doing it.
+
+**What this says about the milestone, and it is worth more than the bug.** The DoD that
+found this is the *only* acceptance in M3 that is not a host test or a soak, and it is the
+one that caught a defect making the object unusable after any Wi-Fi interruption. The host
+suite was green, the 23.6 h soak was green, and neither could see it, because neither ever
+took the association away and gave it back. **An owner-driven bench acceptance earned its
+place in the DoD today.**
+
+**Exact next step.** Flash the fixed build and re-run the same test: block in Deco, confirm
+grey, unblock, and watch for `wifi up:` **without a reset in front of it**. Expect recovery
+within ~10–20 s of unblocking (one rejoin cycle plus the ~4 s association plus the ~4 s
+socket connect). The tell that it is genuinely fixed rather than lucky is the ratio: with a
+10 s cadence every rejoin should now draw its own `Reason: 202` from the AP while it is
+still blocked, so `rejoining (#N)` and `Reason: 202` lines should be roughly one for one
+instead of 388 to 2.
