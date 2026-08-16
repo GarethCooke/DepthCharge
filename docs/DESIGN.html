@@ -2367,7 +2367,10 @@ classDiagram
       <b>(c) No client ping by default.</b> The RX watchdog greys the panel for silence in
       1 s, but it cannot make a half-open TCP connection admit it is dead. The 3.7 h
       prototype soak ran pingless and nothing needed one; that is evidence, not proof, and
-      <code>depthcharge-ping</code> is the 60 s arm that turns it into a measurement.
+      <code>depthcharge-ping</code> was the 60 s arm that turned it into a measurement.
+      (Superseded twice — see the resolution below: the silence recycle closed this question,
+      and the arm then inverted to <code>depthcharge-noping</code> when the ping returned to
+      answer a different one.)
       <b>(d) The RX task's stack and priority are estimates</b> — 6144 bytes and priority 5,
       copied from what the library asked for, for a task that does strictly less. Every
       autopsy line prints the high-water mark so the next bench run can lower them on
@@ -2395,7 +2398,16 @@ classDiagram
       <code>WsSupervisor</code> now recycles a socket that is up and silent for five minutes
       (strain 19 below has the number's provenance), which acts on the silence directly
       instead of provoking it — cheaper, needs no server cooperation, and host-tested rather
-      than benched. <code>depthcharge-ping</code> still builds and nothing needs it.
+      than benched. <b>2026-08-16 (D5): the ping came back, for a different question, and is now
+      ON by default</b> — not to provoke a silent socket, which stays closed, but to measure the
+      round-trip. Anvil's Crow queues a pong behind everything already posted to this connection,
+      so the round-trip prices <em>this socket's server-side send queue</em> — the one term
+      <code>staleness.hpp</code> cannot isolate. Read the new <code>-- ping</code> line against
+      <code>-- age</code> directly above it: age high with a slow pong is our own undrained queue
+      (backlog A7 is the fix), age high with a fast pong is lag upstream in the broadcaster (A7
+      would not help). <code>depthcharge-noping</code> is now the control arm. Policy and bounds
+      in <code>firmware/src/ws_ping.hpp</code>, host-tested in <code>test_ws_ping.cpp</code>;
+      nothing branches on it, because §6 #5 means a pong must never turn the panel green.
       <b>(d) has its first real reading</b>: <code>stack_free=1932 B</code> on both autopsies
       in the soak, i.e. the 6144-byte stack peaked around 4.2 KiB — the handshake, as
       predicted. Not lowered yet, because two samples from the same connect path are not the
@@ -2416,7 +2428,7 @@ classDiagram
       the outage rather than read live, so every retry after one would have reported "socket up
       but silent" over a socket that was gone.
     </p>
-    <p class="verdict">Resolves: <b>(a) resolved and staying resolved by the read-size property tests — whole frames and fragments both — and the thing to protect is that they keep running against every new case. (b) resolved. (c) resolved 2026-08-16 by the silence recycle, which subsumes the question the ping arm was built to answer; <code>depthcharge-ping</code> is now deletable on the owner's word. (d) resolves into a lowered <code>kRxTaskStack</code> once a run produces a high-water mark from something other than a failed upgrade — two samples of 1932 B are a floor observation, not a worst case</b></p>
+    <p class="verdict">Resolves: <b>(a) resolved and staying resolved by the read-size property tests — whole frames and fragments both — and the thing to protect is that they keep running against every new case. (b) resolved. (c) resolved 2026-08-16 by the silence recycle, which subsumes the question the ping arm was built to answer — and the arm was then repurposed rather than deleted: the ping is on by default as a <em>queue-depth</em> instrument (D5), <code>depthcharge-noping</code> is the control, and the silence recycle's clock moved to data-arrival so the pongs it provokes cannot defeat it. (d) resolves into a lowered <code>kRxTaskStack</code> once a run produces a high-water mark from something other than a failed upgrade — two samples of 1932 B are a floor observation, not a worst case</b></p>
   </div>
 
   <div class="strain">

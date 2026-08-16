@@ -248,7 +248,7 @@ public:
         // instrument about a *connect-time* burst must never be wrong in.
         r.since_connect_ms =
             (connected_at_us_ != 0 && at_us > connected_at_us_)
-                ? clamp_us_to_u32(static_cast<std::uint64_t>(at_us - connected_at_us_)) / 1000u
+                ? clamp_us_to_u32(static_cast<std::uint64_t>(at_us - connected_at_us_)) / kUsPerMs
                 : 0u;
         r.len = len;
         r.status = status;

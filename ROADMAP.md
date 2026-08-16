@@ -50,7 +50,7 @@ thing the hand-over asks for is that the section be rebuilt around these IDs.
 
 | ID | Item                            | Standing                                                          |
 | -- | ------------------------------- | ----------------------------------------------------------------- |
-| A7 | `depth` parameter on `/ws`      | **Do first** — cheapest, and it closes the staleness gap outright |
+| A7 | `depth` parameter on `/ws`      | **UNDERWAY Anvil-side (2026-08-16)** — it closes the staleness gap |
 | A1 | Sequenced incremental L2 feed   | Right long-term; **no longer blocking** if A7 lands               |
 | A2 | Heartbeat / keepalive           | Mostly answerable on this side — see D5                           |
 | A3 | Per-socket send-queue behaviour | **Unbounded** — answered by Anvil's source; document it           |
@@ -204,20 +204,28 @@ Anvil's *trend* workload.
 page itself is scheduled work (MP) inside the portfolio repo and does **not** count toward
 the threshold.
 
-**D5 · Ping the venue instead of waiting on it — the liveness watchdog gets a clock.**
-*[A] — small, host-testable, and it retires most of A2.* **Found 2026-08-16 in Anvil's vendored
-Crow:** an unsolicited client PING is answered with a PONG by the library, no application code
-involved, and the pong goes into the *same* per-connection write queue as data — it **cannot
-overtake frames already queued**, so a round-trip prices the server's write-path backlog for
-this connection. Stronger than TCP liveness, and honestly bounded: it is **blind to
-producer-side lag** (a pong is posted ahead of frames the broadcaster has not handed over yet),
-the ordering is one-sided, and this is read from source, never yet captured under induced
-backpressure — worth a desk experiment before any firmware depends on it. Work: send on a
-cadence from the RX task, feed the round-trip into `SupervisorInput`, and let the panel
-distinguish "quiet book" from "minutes behind". Wants the Anvil half of A2 first, which costs
-Anvil a sentence.
-
 ### Closed
+
+**~~D5 · Ping the venue instead of waiting on it — the liveness watchdog gets a clock.~~**
+*[A] — **DONE 2026-08-16**, host-green and building on all three firmware arms; unflashed.*
+`firmware/src/ws_ping.hpp` (`PingProbe`, ESP-IDF-free) + `harness/tests/test_ws_ping.cpp`; the
+client ping is on by default and `depthcharge-noping` is the control arm. The board prints a
+`-- ping` line directly under `-- age`, because the pair is the diagnosis: **age high + rtt high
+= our own undrained queue (A7 is the fix); age high + rtt low = lag upstream in the broadcaster
+(A7 would not help).** That split is the thing no instrument here could make before.
+
+- **Shipped with it, and it would have been a silent regression otherwise:** the silence
+  recycle's clock moved from byte-arrival to **data**-arrival (`SupervisorInput::last_data_us`,
+  stamped in `on_chunk`). A ping manufactures a pong every 10 s, and a pong is bytes — so the
+  board's own control traffic would have kept `kSilenceRecycleUs` from ever firing against a
+  peer that answers pongs and publishes nothing, which is exactly the 2026-08-16 00:12 stall.
+  ARCHITECTURE §9 carries the general rule.
+- **Still owed, and it is the Anvil half of A2:** the ordering this measurement rests on is
+  stock vendored Crow, read from source and **never captured under induced backpressure**. Until
+  Anvil writes the sentence, read the number as evidence rather than as a guarantee. The desk
+  experiment that would settle it is `tools/anvil_freshness_probe.py` with a ping arm.
+- Bounds that do not go away: it is **blind to producer-side lag** by construction, and nothing
+  branches on it — §6 #5 means a pong can never turn the panel green.
 
 **~~M3 close-out~~** — transport brief closes, docs catch up, Anvil ask rewritten. DONE
 2026-08-16 (`66e2f77`…`79c1867` plus the docs commit):

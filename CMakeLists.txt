@@ -189,6 +189,7 @@ add_executable(dc_tests
   harness/tests/test_stall_probe.cpp
   harness/tests/test_staleness.cpp
   harness/tests/test_ws_frame.cpp
+  harness/tests/test_ws_ping.cpp
   harness/tests/test_ws_supervisor.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
@@ -197,8 +198,9 @@ target_compile_definitions(dc_tests PRIVATE
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
 # what the parser threw away, the reconnect policy that decides how long the
 # panel stays grey, the 64x64 ladder renderer and the font its row budget is
-# computed from, and — from stage E — the summary-deficit age estimator, are
-# deliberately ESP-IDF-free so they can be tested here. These are the ONLY
+# computed from, the summary-deficit age estimator from stage E, and — from D5 —
+# the client-ping round-trip that prices this socket's server-side send queue,
+# are deliberately ESP-IDF-free so they can be tested here. These are the ONLY
 # firmware/ paths the host build knows about, and every one of them is a header —
 # no firmware .cpp is compiled on the host, so nothing in firmware/ can quietly
 # become a host dependency.
@@ -242,6 +244,20 @@ target_compile_definitions(dc_tests_streaming PRIVATE
 target_link_libraries(dc_tests_streaming PRIVATE
   dc_harness dc_engine_anvil_streaming dc_vendor dc_warnings Threads::Threads)
 
+# --- the pingless arm's one branch (D5) ---------------------------------------
+# `kClientPingEnabled` is a compile-time constant, so the branch it guards is
+# unreachable from dc_tests, which builds with the ping on. Same trick as
+# dc_tests_streaming above — one source, a second link configuration — for the
+# one property that only exists in the other arm: the pingless build must say it
+# is not asking, never that nothing came back. The two read identically on a
+# bench line and mean opposite things.
+add_executable(dc_tests_noping
+  harness/tests/doctest_main.cpp
+  harness/tests/test_ws_ping_disabled.cpp)
+target_compile_definitions(dc_tests_noping PRIVATE DC_WS_PING=0)
+target_include_directories(dc_tests_noping PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
+target_link_libraries(dc_tests_noping PRIVATE dc_vendor dc_warnings)
+
 # The replay report, produced by the other parser. dc_replay prints per-frame
 # statistics and the final ladder state; running both over both traces and
 # diffing the output is the coarse-grained twin of the goldens above — it proves
@@ -266,6 +282,7 @@ target_link_libraries(dc_tsan_workload PRIVATE dc_engine dc_warnings Threads::Th
 enable_testing()
 add_test(NAME dc_tests COMMAND dc_tests)
 add_test(NAME dc_tests_streaming COMMAND dc_tests_streaming)
+add_test(NAME dc_tests_noping COMMAND dc_tests_noping)
 add_test(NAME dc_replay_baseline
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
 add_test(NAME dc_replay_reconnect
@@ -299,4 +316,5 @@ add_test(NAME dc_channel_race COMMAND dc_tsan_workload 1)
 # blocks the writer does not fail an assertion — it hangs — so the useful report
 # is ctest saying "Timeout" in a minute rather than inheriting the 1500 s
 # default and looking like the machine died.
-set_tests_properties(dc_tests dc_tests_streaming dc_channel_race PROPERTIES TIMEOUT 120)
+set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_channel_race
+  PROPERTIES TIMEOUT 120)

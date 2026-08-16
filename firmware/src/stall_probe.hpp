@@ -395,7 +395,7 @@ public:
         HoleRecord& r = ring_[completed_ % kHoleLogDepth];
         r = HoleRecord{};
         r.ordinal = ++holes_;
-        r.gap_ms = gap_us / 1000u;
+        r.gap_ms = gap_us / kUsPerMs;
         r.idle_valid = idle_valid;
         r.core0_idle_pct = idle_valid ? idle_percent(idle0_us, gap_us) : 0u;
         r.core1_idle_pct = idle_valid ? idle_percent(idle1_us, gap_us) : 0u;
@@ -524,7 +524,7 @@ public:
         }
         for (std::uint8_t i = 0; i < r.recovery_n; ++i) {
             n = std::snprintf(out + at, cap - at, "%s%u", (i == 0) ? "" : ",",
-                              static_cast<unsigned>(r.recovery_us[i] / 1000u));
+                              static_cast<unsigned>(r.recovery_us[i] / kUsPerMs));
             if (append_truncating(n, cap, at)) { return at; }
         }
         n = std::snprintf(out + at, cap - at, " ms -> %s %s%s", verdict_name(r.verdict),

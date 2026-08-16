@@ -417,7 +417,7 @@ void RenderTask::print_stall(const FeedTask::Stats& f) noexcept {
                      " | probe %u passes worst %u cyc of %u",
                      static_cast<unsigned>(idle_percent(d0, window_us)),
                      static_cast<unsigned>(idle_percent(d1, window_us)),
-                     static_cast<unsigned>(window_us / 1000u),
+                     static_cast<unsigned>(window_us / kUsPerMs),
                      static_cast<unsigned>(f.stall.baseline0_pct()),
                      static_cast<unsigned>(f.stall.baseline1_pct()),
                      static_cast<unsigned>(f.stall.baseline_windows()),
@@ -580,6 +580,21 @@ void RenderTask::print_rates(const FramePipeStats& p, const FeedTask::Stats& f,
                  static_cast<unsigned>(drain_percent(d_summ, static_cast<std::uint64_t>(dt_ms) * 1000ull)),
                  static_cast<unsigned>(d_summ), static_cast<unsigned>(dt_ms),
                  static_cast<long long>(feed_.last_wire_seq()));
+
+        // DIRECTLY UNDER `-- age`, BECAUSE THE TWO ARE ONE READING. The age says
+        // how old the book is; this says whether the age is sitting in Anvil's
+        // send queue for THIS socket (rtt high — ROADMAP A7 is the fix) or
+        // upstream of it in the broadcaster (rtt low — A7 would not help).
+        // Neither number alone supports either conclusion, which is why they are
+        // printed adjacent and why ws_ping.hpp's header carries the 2x2.
+        //
+        // 128 bytes: four counts and three durations, the longest of which is a
+        // round-trip in milliseconds and cannot outrun the socket's own
+        // five-minute recycle. render() truncates rather than overruns anyway,
+        // and the host suite sweeps every capacity from 1.
+        char ping[128];
+        ping_.render(now, ping, sizeof ping);
+        ESP_LOGI(kTag, "-- ping   : %s", ping);
     }
 
     prev_ = cur;

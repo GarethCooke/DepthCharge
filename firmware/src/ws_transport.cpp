@@ -253,10 +253,11 @@ void WsTransport::supervise() noexcept {
     SupervisorInput in;
     in.now_us = now;
     in.socket_connected = connected();
-    // The silence recycle's input. Written by the RX task at the connect and at
-    // every read that produced bytes, so "socket up and this is old" is the
-    // whole of the half-open detector — no client ping, no server cooperation.
-    in.last_rx_us = last_rx_us_.load(std::memory_order_relaxed);
+    // The silence recycle's input. Written by the RX task at the connect and on
+    // every DATA chunk, so "socket up and this is old" is the whole of the
+    // half-open detector — no server cooperation, and, since the client ping
+    // went on, deliberately blind to the pongs we provoke ourselves.
+    in.last_data_us = last_data_us_.load(std::memory_order_relaxed);
     // WiFi.status(), not esp_wifi_sta_get_ap_info(): the question this gate asks
     // is "could a TCP connection possibly succeed", and that needs an IP, which
     // is what Arduino's status tracks and an AP record does not.
@@ -420,10 +421,16 @@ void WsTransport::rx_main() noexcept {
         if (rc > 0) {
             budget_.on_read(at_us - read_began_us, static_cast<std::uint32_t>(rc));
             socket_bytes_ += static_cast<std::uint64_t>(rc);
-            // The silence recycle's clock, reset by the only thing that proves
-            // the socket is alive: bytes off it. Stored before the parse, so a
-            // read that costs an unusually long feed cannot age its own arrival.
-            last_rx_us_.store(at_us, std::memory_order_relaxed);
+            // THE SILENCE RECYCLE'S CLOCK IS NO LONGER STAMPED HERE. It used to
+            // be, on any bytes at all, which was right while data frames were
+            // the only thing that ever arrived. The client ping breaks that:
+            // our own pong is bytes, so this line would have refreshed the clock
+            // every kPingPeriodUs and the five-minute recycle could never have
+            // fired against a peer that answers pongs and publishes nothing —
+            // the 2026-08-16 00:12 stall exactly, and the recycle is the only
+            // recovery path there is. It moved to `on_chunk`, where it counts
+            // DATA and is stamped from the same pre-parse `arrival_us` this line
+            // used, so the recycle got strictly stronger and lost no precision.
             parser_.feed(rx_buf_, static_cast<std::uint32_t>(rc), at_us);
             budget_.on_feed(esp_timer_get_time() - at_us);
             if (parser_.failed()) {
@@ -476,7 +483,7 @@ void WsTransport::rx_main() noexcept {
             // one attempt, charged to the attempt the supervisor already stamped,
             // with no second 7 s retry cycle of grey in between.
             if (connect_requested_.load(std::memory_order_relaxed) &&
-                socket_is_silent(at_us, last_rx_us_.load(std::memory_order_relaxed))) {
+                socket_is_silent(at_us, last_data_us_.load(std::memory_order_relaxed))) {
                 die("rx-silence", 0, 0);
                 continue;
             }
@@ -507,14 +514,18 @@ bool WsTransport::open_socket() noexcept {
     const std::int64_t dns_us = warm_dns();
     const std::int64_t t0 = esp_timer_get_time();
     opened_us_ = t0;
-    last_ping_us_ = t0;
+    // The round-trip readings died with the last socket, and so did the queue
+    // they measured. This also starts the ping cadence, so the first ping falls
+    // a period in rather than racing Anvil's on-connect snapshot — which would
+    // measure the snapshot's own drain and report it as backlog.
+    probe_.note_connect(t0);
     // The silence clock belongs to THIS socket from the moment it is attempted,
     // so a five-minute-old stamp from the connection before it cannot recycle the
     // replacement the instant it comes up. WsSupervisor guards the same case from
     // its own side (it measures from the connect edge it observes); both, because
     // the supervisor's correctness must not depend on this line and this line
     // makes the instrument mean what its name says.
-    last_rx_us_.store(t0, std::memory_order_relaxed);
+    last_data_us_.store(t0, std::memory_order_relaxed);
 
     esp_tls_cfg_t cfg = {};
     // The production trust anchor, unchanged and still pinned: ISRG Root X1/X2
@@ -662,6 +673,24 @@ void WsTransport::close_socket() noexcept {
     reassembler_.reset();
     parser_.reset();
 
+    // A ping still in flight dies here, and it must be banked before it does.
+    //
+    // THIS IS THE READING THE INSTRUMENT MOST WANTS AND THE ONE IT WOULD MOST
+    // EASILY LOSE: a round-trip deep enough to outlive its own socket is, by
+    // construction, the largest queue this probe can observe — and it is the
+    // only one that never arrives at note_pong. StalenessEstimator shipped with
+    // exactly this defect for an afternoon (its high-water marks were written
+    // only inside note_summary, so the peak between the last sample and the drop
+    // was lost and the reconnect then zeroed it), and it would have arrived here
+    // identically. Banked as a lower bound and counted as unanswered, so it can
+    // never be read as a completed measurement — the pair is what keeps that
+    // distinction; see `PingProbe::note_disconnect`.
+    //
+    // AFTER the autopsy, structurally: every death path is die(), which is
+    // autopsy() then close_socket(), so the line above still prints the socket's
+    // own state before anything here touches it.
+    probe_.note_disconnect(esp_timer_get_time());
+
     // Only a socket that was UP owes the feed task a Disconnected. A connect
     // that never completed leaves the book already stale from the drop that
     // preceded it, and posting a second Gap for it would put a disconnect in the
@@ -692,16 +721,27 @@ bool WsTransport::write_all(const void* data, std::size_t len) noexcept {
 }
 
 bool WsTransport::maybe_ping(std::int64_t now) noexcept {
-    if (kClientPingMs == 0) { return true; }
-    if (now - last_ping_us_ < static_cast<std::int64_t>(kClientPingMs) * 1000) { return true; }
-    last_ping_us_ = now;
+    if (!kClientPingEnabled) { return true; }
+    if (!probe_.ping_due(now)) { return true; }
     // FIN + ping, masked with an all-zero key: a client MUST mask (§5.3) and an
     // all-zero key is a legal one that leaves the (empty) payload unchanged.
+    //
+    // EMPTY, and ws_ping.hpp's `ping_due` is why a payload would buy nothing:
+    // §5.5.2 lets a peer answer several outstanding pings with one pong, so a
+    // correlation key cannot create the responses it would correlate. One ping
+    // in flight removes the ambiguity instead, and then there is nothing left
+    // for a payload to disambiguate.
     const std::uint8_t ping[6] = {0x89, 0x80, 0, 0, 0, 0};
     if (!write_all(ping, sizeof(ping))) {
         die("ping-write", -1, errno);
         return false;
     }
+    // Stamped AFTER the write returns, not before it. write_all can spin on
+    // WANT_WRITE up to kWriteBudgetUs, and counting that spin as part of the
+    // round-trip would charge our own back-pressure to Anvil's queue — the
+    // measurement reading largest exactly when the local socket is the thing
+    // that is struggling, which is the direction that would mislead.
+    probe_.note_ping_sent(esp_timer_get_time());
     return true;
 }
 
@@ -714,6 +754,20 @@ bool WsTransport::maybe_ping(std::int64_t now) noexcept {
 void WsTransport::die(const char* what, int rc, int saved_errno) noexcept {
     autopsy(what, rc, saved_errno);
     close_socket();
+}
+
+// The clock is taken here rather than threaded from the read's arrival stamp,
+// and the imprecision is bounded and in the safe direction. What separates the
+// two is the parse cost of whatever sat ahead of this pong in the same read —
+// `budget_.on_feed` measures that whole term at `feed 0%` of the RX loop across
+// every hour of the 23.6 h soak, so it is microseconds against an 87 ms floor,
+// and it can only ever make the round-trip read LONGER than it was. Threading
+// the stamp would mean putting a timestamp on the parser's on_pong callback,
+// i.e. changing ws_frame.hpp's handler contract and its host tests, to move a
+// number by less than the quantity's own resolution.
+void WsTransport::on_pong() noexcept {
+    pipe_.count_control();
+    probe_.note_pong(esp_timer_get_time());
 }
 
 void WsTransport::on_ping(const std::uint8_t* payload, std::uint32_t len) noexcept {

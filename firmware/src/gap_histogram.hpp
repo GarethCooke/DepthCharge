@@ -99,6 +99,26 @@ inline std::uint32_t clamp_us_to_u32(std::uint64_t value_us) noexcept {
     return (value_us > 0xFFFFFFFFull) ? 0xFFFFFFFFu : static_cast<std::uint32_t>(value_us);
 }
 
+// Microseconds per millisecond, for every instrument that measures in the first
+// and prints in the second.
+//
+// A bare `1000u` was inlined at four call sites across three headers before
+// `ws_ping.hpp` arrived and made it five. That is the repeated-literal case, and
+// the reason it is worth a name rather than a shrug is the same one every other
+// shared helper here has: what these lines are actually doing — converting the
+// unit an interval is *measured* in to the unit it is *read* in — is invisible
+// in a bare divisor, and a site that used 1000000u by mistake would compile,
+// print a plausible small number, and be wrong only on the bench.
+//
+// **32-BIT, AND THE WIDTH IS THE WHOLE DECISION.** Every existing call site
+// divides a `std::uint32_t` (`gap_us`, `recovery_us[i]`, `window_us`, a clamped
+// reject age). Declaring this `std::uint64_t` — which is what a "microseconds"
+// constant looks like it should be — would promote all four to 64-bit division,
+// and the LX7 has no 64-bit divide instruction, so each would become a libgcc
+// call in code that runs per event. `ws_ping.hpp` divides a `std::uint64_t` by
+// it and is unaffected: that division was already 64-bit and stays so.
+inline constexpr std::uint32_t kUsPerMs = 1000;
+
 // Append-with-truncation, for every fixed-buffer render in the firmware.
 //
 // `written` is what snprintf returned, `cap` the whole buffer and `at` the
