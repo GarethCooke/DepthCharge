@@ -124,6 +124,30 @@ PINNED_FIELDS: tuple[str, ...] = (
     "roundtrip_survivors", "price_decimals", "qty_decimals", "evicted",
     "stale_reentries")
 
+# --- traces this tool deliberately cannot grade ------------------------------
+# An unpinned trace is a FAILURE, not a skip -- that rule stands and is the whole
+# reason this table exists. But "cannot be graded" is a third state, distinct
+# from both "pinned" and "forgotten", and silently skipping it would recreate the
+# hole the rule closed. So an ungradeable trace is listed HERE, WITH ITS REASON,
+# and `--selfcheck` reports it as an explicit exclusion rather than passing over
+# it or failing on it.
+#
+# Adding a row here is a claim that needs the same scrutiny as a pinned figure:
+# it says "no checksum in this file can ever match, and that is a property of the
+# capture rather than a bug in the tool."
+NOT_A_CHECKSUM_GOLDEN: dict[str, str] = {
+    "kraken_minagbp_d25_20260817.ndjson":
+        "a MID-STREAM window (t+65..t+160 s of a 600 s capture), so it carries no "
+        "book/snapshot to baseline from and every one of its 49 checksums is "
+        "computed against a book built from deltas applied to nothing: 0/49, by "
+        "construction and at any depth. It is the LIVENESS golden for the "
+        "2026-08-17 staleness ruling -- 25,843 ms of healthy book silence with the "
+        "heartbeat unbroken -- and the checksum/truncation goldens are the d10 and "
+        "d25 BTC/USD slices, which is why those are separate files. Note also that "
+        "its truncation column would read CATCHES for the wrong reason (see the "
+        "guard in verify()), which is the second reason not to grade it.",
+}
+
 KNOWN_ANSWERS: dict[str, dict[str, int]] = {
     # `ok_never_truncating` is the column to read first, and it is the criterion
     # rather than a proxy: strictly below `checksummed` means this trace CATCHES a
@@ -579,6 +603,12 @@ def pin(traces: list[Path]) -> int:
     particular, `--selfcheck` must pass on the existing rows first, or the figures
     this prints came out of a tool nothing has vouched for.
     """
+    ungradeable = [t for t in traces if t.name in NOT_A_CHECKSUM_GOLDEN]
+    if ungradeable:
+        for t in ungradeable:
+            print(f"  [REFUSED] {t.name} is listed in NOT_A_CHECKSUM_GOLDEN and cannot "
+                  f"be pinned: {NOT_A_CHECKSUM_GOLDEN[t.name]}", file=sys.stderr)
+        return 1
     already = [t for t in traces if t.name in KNOWN_ANSWERS]
     if already:
         for t in already:
@@ -597,6 +627,12 @@ def pin(traces: list[Path]) -> int:
             return 1
         args = ", ".join(f"{k}={got[k]}" for k in PINNED_FIELDS)
         print(f'    "{trace.name}": dict(\n        {args}),')
+        if got["checksummed"] and got["ok_truncating"] == 0:
+            print(f"  # {trace.name}: its truncation verdict is MEANINGLESS -- not one "
+                  f"checksum matches even WITH truncation (0/{got['checksummed']}), so "
+                  f"'never-truncating scores lower' is true only because everything "
+                  f"fails. A mid-stream window with no snapshot does this.",
+                  file=sys.stderr)
         if got["ok_never_truncating"] >= got["checksummed"]:
             print(f"  # NOTE: {trace.name} MISSES a missing truncation "
                   f"(never-truncating scores {got['ok_never_truncating']}/"
@@ -616,6 +652,15 @@ def selfcheck(traces: list[Path]) -> int:
     rc = 0
     checked = 0
     for trace in traces:
+        excluded = NOT_A_CHECKSUM_GOLDEN.get(trace.name)
+        if excluded is not None:
+            if trace.name in KNOWN_ANSWERS:
+                print(f"  [FAIL] {trace.name}: listed BOTH as pinned and as "
+                      f"ungradeable. One of the two rows is wrong.")
+                rc = 1
+                continue
+            print(f"  [excl] {trace.name}: not a checksum golden -- {excluded}")
+            continue
         expected = KNOWN_ANSWERS.get(trace.name)
         if expected is None:
             # A FAILURE, not a skip. A silently-skipped trace is the same species

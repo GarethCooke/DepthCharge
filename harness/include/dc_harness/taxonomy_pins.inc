@@ -112,3 +112,26 @@
      /*wd_declared=*/0, /*wd_anvil=*/25, /*book_wd_declared=*/0, /*book_wd_anvil=*/12,
      /*liveness_events=*/60, /*liveness_firings=*/0,
      "ack:subscribe=1 book/snapshot=1 book/update=29 heartbeat=60 status/update=1 tx:subscribe=1"},
+// Added 2026-08-17. THE EXTREME, and the golden the staleness ruling exists to
+// serve: a **25,843.3 ms** healthy book silence with the heartbeat keeping
+// 936-1,042 ms time straight through it. The row above covers the same case at
+// 9.0 s; this one is not redundant with it and neither replaces the other (see
+// NOTES-kraken.md, "Two quiet-pair traces, two jobs").
+//
+// Read `book_wd_declared=3` beside `liveness_firings=0`. That pair IS the ruling:
+// the WITHDRAWN 15,000 ms book-silence constant would have invented three
+// disconnects in this 95 s window on a feed that never lost a packet, and the
+// liveness rule invents none. `wd_anvil=36` is the same point at 1,000 ms.
+//
+// Two properties of this slice that are deliberate and must not be read as
+// defects. `tx=0` and `snapshots=0`: the window starts 65 s into a 600 s capture,
+// so it begins MID-STREAM, after the subscribe and after the on-connect
+// snapshot. That makes it a LIVENESS golden and NOT a book golden — a stage-B
+// adapter replaying it starts against an unknown book, which is correct
+// behaviour and is why the truncation goldens are separate files.
+    {"kraken_minagbp_d25_20260817.ndjson", "kraken",
+     /*records=*/144, /*tx=*/0, /*untyped=*/95, /*book_events=*/49,
+     /*snapshots=*/0, /*resyncs=*/0,
+     /*wd_declared=*/0, /*wd_anvil=*/36, /*book_wd_declared=*/3, /*book_wd_anvil=*/10,
+     /*liveness_events=*/95, /*liveness_firings=*/0,
+     "book/update=49 heartbeat=95"},

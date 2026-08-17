@@ -378,6 +378,14 @@ endforeach()
 add_test(NAME dc_replay_kraken_quiet_pair
   COMMAND dc_replay
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260816.ndjson)
+# ...and the EXTREME of the same case, captured at a second hour (2026-08-17):
+# 25,843 ms of healthy book silence with the heartbeat keeping 936-1,042 ms time
+# straight through it. This is the trace the staleness ruling exists to serve,
+# and the one that retired the 15,000 ms book-silence constant — at which it
+# would have invented three disconnects on a feed that never lost a packet.
+add_test(NAME dc_replay_kraken_quiet_pair_extreme
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260817.ndjson)
 
 # The taxonomy pin, over EVERY committed trace, Anvil included. An unpinned
 # trace fails rather than skips (see dc_taxonomy_main.cpp): adding a committed
