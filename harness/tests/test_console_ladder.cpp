@@ -80,6 +80,40 @@ TEST_CASE("a live ladder says LIVE and draws solid depth bars") {
     CHECK(contains(out, "tape"));
 }
 
+TEST_CASE("the header carries the book's age, and says nothing when it has none") {
+    // M4 stage A2. The header is where the ruling put the number it took away
+    // from the grey channel: book silence is no longer allowed to grey the panel
+    // at any venue, so the panel has to be able to SAY how far behind it is.
+    DisplaySnapshot snap = make_snapshot(/*with_gap=*/false);
+
+    // No estimate yet — a fresh connection that has not measured the venue's
+    // clock. A dash, never "0.0s": "no reading yet" and "the book is current"
+    // are different statements and only one of them is reassuring.
+    CHECK(snap.has_age == false);
+    const std::string unknown = render_ladder(snap, plain());
+    CHECK(contains(unknown, " age -"));
+    CHECK_FALSE(contains(unknown, "0.0s"));
+
+    // With a reading, and the reading rendered to MINUTES — the panel must be
+    // able to draw the 2 min 56 s of A2b's stall, which is the incident this
+    // instrument exists for.
+    snap.has_age = true;
+    snap.age_ms = 176000;
+    CHECK(contains(render_ladder(snap, plain()), " age 2m56s"));
+
+    snap.age_ms = 400;
+    CHECK(contains(render_ladder(snap, plain()), " age 0.4s"));
+
+    // AND IT IS NOT A THIRD HONESTY CHANNEL. A big age on a live feed is still
+    // LIVE — nothing branches on it (invariant #5, ruling point 4). The stale
+    // rendering's three channels are unchanged by any of this.
+    snap.age_ms = 999999;
+    const std::string old_but_live = render_ladder(snap, plain());
+    CHECK(contains(old_but_live, "LIVE"));
+    CHECK_FALSE(contains(old_but_live, "STALE"));
+    CHECK(contains(old_but_live, "█"));   // solid bars: the book is still trusted
+}
+
 TEST_CASE("a stale ladder cannot be mistaken for a live one — without any colour") {
     const std::string live = render_ladder(make_snapshot(false), plain());
     const std::string stale = render_ladder(make_snapshot(true), plain());
@@ -139,10 +173,18 @@ TEST_CASE("the box contains the header and the banner at every reason and seq wi
                                  GapReason::Disconnect, GapReason::Overflow,
                                  GapReason::Resync};
     const depthcharge::Seq seqs[] = {0, 4, 332, 1225, 999999, 18446744073709551615ULL};
+    // THE THIRD AXIS, ADDED WITH THE AGE METER (M4 stage A2): "-" is one column
+    // and "1193h02m" is eight, so the age is a width driver exactly as seq and
+    // the gap reason are — and this test exists because two of those three
+    // overflowed the box before anyone swept them.
+    struct Age { bool known; std::uint32_t ms; };
+    const Age ages[] = {{false, 0}, {true, 0}, {true, 400}, {true, 59999},
+                        {true, 176000}, {true, 4294967295u}};
 
     for (const bool unicode : {true, false}) {
         for (const GapReason reason : reasons) {
             for (const depthcharge::Seq seq : seqs) {
+                for (const Age age : ages) {
                 LadderStyle style = plain();
                 style.unicode = unicode;
 
@@ -167,10 +209,14 @@ TEST_CASE("the box contains the header and the banner at every reason and seq wi
 
                 DisplaySnapshot snap{};
                 book.publish(snap);
+                snap.has_age = age.known;
+                snap.age_ms = age.ms;
 
                 const std::string label = "unicode=" + std::to_string(unicode) +
                                           " reason=" + std::to_string(static_cast<int>(reason)) +
-                                          " seq=" + std::to_string(seq);
+                                          " seq=" + std::to_string(seq) +
+                                          " age=" + (age.known ? std::to_string(age.ms)
+                                                               : std::string("(no reading)"));
                 INFO(label);
 
                 const auto rows = lines_of(render_ladder(snap, style));
@@ -178,6 +224,7 @@ TEST_CASE("the box contains the header and the banner at every reason and seq wi
                 const std::size_t w = columns(rows.front());
                 for (const auto& row : rows) {
                     CHECK(columns(row) == w);
+                }
                 }
             }
         }

@@ -183,6 +183,7 @@ target_link_libraries(dc_taxonomy PRIVATE dc_harness dc_engine_anvil dc_warnings
 add_executable(dc_tests
   harness/tests/dc_tests.cpp
   harness/tests/alloc_probe.cpp
+  harness/tests/test_age_estimator.cpp
   harness/tests/test_decimal.cpp
   harness/tests/test_anvil_adapter.cpp
   harness/tests/test_book.cpp

@@ -23,6 +23,7 @@
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/feed_event.hpp>
 
+#include "dc_harness/age_estimator.hpp"
 #include "dc_harness/console_ladder.hpp"
 #include "dc_harness/replay_driver.hpp"
 #include "dc_harness/trace.hpp"
@@ -60,17 +61,23 @@ using dc::harness::run_replay_text;
 
 namespace {
 
+// One rule for turning a trace's name into its path, so a new case cannot spell
+// the directory a fourth way.
+std::string trace_path(std::string_view name) {
+    return std::string(DC_REPLAY_DIR) + "/" + std::string(name) + ".ndjson";
+}
+
 std::string baseline_path() {
-    return std::string(DC_REPLAY_DIR) + "/anvil_101_baseline.ndjson";
+    return trace_path("anvil_101_baseline");
 }
 std::string reconnect_path() {
-    return std::string(DC_REPLAY_DIR) + "/anvil_101_reconnect.ndjson";
+    return trace_path("anvil_101_reconnect");
 }
 // The 2026-08 re-measurement of Anvil's cadence (M3). See NOTES.md's M3 addendum
 // for why a second healthy trace exists rather than the first one being replaced:
 // the M1 trace is what the goldens above pin, and it is kept exactly as it was.
 std::string baseline_2026_08_path() {
-    return std::string(DC_REPLAY_DIR) + "/anvil_101_baseline_20260809.ndjson";
+    return trace_path("anvil_101_baseline_20260809");
 }
 
 ReplayResult replay(const std::string& path, std::size_t max_frames = 0) {
@@ -401,6 +408,126 @@ TEST_CASE("reconnect trace: THE CALIBRATED PATH greys for 2,469 ms, not 3,468") 
     CHECK(r.first_stale_snapshot.status == FeedStatus::Stale);
     CHECK(r.first_stale_snapshot.bid_count == depthcharge::kDisplayLevels);
     CHECK(r.final_snapshot.live());
+}
+
+// ---------------------------------------------------------------------------
+// THE AGE METER (M4 stage A2)
+//
+// What these can and cannot prove is the whole reason they are worded carefully.
+// A committed trace CANNOT carry a true queuing lag — a backlog belongs to one
+// client's socket, and a capture's rx_ns records only when that client got the
+// bytes — so the arithmetic is proven against synthesised patterns in
+// test_age_estimator.cpp. What the traces prove is the other half, and it is not
+// nothing: **on four healthy Anvil captures the meter reads its noise floor, and
+// on the one trace with a real outage it does not.** A meter that read minutes
+// on a healthy feed would be as useless as one that read zero on a stalled one.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("age meter: four healthy Anvil traces read the noise floor, not minutes") {
+    struct Case {
+        const char* name;
+        std::string path;
+        std::uint32_t worst_lo, worst_hi;   // ms, from the rendered tenths
+    };
+    const Case cases[] = {
+        {"M1 baseline", baseline_path(), 900, 1000},
+        {"2026-08-09 baseline", baseline_2026_08_path(), 500, 600},
+        {"2026-08-16 depth 27", trace_path("anvil_101_depth27_20260816"), 600, 700},
+        {"2026-08-17 feeder off", trace_path("anvil_101_feederoff_20260817"), 500, 600},
+    };
+
+    for (const Case& c : cases) {
+        CAPTURE(c.name);
+        const ReplayResult r = replay(c.path);
+
+        // The baseline latched at Anvil's broadcast cadence, from the trace's
+        // own first window rather than from any constant in this repo.
+        CHECK(r.age_baseline_ms > 490.0);
+        CHECK(r.age_baseline_ms < 510.0);
+
+        CHECK(r.final_snapshot.has_age);
+        CHECK(r.worst_age_ms >= c.worst_lo);
+        CHECK(r.worst_age_ms < c.worst_hi);
+
+        // AND THE POINT OF THE FLOOR BEING WHERE IT IS, rather than at zero:
+        // one liveness interval is the instrument's resolution (the elapsed term
+        // grows between arrivals while the delivered term does not), and Anvil's
+        // occasional slipped `summary` tick is never repaid — a fixed engine
+        // deadline does not run fast afterwards to catch up — so a slip stays in
+        // the window until it ages out of it. 0.9 s on the M1 trace is a slipped
+        // tick plus the sawtooth, and it is real: from one socket a late
+        // broadcast and a late delivery are the same observation (the ruling's
+        // point 7).
+        CHECK(r.worst_age_ms < 1000u);   // the floor, bounded — under two intervals
+        CHECK(r.episodes.empty());       // and NOTHING greyed: age is not a grey signal
+    }
+}
+
+TEST_CASE("age meter: the reconnect trace peaks at the outage and dies with the socket") {
+    // The calibrated path, because the reset is timed off the watchdog: the
+    // estimate is voided when the Gap is raised at prev_rx + threshold.
+    const ReplayResult r = run_replay_file(reconnect_path(), kAnvilTicker101, ReplayOptions{});
+    REQUIRE(r.episodes.size() == 1);
+
+    // 2.3 s: the 2,000 ms the watchdog waited, plus however far into the summary
+    // period the last frame fell. Two and a half times the healthy floor above,
+    // which is the separation that makes the number worth printing.
+    CHECK(r.worst_age_ms >= 2300u);
+    CHECK(r.worst_age_ms < 2400u);
+
+    // THE BACKLOG DIED WITH THE SOCKET. Everything published between the Gap and
+    // the new connection's first window reads "no reading yet" rather than a
+    // number carried across a queue that no longer exists — and the panel is
+    // grey throughout that stretch anyway.
+    std::size_t after_gap = 0;
+    std::size_t unknown_after_gap = 0;
+    bool seen_gap = false;
+    dc::harness::TraceReader reader(reconnect_path());
+    run_replay(reader, kAnvilTicker101, ReplayOptions{},
+               [&](const dc::harness::ReplayStep& step,
+                   const depthcharge::DisplaySnapshot& snap) {
+                   if (step.kind == FeedEvent::Kind::Gap) {
+                       // The grey frame itself still carries the age the book
+                       // had reached when the watchdog fired.
+                       CHECK(snap.has_age);
+                       CHECK(snap.age_ms >= 2300u);
+                       seen_gap = true;
+                       return true;
+                   }
+                   if (seen_gap) {
+                       ++after_gap;
+                       if (!snap.has_age) { ++unknown_after_gap; }
+                   }
+                   return true;
+               });
+    REQUIRE(seen_gap);
+    REQUIRE(after_gap > 0);
+    // At least the new connection's whole baseline window: the meter says
+    // nothing until it has measured this socket's clock for itself.
+    CHECK(unknown_after_gap >= dc::harness::kBaselineSamples);
+
+    // By the end of the trace the new connection has re-measured the venue's
+    // clock for itself and the meter is back on the floor.
+    CHECK(r.final_snapshot.has_age);
+    CHECK(r.final_snapshot.age_ms < 1000u);
+    CHECK(r.age_baseline_ms > 490.0);
+    CHECK(r.age_baseline_ms < 510.0);
+}
+
+TEST_CASE("age meter: the age travels in the snapshot, not beside it") {
+    // §5's list is the render side's entire universe (invariant #8), so a number
+    // the panel must draw has to be IN the published frame. This is the same
+    // argument `status` was added on: a field that arrives by a side channel can
+    // be drawn without it.
+    const ReplayResult r = replay(baseline_path());
+    CHECK(r.final_snapshot.has_age);
+
+    // And the console draws what it was handed rather than recomputing it.
+    dc::harness::LadderStyle style;
+    style.color = false;
+    style.unicode = false;
+    const std::string text = dc::harness::render_ladder(r.final_snapshot, style);
+    CHECK(text.find(" age ") != std::string::npos);
 }
 
 TEST_CASE("reconnect trace: exactly one published frame is stale, and it is the Gap's") {
