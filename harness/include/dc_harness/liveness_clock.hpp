@@ -18,10 +18,11 @@
 // there. Fixed-size ring, no heap, no floating-point state beyond the samples.
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+
+#include "dc_harness/sample_window.hpp"
 
 namespace dc::harness {
 
@@ -136,29 +137,23 @@ public:
     // nanoseconds; the first call establishes the origin and yields no interval.
     void on_liveness(std::int64_t rx_ns) noexcept {
         if (have_prev_) {
-            const double gap_ms = static_cast<double>(rx_ns - prev_ns_) / 1e6;
-            samples_[next_] = gap_ms;
-            next_ = (next_ + 1) % kWindowSamples;
-            if (count_ < kWindowSamples) { ++count_; }
+            intervals_.push(static_cast<double>(rx_ns - prev_ns_) / 1e6);
         }
         prev_ns_ = rx_ns;
         have_prev_ = true;
     }
 
-    std::size_t samples() const noexcept { return count_; }
-    bool calibrated() const noexcept { return count_ >= kMinSamples; }
+    std::size_t samples() const noexcept { return intervals_.size(); }
+    bool calibrated() const noexcept { return intervals_.size() >= kMinSamples; }
 
-    // The observed median inter-arrival, or 0 before any sample.
+    // The observed median inter-arrival, or 0 before any sample. Lower median by
+    // nearest rank — the convention, and the reason for it, live with the ring
+    // in sample_window.hpp, because the age meter takes a median of the same
+    // signal and the two must not answer differently.
     double median_ms() const noexcept {
-        if (count_ == 0) { return 0.0; }
-        std::array<double, kWindowSamples> sorted{};
-        std::copy(samples_.begin(), samples_.begin() + static_cast<std::ptrdiff_t>(count_),
-                  sorted.begin());
-        std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(count_));
-        // Lower median on an even count, matching gap_stats.py's nearest-rank
-        // convention — an interpolated value would invent an interval that never
-        // occurred, and at these sample sizes the rank is what matters.
-        return sorted[(count_ - 1) / 2];
+        std::array<double, kWindowSamples> scratch{};
+        for (std::size_t i = 0; i < intervals_.size(); ++i) { scratch[i] = intervals_.at(i); }
+        return lower_median(scratch.data(), intervals_.size());
     }
 
     // The staleness threshold this venue currently warrants.
@@ -171,9 +166,7 @@ public:
     }
 
 private:
-    std::array<double, kWindowSamples> samples_{};
-    std::size_t next_ = 0;
-    std::size_t count_ = 0;
+    SampleRing<double, kWindowSamples> intervals_;
     std::int64_t prev_ns_ = 0;
     bool have_prev_ = false;
 };
