@@ -68,6 +68,7 @@ from wire-seq gaps.
 | `anvil_101_baseline.ndjson`  | 1406 | 89.9 s | 1 / 1088 / 136 / 181 | 8.75 MiB (9,171,782 B) | **181.6 KiB** (185,985 B) |
 | `anvil_101_reconnect.ndjson` | 1288 | 89.8 s | 1 / 1012 / 103 / 172 | 8.00 MiB (8,389,733 B) | **167.7 KiB** (171,717 B) |
 | `anvil_101_baseline_20260809.ndjson` | 1513 | 90.0 s | 1 / 1210 / 121 / 181 | 9.96 MiB (10,438,331 B) | **189.9 KiB** (194,461 B) |
+| `anvil_101_feederoff_20260817.ndjson` | 1753 | 119.9 s | 1 / 1511 / **0** / 241 | 200.0 KiB (204,782 B) | **12.7 KiB** (13,021 B) |
 
 The third is M3's re-measurement of the same thing the first one measures, seventeen
 days and one bench bring-up later; it is added rather than substituted, because the M1
@@ -105,10 +106,278 @@ Serial-monitor logs (`device-monitor-260815-002728.log`) and bench records
 (`hardware/bench-2026-08-16-*.md`) are desk-local by nature — a serial monitor
 stamps the wall clock in front of the owner — and are deliberately left alone.
 
+### THE TRACE METADATA CONTRACT — binding for every trace, all venues, both languages
+
+Added 2026-08-17 (M4 stage A). **This is the prose statement of a rule that has
+three implementations** — `harness/include/dc_harness/venue.hpp` (C++ table),
+`harness/src/trace.cpp` (C++ enforcement) and `tools/tracefile.py` (Python) — and
+it is written here because it is the thing they must all agree with. Where a code
+comment and this section disagree, this section is what was decided;
+`ARCHITECTURE.md` §9 (2026-08-17) is what was decided *and why*.
+
+**Line 1 of a trace is a JSON object. Three fields are required of every venue:**
+
+| field | meaning |
+| --- | --- |
+| `captured_at` | ISO-8601 UTC, and the source of the filename's date (above) |
+| `url` | the endpoint, verbatim, including any query parameters that shaped the stream |
+| `tool_version` | the capture tool's version |
+
+**`venue` is optional, and an absent tag reads as `anvil`.** That is the whole of
+what makes the tag additive: the four Anvil traces committed before 2026-08-17
+carry no `venue` key and did not move by a byte when it was introduced. A tag
+naming a venue the build does not know is a **different failure** from a
+malformed header — `UnknownVenueError` in C++, a distinct `ValueError` message in
+Python, exit code 2 from `dc_replay` and `dc_taxonomy` — because "this file is
+broken" and "this build cannot read this file" want different reactions and only
+the first is a bug.
+
+**What identifies the instrument is venue-conditional**, because it does not
+generalise and requiring both of everyone would make one capture tool lie:
+
+| venue | also required | also carried |
+| --- | --- | --- |
+| `anvil` | `ticker` (integer id) | `capture_mode`, `cycles`, `origin_sent`, `origin_note`, `handshake_status` |
+| `kraken` | `symbol` (string pair, e.g. `BTC/USD`) | `depth`, `subscribe` (the frame verbatim), `capture_mode`, `cycles`, `handshake_status` |
+
+**`clock` names which monotonic clock stamped `rx_ns`, and is never inferred.**
+`monotonic_ns` at Anvil, `perf_counter_ns` at Kraken. An absent `clock` reads
+back as **`undeclared`**, not as the clock the venue's tool happens to use —
+that inference is sound today and is exactly the kind of sound inference that
+stops being true without anyone noticing. Both capture tools declare it from
+2026-08-17, so `undeclared` means "captured before then". **Do not compare gap
+distributions across two traces whose clocks differ**: on this box `monotonic_ns`
+steps at 15.0 ms and `perf_counter_ns` at 0.0002 ms, and Kraken's p50 book gap
+is 0.1 ms, so the coarse clock would report a distribution made of its own
+quantisation. The Anvil tool keeps the coarse clock deliberately, so a new Anvil
+capture stays comparable with the committed ones that every cadence figure in
+this repository is measured against.
+
+**Record lines** are `{"rx_ns": <int>, "frame": {…}}`, with one optional key:
+`"dir": "tx"` marks a record **this side sent** (`capture_kraken.py`'s subscribe).
+Received records carry no `dir` at all, so the Anvil line shape is untouched. A
+`tx` record is counted as a record and **excluded from every timing figure** —
+our own upload is not the venue's traffic, and the interval between the subscribe
+and the first reply is not an inter-message gap.
+
+**Whether a frame must carry a string `type` is venue-conditional too.** This
+narrows ARCHITECTURE §9's 2026-08-07 rule rather than abandoning it: Anvil frames
+are held to exactly the rule they were always held to, and a frame that lost its
+`type` still fails there. Kraken's do not carry one universally — its heartbeat
+is `{"channel":"heartbeat"}`, its subscribe ack carries `method`, and 61 of the
+depth-25 slice's 1,599 records have no `type` at all. The kind of a record is
+named by the **venue's decoder** (`harness/include/dc_harness/trace_decoder.hpp`),
+not by a field the reader assumes exists.
+
+**One rule for a resync, at every venue: a snapshot with a book event before it
+in the trace.** Not "a snapshot that is not the first record", which is Anvil's
+shape rather than a general one. The reasoning, and the two venue-specific
+repairs that were written and found wrong in opposite directions, is at the rule
+itself in `harness/src/trace.cpp`.
+
+**Slicing preserves all of it.** `tools/slice_trace.py` copies line 1 through
+verbatim and never re-serialises it, so a committed slice carries the venue tag
+and the clock name of the capture it came from. Checked rather than assumed: all
+four committed Kraken slices re-slice **byte-identical** to the committed files.
+
 Full local captures (git-ignored, `_local/`): baseline 4658 frames / 300 s /
 ~30 MB; reconnect 1836 frames / ~124 s / ~15 MB; the 2026-08-09 baseline 20,418
 frames / 1,199.9 s / ~128 MB, plus `drain-120ms.ndjson` (1,992 frames / 239.9 s),
 the deliberately throttled socket the M3 addendum's control uses.
+
+---
+
+## M4 stage A addendum (2026-08-17) — what an IDLE Anvil emits, and the clause in the vendored protocol that is false
+
+Captured for the 2026-08-17 staleness ruling, which makes Anvil's `summary` frame
+the liveness signal the panel's grey state is armed on. That ruling rests on a
+claim about idle behaviour, and until now **no committed trace contained a single
+idle second**: every Anvil capture in this directory was taken against a running
+synthetic feeder, so the state "the server is healthy and nothing is happening"
+had never been recorded.
+
+**The capture.** `anvil_101_feederoff_20260817.ndjson` — a **local** server
+(`build-msvc`, MSVC 19.44, Boost 1.86, Crow 1.2.1), `ANVIL_FEEDER=0` so the feeder
+thread is constructed and never started, `ANVIL_TICKERS=101,102,103`,
+`ANVIL_SUMMARY_HZ=2`, one client at `?ticker=101&depth=27`, **120 s**. No order
+exists at any point: every book is empty from the first frame to the last. Full
+capture untracked in `_local/`; the committed slice is the whole 120 s window
+(13.0 KiB gzipped, so there was nothing to gain by cutting it).
+
+**It is a local server, not the deployed one, and that is a real limit on what
+follows.** The cadence constants are the same defaults, but a VPS under load is
+not a desk. Treat the numbers as *what this code does when idle*, which is the
+question the ruling asks, and not as a measurement of production.
+
+### What it measures
+
+| kind | count | rate | inter-arrival |
+| --- | ---: | ---: | --- |
+| `summary` | 241 | **2.008 /s** | min 125.0 · **p50 500.0** · p90 515.0 · **max 531.0 ms** |
+| `book` | 1,512 | **12.597 /s** | min 46.0 · p50 78.0 · p90 140.0 · max 157.0 ms |
+| `snapshot` | 1 | on connect | — |
+| `trade` | **0** | — | the only committed trace with none |
+
+**The ruling's load-bearing measurement, confirmed and now reproducible from a
+committed file: `summary` fires at 2 Hz on an empty queue.** All 241 frames are
+**byte-identical apart from `seq`** — one distinct payload, `restingBuy` and
+`restingSell` zero and `last` empty on all three tickers — with `seq` advancing
+895 → 6,280. It is a deadline, not a reaction to order flow: nothing in this
+capture could have provoked it, because nothing happened.
+
+### The thing nobody had measured: an idle Anvil also emits `book`, at ~12.6/s
+
+1,511 `book` frames over an empty book, **byte-identical apart from `seq`**
+(`{"type":"book","seq":…,"ticker":101,"bids":[],"asks":[]}`), 0 of them carrying a
+level. The mechanism is certain from Anvil's source rather than inferred:
+
+- `EngineHarness::run()` (`server/engine_harness.hpp:171`) checks a **book
+  deadline** (`coalesce`, 70 ms ≈ 14 Hz) and a **summary deadline**
+  (`summary_period`, 500 ms) on every loop iteration, and both are on the **same
+  engine thread**.
+- `publish_books()` (`:240`) stamps `snap->seq = ++seq_` **unconditionally**,
+  whether or not a single level moved.
+- `Broadcaster::emit_books()` (`server/broadcaster.hpp:187`) does contain the
+  skip — `if (snap->seq == ls) continue;` — but because the publisher has just
+  minted a fresh `seq`, **that skip can never fire on a live server.** It is
+  reachable only if the engine thread stops publishing.
+
+Two consequences worth carrying:
+
+**1. `docs/vendor/anvil-protocol.md` §4 is false twice over, not once.** The
+clause reads *"a genuinely idle book produces no frames"*. A genuinely idle book
+produced **1,753 frames in 120 seconds** on this build.
+
+**RESOLVED UPSTREAM the same day, and the sequence is the point.** The report was
+raised against the **pre-refresh copy, `04db612`**, and was recorded only in
+DepthCharge's own header block — the snapshot body was deliberately left untouched,
+because a vendored file that has been edited stops being a record of what the other
+side said. Anvil then corrected the clause at the source (`25ade0e`), and
+`docs/vendor/anvil-protocol.md` is re-pinned at **`4801ed8`**. §3 now says the
+server sends no WebSocket ping and no dedicated heartbeat *frame*, but does send
+*"the data stream itself, on fixed timers that do not depend on order flow … Both
+continue on a completely idle book"* — which makes the 12.6 book-frames/s above a
+contract statement rather than an observation.
+
+**The rule that closes this class of error, and it is why the finding could be
+retired at all: a finding against a vendored file must name the SHA it was found
+in.** A pinned copy is a moving target across re-pins, so "the protocol says X" is
+not a durable claim — "`04db612` says X" is, and it is the only form that can be
+checked as fixed later. This is §9's standing discipline about quoted claims
+(2026-08-16 eve: a claim gets recomputed when it is quoted) applied to the vendor
+boundary. §9 item 8 is closed with the SHA.
+
+**2. A note for Anvil's A2b, offered rather than asserted.** A2b's
+publish-starvation hypothesis reasons that *"`emit_books` deliberately skips a
+ticker whose seq has not moved, so the wire goes silent while the connection
+stays perfectly healthy."* The skip exists but is dead code against a running
+publisher, so an unchanged book is **not** a route to silence. The hypothesis is
+not weakened by this — it is *strengthened and simplified*, because both deadlines
+live on one thread: if that thread stalls, `book` **and** `summary` stop together,
+which is exactly the total-silence signature A2b describes and exactly why the
+2026-08-17 ruling can say both internal hypotheses would silence `summary` too.
+
+### What this trace does NOT prove — read before citing it
+
+It was captured to be *the Anvil twin of the MINA/GBP case* and **it is not one**,
+and the reason is the finding above rather than a defect in the capture.
+
+At Kraken the quiet pair's book goes **silent for 25,843 ms** and the 1 Hz
+heartbeat is what keeps the panel honest — book silence and liveness genuinely
+separate, which is the whole reason the ruling exists. At Anvil, on an idle book,
+**there is no book silence to rescue**: `book` frames arrive at 12.6/s, the worst
+inter-arrival is 157 ms, and the panel stays coloured because book events keep
+coming — not because a liveness signal saved it. `dc_ladder` over this trace
+reports `watchdog 1000 ms -> 0 stale episode(s)` and renders `no book · ● LIVE`,
+which is the right answer and is **not** the new rule being exercised.
+
+So **the state "book age growing while liveness holds" still has no Anvil
+golden**, and a feeder-off capture structurally cannot provide one. The Anvil
+shape of that state is not an idle server, it is a **backlogged socket**: Anvil
+queues and never drops, so a slow consumer receives every frame late and age grows
+while frames keep arriving at a healthy-looking rate. `_local/drain-120ms.ndjson`
+(the M3 addendum's deliberately throttled socket, 1,992 frames / 239.9 s) is the
+existing candidate. The obstacle is that age is not measurable from one trace —
+it needs a reference clock, which is what `tools/anvil_freshness_probe.py` gets by
+matching wire `seq` across a throttled and an unthrottled socket. Naming it here
+so the next session does not re-capture an idle server expecting a different
+answer.
+
+### The `summary` distribution, and the field that used to hold a number
+
+Measured 2026-08-17 across every committed Anvil trace plus this idle capture —
+**1,191 intervals**:
+
+| trace | n | median | p90 | p99 | max | worst/median |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `anvil_101_baseline` | 181 | 500.1 | 506.0 | 598.5 | **968.8** | **1.937x** |
+| `anvil_101_baseline_20260809` | 181 | 500.0 | 516.0 | 547.0 | 547.0 | 1.094x |
+| `anvil_101_depth27_20260816` | 181 | 500.0 | 516.0 | 578.0 | 593.0 | 1.186x |
+| `anvil_101_feederoff_20260817` | 241 | 500.0 | 515.0 | 516.0 | 531.0 | 1.062x |
+| `anvil_101_reconnect` | 172 | 499.9 | 506.4 | 1020.9 | *4747.7* | *9.498x* |
+
+The median is **500.0 ms on every trace**, which is what a fixed deadline looks
+like. The reconnect row is italicised because its 4,747.7 ms is the capture's
+deliberate socket drop — the fault case, not a healthy sample.
+
+**The number that sizes the whole rule is `anvil_101_baseline`'s 968.8 ms —
+1.937x the median, i.e. ONE MISSED TICK, in otherwise healthy M0 data.** It is
+why `kThresholdMultiple` is 4 and not 2: a threshold at 2x would grey the panel
+every time a single `summary` publish slipped, and this trace proves that
+happens. Kraken's heartbeat, by contrast, never exceeded 1.119x over 834
+intervals at two hours of day — so Anvil is the binding case and Kraken inherits
+Anvil's margin for free.
+
+**`venue_traits` no longer has a field that can hold a duration.**
+`stale_gap_ms` became `liveness_signal`, a **name** — `"summary"` here,
+`"heartbeat"` at Kraken — because the 2026-08-17 ruling is that no threshold on
+book silence can be correct at any venue, and a `double` in that row is an
+invitation to write one. The threshold is derived at runtime from this
+distribution's own rolling median (`liveness_clock.hpp`), because
+`ANVIL_SUMMARY_HZ` is operator config on a server DepthCharge does not own and
+cannot read back. Anvil calibrates to **2,000 ms**, Kraken to **4,000 ms**, from
+one dimensionless constant.
+### The correction, in the terms the ruling wants it recorded
+
+**The Anvil shape of *age grows while liveness holds* is a BACKLOGGED SOCKET, not
+an idle server** — and **no committed trace can contain one, because a backlog is
+a property of the client's socket rather than of the wire.**
+
+That is the whole of it, and it is worth stating flatly because the feeder-off
+capture was taken to be the Anvil twin of MINA/GBP and is not one. An idle Anvil
+emits `book` at 12.6/s, so an idle server produces no book silence to hold colour
+through. What Anvil *does* produce is the other shape: it queues and never drops
+per socket, so a slow consumer receives every frame late rather than losing any —
+111 s of accumulated lag over 150 s, measured by seq-matching a throttled socket
+against an unthrottled one (`tools/anvil_freshness_probe.py`, ARCHITECTURE §9
+2026-08-11).
+
+**A capture cannot record that.** Two sockets reading the same server at the same
+instant disagree about how old the book is, and `rx_ns` records only when *this*
+client was handed the bytes. The lag lives in the gap between the server's clock
+and ours, and a trace has neither. `_local/drain-120ms.ndjson` is a throttled
+capture and still does not contain the answer — it contains the arrivals; the age
+had to be computed against a second, unthrottled socket that no file holds.
+
+**This is a KNOWN UNCOVERABLE-BY-CAPTURE CASE**, listed under *Owed by stage B*
+in the stage A brief rather than left implied, **and it is why stage A2's
+estimator has to be windowed**: the only instrument that can see the case is one
+running live against the venue, and a cumulative expected-versus-received count
+would read zero deficit through the whole 111 s because nothing was ever missed —
+it all arrived, late.
+### What it is good for
+
+- **It pins the ruling's premise.** If Anvil's summary cadence ever stops being a
+  deadline, this trace's `summary=241` moves and `trace_taxonomy_selfcheck` says
+  so on the next build.
+- **It is the only committed trace with an empty book end to end**, so it is the
+  first thing that exercises the whole chain — parse → adapt → adopt → publish →
+  draw — with zero levels on either side. `dc_ladder_feederoff` and
+  `dc_replay_feederoff` run it in ctest. The distinction it guards is one the
+  panel must get right and no other trace tests: **"no orders exist" is a live,
+  correct, empty ladder; "no data arrived" is grey.**
+- **It is the only committed trace with `trade=0`**, which is a cheap check that
+  nothing in the chain assumes a trade ever happens.
 
 ---
 

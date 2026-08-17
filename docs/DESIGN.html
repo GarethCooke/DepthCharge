@@ -373,7 +373,7 @@
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status green">M3 <b>done 2026-08-16 — live Anvil on the panel</b></span>
-    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5×</b></span>
+    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0)</b></span>
     <span class="status">first-party C++ <b>~19,600 lines</b></span>
     <span class="status">drawn from source at <b>79c1867</b></span>
   </div>
@@ -1503,6 +1503,30 @@ sequenceDiagram
     key order and spacing included — otherwise the harness would be validating a parser
     against its own output.
   </p>
+  <p>
+    <b>Since M4 stage A that reader knows there is more than one venue, and the split it
+    makes is the load-bearing part.</b> <code>TraceReader</code> owns the <em>envelope</em> —
+    a line is a JSON object with an integer <code>rx_ns</code>, an object <code>frame</code>,
+    and a clock that never goes backwards — and nothing else. Which fields the metadata must
+    carry, whether a frame has a <code>type</code> at all, what a record's kind is called and
+    how long the venue may legitimately be silent are all <em>dialect</em>, and dialect lives
+    in <code>venue.hpp</code>'s table and in a per-venue decoder. Three things that had been
+    universal only because Anvil was the only venue are now table columns: a required integer
+    <code>ticker</code>, a required string <code>type</code> on every frame, and the 1000 ms
+    disconnect threshold. An absent <code>venue</code> tag reads as <code>anvil</code>, which
+    is what let the tag land without moving a byte of the four committed Anvil traces —
+    proven by diffing twelve outputs from three programs across them, not asserted.
+  </p>
+  <p>
+    Kraken's decoder at stage A is a <b>classifier, not an adapter</b>: it reads every record,
+    names its kind, counts it, and emits no <code>FeedEvent</code>s — which is checked by a
+    counter rather than claimed in a comment. The replay <em>driver</em> therefore refuses a
+    non-Anvil trace outright, because feeding Kraken's JSON to the Anvil parser would produce
+    a dead ladder over a 100% parse-error count, and that is the shape of failure invariant #5
+    exists to forbid arriving through the test rig. The shape stage B has to fill is pinned by
+    <code>static_assert</code>s on the decoder and sink signatures — strain 3's decision,
+    applied for the first time.
+  </p>
 
   <figure>
     <div class="plate">
@@ -1526,6 +1550,8 @@ classDiagram
         +line_no : size_t
         +rx_ns : int64
         +frame_json : string_view
+        +type : string_view
+        +is_tx : bool
     }
 
     class TraceMeta {
@@ -1533,13 +1559,47 @@ classDiagram
         +url : string
         +tool_version : string
         +capture_mode : string
+        +venue : Venue
         +ticker : int64
+        +symbol : string
+        +clock : string
         +complete() bool
+    }
+
+    class VenueTraits {
+        &lt;&lt;table row, one per venue&gt;&gt;
+        +name : string_view
+        +requires_ticker : bool
+        +requires_symbol : bool
+        +frames_carry_type : bool
+        +stale_gap_ms : double
+    }
+
+    class RecordClassifier {
+        &lt;&lt;dispatches on the venue tag&gt;&gt;
+        +classify(TraceFrame) RecordKind
+    }
+
+    class AnvilTraceDecoder {
+        +kVenue = Anvil
+        -adapter_ : AnvilAdapter
+        +classify(TraceFrame) RecordKind
+        +decode(TraceFrame, Sink) void
+        +on_transport_gap(GapReason, Sink) void
+    }
+
+    class KrakenTraceDecoder {
+        &lt;&lt;stage A: classifier, emits nothing&gt;&gt;
+        +kVenue = Kraken
+        +classify(TraceFrame) RecordKind
+        +decode(TraceFrame, Sink) void
+        +on_transport_gap(GapReason, Sink) void
+        +events_emitted() size_t
     }
 
     class Replay {
         &lt;&lt;file-local — the single writer&gt;&gt;
-        -adapter_ : AnvilAdapter
+        -decoder_ : AnvilTraceDecoder
         -book_ : Book
         -channel_ : SnapshotChannel
         -latest_ : DisplaySnapshot
@@ -1551,8 +1611,9 @@ classDiagram
     }
 
     class ReplayOptions {
-        +disconnect_gap_ms : double = 1000
+        +disconnect_gap_ms : double = venue-declared
         +max_frames : size_t
+        +for_venue(Venue)$ ReplayOptions
     }
 
     class StaleEpisode {
@@ -1594,6 +1655,9 @@ classDiagram
 
     TraceReader ..> TraceFrame : fills
     TraceReader *-- TraceMeta
+    TraceMeta ..> VenueTraits : selects by tag
+    RecordClassifier ..> KrakenTraceDecoder : Kraken half
+    Replay *-- AnvilTraceDecoder
     Replay ..> TraceReader : pulls frames
     Replay *-- ReplayOptions
     Replay *-- StaleEpisode : opens and closes
@@ -1899,7 +1963,7 @@ classDiagram
   </div>
 
   <div class="strain settled">
-    <h4>3 · There is no <code>VenueAdapter</code> type — <em>decided at M4 stage 0, not yet implemented</em></h4>
+    <h4>3 · There is no <code>VenueAdapter</code> type — <em>decided at M4 stage 0, first applied at stage A</em></h4>
     <p>
       The architecture diagram names one; the code has <code>AnvilAdapter</code> with a
       template <code>Sink</code>, no base class and no concept. That is the right call for
@@ -1934,6 +1998,28 @@ classDiagram
       therefore a concept that means one thing on the desk and another on the board — the
       exact failure class invariant #1's target half exists to catch, arriving through the
       feature meant to make the boundary safer.
+    </p>
+    <p>
+      <b>Updated 2026-08-17 (M4 stage A): option (ii) is implemented, in the harness, and the
+      thing it pins is not the one this card predicted.</b> The second <em>adapter</em> does
+      not exist yet &mdash; Kraken's stage-A decoder is a classifier that emits no
+      <code>FeedEvent</code>s &mdash; but the second <em>decoder</em> does, and it is the
+      first thing that ever had to fit the shape. <code>trace_decoder.hpp</code> carries
+      <code>SinkContract&lt;Sink&gt;</code> (invocable with <code>const FeedEvent&amp;</code>,
+      returning void) and <code>DecoderContract&lt;Decoder&gt;</code> (a <code>kVenue</code>
+      tag, <code>classify</code>, <code>decode</code>, <code>on_transport_gap</code>), both
+      instantiated so a third venue fails the build here rather than diverging quietly. The
+      sink contract is instantiated <em>inside</em> each <code>decode()</code>, so it fires on
+      the sink type the caller actually passed &mdash; the one thing option (ii) still buys at
+      the call site. <code>noexcept</code> is deliberately <em>not</em> asserted, though the
+      stage-0 write-up floated it: the only real sink in the tree pushes onto a
+      <code>std::vector</code> and calls a <code>std::function</code>, so asserting it would
+      either reject the live path or turn a throw into <code>std::terminate</code> on the desk.
+      Option (ii)'s stated weakness showed up exactly as predicted and is worth recording as
+      confirmed rather than anticipated: a contract violation cannot be unit-tested, because a
+      failing <code>static_assert</code> is a compile error and breaks the build that would
+      run the test. <code>test_trace_venue.cpp</code> checks the underlying detection traits
+      instead, which is the nearest reachable thing.
     </p>
     <p class="verdict">Resolves: <b>DECIDED 2026-08-16 (M4 stage 0) — option (ii), <code>static_assert</code>s on the sink signature. Not yet implemented; that is M4's, with the second adapter in front of it.</b> The toolchain question is closed and its answer did <em>not</em> choose the design: a C++20 <code>concept</code> costs one flag and a byte-identical object file, not a framework migration. <b>(ii) wins because the flag's cheapness is the trap.</b> The hazard was never "it will not compile" — it is that <em>both</em> would compile and mean different things: the host builds C++20 concepts, the target builds Concepts TS behind <code>-fconcepts</code>, and <code>engine/</code> acquires two dialects with one spelling. That is a worse failure than convention <em>because it type-checks</em>, and the property that would quietly stop being true is invariant #1's "the same translation units build on host and target". Option (i) re-opens if the toolchain moves for unrelated reasons, or earlier if someone runs the one missing experiment — a concept whose subsumption behaviour is exercised on both compilers and shown to agree. Decision: <code>ARCHITECTURE.md</code> §9 (2026-08-16 stage 0) and <code>docs/briefs/M4-stage-0-price-the-kraken-wire.md</code></p>
   </div>
@@ -2756,6 +2842,85 @@ classDiagram
     </p>
     <p class="verdict">Resolves: <b>half open, and split cleanly. The <em>measurement</em> landed at stage E1 — the mechanism is settled at the desk and the board now reports its own age. What is owed is the calibration (the owner's lag-versus-uptime stopwatch run on one connection) and the decision the proposal asks for: put an age on <code>DisplaySnapshot</code> (§5) and extend invariant #5 to cover <em>old</em>, or leave the panel honest about stopped and silent about old. The recommendation is §5, because the §4 route reaches §5 anyway by the longer road. Written up for the owner in <code>docs/briefs/M3-stage-E-the-age-of-the-book.md</code>; desk evidence in <code>hardware/bench-2026-08-11-feed-lag.md</code></b></p>
   </div>
+
+  <div class="strain">
+    <h4>22 · One reader, two venues — and the pressure is on the traces, not on the reader</h4>
+    <p>
+      Opened 2026-08-17 (M4 stage A). <code>TraceReader</code> now validates an envelope and
+      hands the dialect to a per-venue decoder, with the metadata's <code>venue</code> tag
+      selecting a row in <code>venue.hpp</code>. That is the right shape and it landed cleanly:
+      the four committed Anvil traces are byte-identical through the changed readers, and
+      <code>dc_replay</code> reads all four Kraken slices end to end. <b>The strain is not in
+      what was built; it is in what the arrangement now makes cheap.</b>
+    </p>
+    <p>
+      Three specific loads it is carrying, in the order they will be felt.
+    </p>
+    <p>
+      <b>The venue table is a second copy of numbers the firmware also holds.</b>
+      <code>venue_traits(Anvil).stale_gap_ms</code> is 1000 and so is
+      <code>kRxWatchdogMs</code>, in a different file, in a different build, with nothing that
+      can tell if they diverge. Stage A was instructed not to touch the firmware constant and
+      did not; stage B lifts this table into the shared one and the divergence window closes
+      then. Until it does, a session that re-derives one number must be told to go and look for
+      the other — which is a rule someone has to keep rather than a property the build enforces,
+      and this repository's answer to that shape of problem is normally to make it structural
+      (ARCHITECTURE §9, 2026-08-10: the renderer cannot name a colour, because a rule that has
+      to be remembered fails the first time someone adds a widget). Nothing structural is
+      available across a CMake build and a PlatformIO one until they share the table.
+    </p>
+    <p>
+      <b>Adding a venue is now four edits in two languages, and only three of them fail
+      loudly.</b> A row in <code>kVenueTable</code>, a decoder satisfying
+      <code>DecoderContract</code>, a taxonomy pin, and a row in <code>tools/tracefile.py</code>'s
+      <code>VENUES</code>. The first three are compile-time or ctest failures. The fourth is
+      not: a Python tool would simply refuse a trace the C++ reader accepts, which reads as a
+      bad file rather than as a missing row. M5 is the test of whether that asymmetry matters.
+    </p>
+    <p>
+      <b>And the one with teeth: the replay driver can now be pointed at a trace it must not
+      decode.</b> Today it refuses loudly, because there is exactly one adapter and anything
+      else is an error. When stage B adds the second, "which adapter decodes this trace" stops
+      being a check and becomes a <em>dispatch</em> — and a dispatch that picks wrong produces
+      a golden derived from the wrong parser rather than an exception. The mitigation that
+      exists is that the venue is read from the file rather than passed in by the caller, so a
+      trace cannot be decoded as the wrong venue by a mistake at the call site. The mitigation
+      that does not exist yet is anything checking that a Kraken golden was produced by the
+      Kraken adapter, and stage B should not ship without one.
+    </p>
+    <p>
+      <b>Stated as a closing condition rather than as a worry, because the difference is what
+      makes it checkable</b> (added 2026-08-17 at the owner's review): <b>"A Kraken golden fails
+      if it was produced by the Anvil parser. The decoder's identity travels with the pinned
+      output, and a mutation test that swaps the dispatch expects red."</b> Note what that asks
+      for beyond a passing test — the identity has to be <em>in the pinned artefact</em>, not
+      merely known to the harness at run time, because the failure being guarded against is a
+      golden that looks right. And note the shape it shares with every other pin in this
+      repository: it is only worth anything if the mutation has been run, which is why the
+      sentence names the mutation and not the assertion.
+    </p>
+    <p>
+      <b>Updated 2026-08-17 by the staleness ruling, and the first clause is now
+      HALF CLOSED in an unexpected direction.</b> The venue table no longer duplicates
+      <code>kRxWatchdogMs</code>, because it no longer holds a duration at all: the
+      <code>double stale_gap_ms</code> became a <code>string_view liveness_signal</code>
+      carrying the signal's <em>name</em>, and the threshold is derived at runtime from
+      that signal's own rolling median (<code>liveness_clock.hpp</code>). There are now
+      no two numbers to drift. What remains of the clause is smaller and different:
+      <b>the firmware still holds a constant the harness no longer has</b>, so stage B's
+      job is not to reconcile two numbers but to delete one.
+    </p>
+    <p>
+      <b>And the third clause gains a sibling that is the same shape.</b> A dispatch that
+      picks the wrong adapter produces a golden derived from the wrong parser; a
+      <em>liveness signal named wrong</em> produces a panel that greys on the wrong
+      evidence — and both fail by being plausible. The Python and C++ tables must agree on
+      what <code>summary</code> and <code>heartbeat</code> mean
+      (<code>tracefile.is_liveness</code> mirrors <code>venue.hpp</code>), and nothing
+      checks that they do: the four-edits-in-two-languages count from the second clause is
+      now five, and the new one is in the silent column with the rest.
+    </p>    <p class="verdict">Resolves: <b>partly at stage B (the venue table merges with the firmware's; the second adapter turns the driver's refusal into a dispatch and owes a check that the dispatch was right), partly at M5 (whether the Python/C++ table split costs anything real), and partly never — two venues means two of some things, and the card exists to keep the count visible rather than to drive it to zero</b></p>
+  </div>
 </section>
 
 <hr>
@@ -2793,8 +2958,9 @@ classDiagram
     <li>§01 — the two dashed boxes become solid; the firmware column stops being hypothetical. <b>Nearly done</b>: <code>firmware/</code> exists, links <code>engine/</code> as-is, builds clean (RAM 41.9%, flash 866 KB) and has <em>run</em> — the stage C bench log shows Wi-Fi, TLS, the WS upgrade, the first snapshot adopted and steady publishing with zero parse errors. Stage D added the render task, and the half of it that can be proved on a desk <em>is</em>: <code>ladder_render.hpp</code> runs in <code>dc_tests</code> against a 64×64 grid of <code>Ink</code>, which is why the HUB75 box now carries a second line rather than only a dashed border. Both boxes go solid when the pull-the-Wi-Fi acceptance is captured on the panel — which by 2026-08-16 is the <em>only</em> thing standing between M3 and its tick: stage D has been flashed and soaked for 23.6 hours, the WebSocket client is ours and accepted, and the rebuilt TCP window is the default build.</li>
     <li><s>§03 — the streaming parser box loses its dashes; <code>dc_engine_anvil</code> becomes the harness reference only.</s> — <b>done at stage B</b>. It also grew a third box the queue did not predict: <code>anvil_scaling.hpp</code>, the conversion both parsers share, which is where invariant #3 is actually held.</li>
     <li><s>§04 — <code>SnapshotChannel</code> gains its second slot and an atomic version</s> — <b>done at stage A</b>, and it took a <em>third</em> slot rather than a second; §07 reads 3,528 bytes, not the ~2,344 predicted here.</li>
-    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement, <em>half-closed</em> the same day, <em>re-opened</em> on 2026-08-10 when the arrival-vs-event split could not decide it, and <em>closed</em> later that day by the bench — the cause was a −75 dBm mesh association, the link-bound arm, and the board-bound lever bundle was retired unpulled; 13 <em>opened</em> on 2026-08-10 (the board rejects ~85% of every connect's opening burst and no counter can say what the frames were); 14 <em>opened</em> on 2026-08-10 by the reconnect rebuild (the recovery is correct because of three undocumented properties of a precompiled archive, and only one of them has an assert); <b>7 closed at stage D</b> — the render path is inside the alloc probe and the probe now carries a positive control, which it needed, because two hand-written mutants were deleted by GCC's allocation DCE and "passed"; <b>15 opened at stage D</b> (the panel's double buffer is safe by cadence rather than by handshake, because the S3 flip does not wait) and <em>half-closed</em> on 2026-08-11 when the bench found the refresh rate it rests on had never been the reported one — the S3 buckets the requested clock, so the margin was right by luck; <b>16 opened 2026-08-11</b>, the one this document had no way to predict: the display half degrades the feed half through the physical layer, with no shared code path and nothing either half can measure; <b>17 opened 2026-08-11 at stage E</b> and it is the largest gap this document has carried — every instrument in §05 and §08 measures whether the feed <em>stopped</em> or is <em>wrong</em>, and none of them can fail while the panel shows a book a hundred seconds old, which is what it was doing when stage D passed. It also <em>withdraws</em> a claim strain 12's verdict table rests on: Anvil does not shed to a slow consumer, it queues, measured by matching wire <code>seq</code> across a throttled and an unthrottled socket; <b>13 diagnosed and closed 2026-08-13</b> — the payload the verdict demanded was finally read at the bench: <code>SPLIT@1</code>, one stray tail-byte glued ahead of clean JSON post-decryption, <code>esp_websocket_client</code>'s own offset accounting, co-timed with 17/17 errno-silent socket deaths; the lever moved off strain 12's bundle onto the client layer itself and the replacement has a brief (<code>M3-transport-own-the-websocket-client.md</code>); <b>12 amended the same day</b> — its closure is true of the stalls (a second board measured the fades from inside: 577 ms mean, 3.9 s max, real and never fatal) and not of the socket deaths, and the association join is now by-signal rather than first-answer, retiring the <code>WIFI_FAST_SCAN</code> lottery that made "move the board" a re-roll; <b>14's premise gains an expiry date</b> — the owned client removes the binary those three <code>objdump</code> facts describe; 1 and 3 will not; <b>14 closed 2026-08-14</b> when that expiry arrived — the owned client landed, one esp-tls connection replaced two library handles, and the spare-handle design with all three of its undocumented premises now exists only inside the <code>depthcharge-espws</code> control arm; <b>18 opened the same day</b>, and it is 13's price rather than a new discovery: the framing is ours, so every bug in it is ours too, and the card lists the four things that changed hands (a parser on the hot path, a fixed upgrade key, no client ping, and two task constants that are still estimates) beside the mitigation each one has; <b>14 fully closed and 11 closed 2026-08-16</b> when the acceptance passed and the old client was deleted from the tree — 14's binary can no longer be built at all, and 11's per-event <code>calloc</code>/<code>free</code> churn left with the <code>esp_event</code> dispatch it came from, leaving only the measurement gap that was never the websocket client's; <b>18 updated the same day</b> with all four of its items answered and the five confirmed review findings behind them, of which four are one species — a bound reasoned about rather than observed; <b>19 opened 2026-08-16</b>, and it is the first card in this document that resolves nowhere in this repository: with the deaths gone, the window rebuilt and the RX loop measured at <code>feed 0%</code> for twenty-four consecutive hours, the object is bound by the transatlantic path at 51–79% of Anvil's wire, and the only sized fix is a venue change on someone else's backlog; <b>20 opened the same day</b> by the pull-the-Wi-Fi acceptance failing its resync half — the rejoin cadence was aborting every association attempt, and the card is kept for the general form rather than the bug: a soak measures the steady state, and this defect existed only in a transition no host test and no soak ever stages. The re-run <b>passed</b> the same morning — no reset, one rejoin, 18.7 s — and <b>21 opened</b> out of the passing run: the rejoin path cannot afford boot's explicit scan, so a recovery re-rolls the mesh draw and the board holds whatever it lands on (−40 dBm to −70, one watchdog grey to fourteen). M3 is done. <b>3 half-closed 2026-08-16</b> by M4 stage 0: its toolchain half was settled by compiling four candidate spellings rather than by arguing about them, and the answer inverted the expectation — a C++20 <code>concept</code> costs one flag and a byte-identical object file on xtensa GCC 8.4, not the framework migration everyone assumed; the design half stays open and is deliberately not taken before the second adapter exists. The same stage <em>declined</em> to open a card for the finding with the most reach — Kraken's book silence runs to 4.5 s on BTC/USD and 9 s on a quiet pair behind a 1 Hz heartbeat, against a 1000 ms watchdog derived from Anvil's 391 ms — because it belongs to M4's adapter, which has not been written; it is recorded in <code>harness/replay/NOTES-kraken.md</code> and in M4's own brief instead.</li>
+    <li>§08 — strain point 2 closed at stage A; 9 <em>opened</em> at stage B (two parsers, one meaning); 10 and 11 <em>opened</em> at stage C (two definitions of "stopped"; invariant #7 split across a boundary we do not own); 12 <em>opened</em> by the 2026-08-09 watchdog re-measurement, <em>half-closed</em> the same day, <em>re-opened</em> on 2026-08-10 when the arrival-vs-event split could not decide it, and <em>closed</em> later that day by the bench — the cause was a −75 dBm mesh association, the link-bound arm, and the board-bound lever bundle was retired unpulled; 13 <em>opened</em> on 2026-08-10 (the board rejects ~85% of every connect's opening burst and no counter can say what the frames were); 14 <em>opened</em> on 2026-08-10 by the reconnect rebuild (the recovery is correct because of three undocumented properties of a precompiled archive, and only one of them has an assert); <b>7 closed at stage D</b> — the render path is inside the alloc probe and the probe now carries a positive control, which it needed, because two hand-written mutants were deleted by GCC's allocation DCE and "passed"; <b>15 opened at stage D</b> (the panel's double buffer is safe by cadence rather than by handshake, because the S3 flip does not wait) and <em>half-closed</em> on 2026-08-11 when the bench found the refresh rate it rests on had never been the reported one — the S3 buckets the requested clock, so the margin was right by luck; <b>16 opened 2026-08-11</b>, the one this document had no way to predict: the display half degrades the feed half through the physical layer, with no shared code path and nothing either half can measure; <b>17 opened 2026-08-11 at stage E</b> and it is the largest gap this document has carried — every instrument in §05 and §08 measures whether the feed <em>stopped</em> or is <em>wrong</em>, and none of them can fail while the panel shows a book a hundred seconds old, which is what it was doing when stage D passed. It also <em>withdraws</em> a claim strain 12's verdict table rests on: Anvil does not shed to a slow consumer, it queues, measured by matching wire <code>seq</code> across a throttled and an unthrottled socket; <b>13 diagnosed and closed 2026-08-13</b> — the payload the verdict demanded was finally read at the bench: <code>SPLIT@1</code>, one stray tail-byte glued ahead of clean JSON post-decryption, <code>esp_websocket_client</code>'s own offset accounting, co-timed with 17/17 errno-silent socket deaths; the lever moved off strain 12's bundle onto the client layer itself and the replacement has a brief (<code>M3-transport-own-the-websocket-client.md</code>); <b>12 amended the same day</b> — its closure is true of the stalls (a second board measured the fades from inside: 577 ms mean, 3.9 s max, real and never fatal) and not of the socket deaths, and the association join is now by-signal rather than first-answer, retiring the <code>WIFI_FAST_SCAN</code> lottery that made "move the board" a re-roll; <b>14's premise gains an expiry date</b> — the owned client removes the binary those three <code>objdump</code> facts describe; 1 and 3 will not; <b>14 closed 2026-08-14</b> when that expiry arrived — the owned client landed, one esp-tls connection replaced two library handles, and the spare-handle design with all three of its undocumented premises now exists only inside the <code>depthcharge-espws</code> control arm; <b>18 opened the same day</b>, and it is 13's price rather than a new discovery: the framing is ours, so every bug in it is ours too, and the card lists the four things that changed hands (a parser on the hot path, a fixed upgrade key, no client ping, and two task constants that are still estimates) beside the mitigation each one has; <b>14 fully closed and 11 closed 2026-08-16</b> when the acceptance passed and the old client was deleted from the tree — 14's binary can no longer be built at all, and 11's per-event <code>calloc</code>/<code>free</code> churn left with the <code>esp_event</code> dispatch it came from, leaving only the measurement gap that was never the websocket client's; <b>18 updated the same day</b> with all four of its items answered and the five confirmed review findings behind them, of which four are one species — a bound reasoned about rather than observed; <b>19 opened 2026-08-16</b>, and it is the first card in this document that resolves nowhere in this repository: with the deaths gone, the window rebuilt and the RX loop measured at <code>feed 0%</code> for twenty-four consecutive hours, the object is bound by the transatlantic path at 51–79% of Anvil's wire, and the only sized fix is a venue change on someone else's backlog; <b>20 opened the same day</b> by the pull-the-Wi-Fi acceptance failing its resync half — the rejoin cadence was aborting every association attempt, and the card is kept for the general form rather than the bug: a soak measures the steady state, and this defect existed only in a transition no host test and no soak ever stages. The re-run <b>passed</b> the same morning — no reset, one rejoin, 18.7 s — and <b>21 opened</b> out of the passing run: the rejoin path cannot afford boot's explicit scan, so a recovery re-rolls the mesh draw and the board holds whatever it lands on (−40 dBm to −70, one watchdog grey to fourteen). M3 is done. <b>3 half-closed 2026-08-16</b> by M4 stage 0: its toolchain half was settled by compiling four candidate spellings rather than by arguing about them, and the answer inverted the expectation — a C++20 <code>concept</code> costs one flag and a byte-identical object file on xtensa GCC 8.4, not the framework migration everyone assumed; the design half stays open and is deliberately not taken before the second adapter exists. The same stage <em>declined</em> to open a card for the finding with the most reach — Kraken's book silence runs to 4.5 s on BTC/USD and 9 s on a quiet pair behind a 1 Hz heartbeat, against a 1000 ms watchdog derived from Anvil's 391 ms — because it belongs to M4's adapter, which has not been written; it is recorded in <code>harness/replay/NOTES-kraken.md</code> and in M4's own brief instead. <b>3's implementation half opened and half-closed on 2026-08-17 (M4 stage A)</b>: option (ii) is now real code, and what it pins is the trace <em>decoder</em> seam rather than the adapter the card predicted — the second adapter still does not exist, but the second decoder does and had to fit the shape. The card also records a weakness as CONFIRMED rather than anticipated: a contract violation cannot be unit-tested, because the failing <code>static_assert</code> breaks the build that would run the test. <b>22 opened the same day</b>, and unlike most cards here it is not about something that went wrong — the two-venue reader landed with the Anvil traces byte-identical and every Kraken slice readable. It is about what the arrangement now makes cheap: a venue table duplicating firmware constants with nothing to catch divergence, a four-edit two-language procedure for adding a venue of which only three edits fail loudly, and a driver whose loud refusal becomes a silent dispatch the moment stage B supplies a second adapter.</li>
     <li>§05 — stage D gave it its rendered half. The two-state render is no longer a rule the renderer keeps: it emits <code>Ink</code>, the palette is chosen once from <code>snap.status</code>, and <code>static_assert(all_grey(kStalePalette))</code> makes a coloured stale panel a build failure. That belongs beside the watchdog here the next time this section is rewritten, together with the complement <code>test_ladder_render.cpp</code> pins — the same book renders an identical <code>Ink</code> grid Live and Stale.</li>
+    <li>§06 — the trace layer gained the venue split at M4 stage A: <code>TraceReader</code> owns the envelope, a per-venue decoder owns the dialect, and three rules that were universal only because Anvil was the only venue (a required <code>ticker</code>, a required string <code>type</code>, the 1000 ms threshold) became columns in a table. The class diagram carries <code>VenueTraits</code>, <code>RecordClassifier</code> and the two decoders, and <code>Replay</code> holds a decoder rather than an adapter. When stage B's Kraken adapter lands, <code>KrakenTraceDecoder::decode</code> stops being a counter and this section needs the second arrow drawn.</li>
     <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12). It has since gained the arrival-vs-event split as well, and then the correction the bench forced on it — the first row of that split's verdict table over-claims, because the arrival stamp sits downstream of the TLS decrypt and Anvil sheds to a slow consumer, so the board-versus-link verdict moved to per-core idle. When the stall is found and fixed, the histograms stay (they are how the next one gets found) but both verdict tables become history.</li>
   </ul>
 </section>

@@ -46,6 +46,14 @@ by construction here rather than by hope.
 
 ## Headline 1: `kRxWatchdogMs = 1000` would grey this panel constantly, and the heartbeat hides it
 
+> **PARTLY SUPERSEDED 2026-08-17.** The core finding stands and is stronger than
+> ever. What is withdrawn is the quiet pair's **maximum**: 9,007 ms is a sample
+> maximum from one 90-second window, not a ceiling. A second window at a distant
+> hour measured **25,843 ms** on the same pair at the same depth, with the socket
+> provably healthy throughout. See
+> [the review addendum](#m4-stage-a-review-addendum-2026-08-17--the-quiet-pairs-9-s-is-a-tail-not-a-ceiling-and-15000-ms-does-not-clear-it)
+> before quoting the MINA/GBP row below.
+
 This is the finding with the most reach, and it costs nothing to have now.
 
 Anvil broadcasts on a timer; Kraken publishes on change. Measured book-event
@@ -70,6 +78,239 @@ fresh — the crying-wolf inversion ARCHITECTURE §7 already predicts for a venu
 without an unconditional republish.
 
 **And the trap is that the transport looks healthy the whole time**, because:
+
+## M4 stage A review addendum (2026-08-17) — the quiet pair's 9 s is a TAIL, not a ceiling, and 15,000 ms does not clear it
+
+**Read this before quoting any figure in Headline 1 for the quiet pair.** The
+table below Headline 1 stands as a record of what the 23:37Z window contained;
+what is withdrawn is the reading placed on it — that 9,007 ms was the quiet
+pair's ceiling and that a 15,000 ms threshold clears it with 1.67× margin.
+**It does not.** Measured at a second hour, the worst healthy book silence on
+the same pair at the same depth is **25,843 ms**, which is **1.72× the declared
+threshold**, not 0.58× of it.
+
+The stage-A review asked for exactly this check, on exactly this suspicion: *the
+tightness of the distribution argues it is a ceiling rather than a tail, but it
+has been observed once, at one hour, on the pair whose quiet is most likely to be
+time-of-day dependent.*
+
+**The capture.** `MINA/GBP`, depth 25 — the same pair and depth as the committed
+slice — for **600 s from 2026-08-17T16:00:46Z**, which is **7 h 37 min** away in
+hour-of-day from stage 0's 2026-08-16T23:37:03Z. One connect, 1,165 frames,
+`perf_counter_ns`, kept untracked in `_local/` per the M0 policy.
+
+| | stage 0 · 23:37Z · 90 s | confirmation · 16:00Z · 600 s |
+| --- | ---: | ---: |
+| book events | 44 (29.1 /min) | 563 (**56.3 /min**) |
+| p50 | 56.8 ms | 15.9 ms |
+| p90 | 8,480.0 ms | 4,068.1 ms |
+| p99 | 9,006.8 ms | 8,738.5 ms |
+| p99.9 | 9,006.8 ms | **25,843.3 ms** |
+| **worst book gap** | **9,006.8 ms** | **25,843.3 ms** |
+| gaps > 9,007 ms | 0 | **4** — 14,228 / 16,645 / 18,302 / 25,843 |
+| gaps > 15,000 ms (declared) | 0 | **3** |
+| margin of 15,000 over the worst | 1.67× | **0.58×** |
+
+**It is the market, not the socket, and that was checked rather than assumed.**
+Kraken's heartbeat is unconditional and 1 Hz, so it is an independent liveness
+oracle for exactly this question. Inside the 25,843 ms book gap there are
+**26 heartbeats, at intervals of 936–1,042 ms**; inside the 18,302 ms gap, 19;
+inside 16,645, 17; inside 14,228, 14. Every one matches a 1 Hz beat to within a
+beat. Across the whole run: **600 heartbeats in 600.2 s**, worst *record* gap
+**1,119 ms**, `connects=1`, no reconnect, no non-JSON frame, no multiline frame.
+The connection was healthy for ten minutes and the book simply did not move.
+
+**The consequence, stated as the panel would show it.** At the declared
+15,000 ms, this capture produces **3 disconnects that did not happen and 15.8 s
+of grey — 2.6% of the run** — on a feed that never lost a packet. That is the
+crying-wolf inversion deliverable 4 was created to prevent, arriving through the
+constant deliverable 4 chose.
+
+**Why the first window looked like a ceiling, which is the part worth keeping.**
+Stage 0's six long gaps were 8,113 / 8,480 / 8,488 / 8,582 / 8,672 / 9,007 ms —
+a 900 ms spread, arriving about every 14 s. That regularity is what made 9,007
+read as a bound. The confirmation reproduces that band exactly, and it also
+contains something the shorter window could not: **all four gaps over 12 s fall
+between t+70 s and t+140 s, and after t+167 s nothing exceeds 8,800 ms again.**
+So the last 430 seconds of the confirmation look precisely like the whole of
+stage 0's window. **Stage 0 sampled the calm regime for ninety seconds and read
+its width as a limit.** Had it started seventy seconds later it would have seen
+25.8 s and 15,000 would never have been proposed.
+
+Note also that the busier hour is the one with the *longer* tail: 56.3 book
+events/min against 29.1, and 2.9× the worst gap. **Rate does not predict
+silence on a thin book** — it is bursty, not slow, and a burst has a gap on the
+other side of it.
+
+**General rule, and it is a new instance of one this project keeps paying for:**
+*a distribution's tightness is evidence about the sample, not about the bound.*
+Six gaps within 900 ms of each other is a strong-looking statistic and it
+described one regime. §9 already holds "a throughput comparison across time on a
+WAN path is not an A/B unless the hour is controlled"; this is its sibling for a
+**bound** rather than a comparison — **a maximum measured in one window is a
+sample maximum, and calling it a ceiling requires a second window at a different
+hour.** Stage 0 controlled the hour *across the three BTC depths* precisely so
+they would be comparable, and then took the quiet pair's absolute maximum from
+that same single hour.
+
+**Nothing was changed.** `venue_traits(Kraken).stale_gap_ms` is still 15,000 ms,
+`kRxWatchdogMs` is untouched, and no golden or pin moved. Two artefacts now cite
+a superseded premise and are deliberately left for the owner to move with the
+number: `venue.hpp`'s `stale_gap_note` ("worst book silence 9,007 ms … 1.7x
+margin") and the `> 9007.0 * 1.5` floor assertion in `test_trace_venue.cpp`.
+Both still *pass*; both are now premised on a figure this capture beat.
+
+**What this is, and is not.** It is not a tuning problem — picking 30,000 from
+n=2 hours would repeat stage 0's error with a bigger number. It is a **stage D
+bench criterion problem**, because strain 20's bar is *"the ladder holds its
+colour through a nine-second legitimate silence, and greys when the feed
+actually dies"* and the quiet pair's legitimate silence is now known to reach
+26 s. Three things the owner may want to weigh, none of them taken here:
+
+1. **A third window** settles whether 26 s is itself a sample maximum. Two hours
+   is enough to falsify a ceiling and not enough to establish one.
+2. **The quiet pair may be the wrong instrument for the bar.** MINA/GBP was
+   chosen at stage 0 to be the extreme case; an extreme case with an unbounded
+   tail cannot be the thing a threshold is sized against, only the thing it is
+   tested against.
+3. **The heartbeat is the oracle the threshold is not using.** This addendum
+   diagnosed a 26-second silence as healthy in one step, from data already on
+   the wire — a book-event threshold alone cannot make that distinction at any
+   value, which is an argument about the *shape* of the rule rather than its
+   number. Decision 2 split the clock in two; this is the evidence for whether
+   two is enough.
+
+### THE RULING (2026-08-17) — it is the third option, taken and extended
+
+The owner ruled the same evening, and it is **option 3 above**: *the heartbeat is
+the oracle the threshold is not using.* Options 1 and 2 were both declined, and
+declining them is the interesting part — a third window and a different pair are
+both ways of finding a better **number**, and the ruling is that **there is no
+number.**
+
+> **Book-event silence cannot be a staleness signal at any venue, and no
+> threshold on it can be correct.** A quiet market and a silently dead
+> subscription produce identical wire behaviour, so book silence carries no
+> information about whether the displayed book is trustworthy. The bound on book
+> silence is a market property, not a protocol one, and a market can be closed.
+
+Full text as `ARCHITECTURE.md` §9, 2026-08-17 (M4 stage A, ruling). What it
+changes here, in four parts:
+
+1. **Staleness counts the venue's declared liveness signal** — Kraken's
+   `heartbeat`, Anvil's `summary`. `venue_traits` carries that signal's **name**;
+   the field that used to hold a duration is gone, and the rename is deliberate
+   so a future reader cannot put a number back in it.
+2. **The threshold is measured at runtime, not declared.** Kraken's 1 Hz is a
+   protocol constant and Anvil's is `ANVIL_SUMMARY_HZ`, operator config — both
+   are values DepthCharge cannot read back, so a hardcoded number is coupled to
+   something that can change with no client change and no error. The threshold is
+   `k x` the rolling median of the signal's own observed inter-arrival
+   (`harness/include/dc_harness/liveness_clock.hpp`).
+3. **Book silence becomes `age_ms`** — a number in the header, never a colour.
+   Stage A2.
+4. **`kRxWatchdogMs` is untouched.** The firmware half is stage B's.
+
+**`k = 4`, and what it is made of.** Derived from the worst *healthy*
+inter-arrival expressed as a multiple of that venue's own median:
+
+| venue | signal | intervals | median | worst healthy | worst/median |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Anvil | `summary` | 1,191 | 500.0 ms | 968.8 ms | **1.937x** |
+| Kraken | `heartbeat` | 834 | 1000.3 ms | 1,119.0 ms | 1.119x |
+
+Anvil is the binding case and its 1.937x is **one missed tick** in healthy M0
+data — so any k ≤ 2 greys the panel whenever a single `summary` publish slips.
+k = 4 means "three consecutive ticks missed" and clears the worst measured
+healthy multiple by 2.07x, the same order of margin `kRxWatchdogMs` was derived
+at (2.6x) but taken against a *multiple*, which is what lets one number serve
+both venues. Measured effect: Anvil calibrates to 2,000 ms and Kraken to
+4,000–4,003 ms, from the same constant and with no per-venue figure anywhere.
+
+**What it does to this pair.** The quiet pair's heartbeat held 936–1,042 ms right
+through the 25,843 ms book hole, so the liveness clock never fires and the
+25,843 ms becomes age. All nine committed traces re-run: **the quiet pair
+synthesises zero disconnects and `anvil_101_reconnect` still produces its one**,
+now armed on `summary` (a 4,747.7 ms gap against a self-calibrated 2,000 ms).
+
+**The accepted cost, stated because it is real.** A connection-level liveness
+signal does not prove the *book subscription* is alive: Kraken's heartbeat is
+per-connection and Anvil's `summary` is global fan-out to every socket whatever
+it subscribed to. This trades an **observed** false-grey — three per ten minutes
+on a healthy feed — for an **unobserved** false-colour. Stage B's CRC covers
+updates that arrive and disagree; it does not cover silence.
+
+### Two quiet-pair traces, two jobs — neither is redundant
+
+Committed 2026-08-17. There are now **two** MINA/GBP depth-25 slices and they
+cover the same phenomenon at different magnitudes. A future reader deleting
+either as duplication would lose something specific.
+
+| | `kraken_minagbp_d25_20260816` | `kraken_minagbp_d25_20260817` |
+| --- | --- | --- |
+| captured | 23:37Z | **16:00Z** — 7 h 37 min away in hour-of-day |
+| window | first 60 s of a 90 s capture | **t+65..t+160 s of a 600 s capture** |
+| records | 93 | 144 |
+| worst book silence | **9,006.8 ms** | **25,843.3 ms** |
+| liveness (heartbeat) | 60, median 1000.6, worst 1026.2 ms | 95, median 999.1, worst **1119.0** ms |
+| greys, calibrated | **0** | **0** |
+| greys at the WITHDRAWN 15,000 ms book rule | 0 | **3** |
+| gzip | 2.4 KiB | **2.7 KiB** |
+
+**The 08-16 slice is the typical case and the on-connect record.** It is the only
+one that contains the subscribe, the ack and the `status` frame, so it is what the
+record taxonomy and the untyped-record explanation rest on, and it is the one
+whose 9,007 ms figure the stage-0 write-up is built from.
+
+**The 08-17 slice is the EXTREME, and it is the golden the ruling exists to
+serve.** Read its two columns together: at the withdrawn 15,000 ms constant the
+book rule fires **three** times in 95 seconds on a feed that never lost a packet,
+and at the self-calibrated 3,987 ms liveness threshold it fires **none**. That
+pair is the ruling, in one file. It also happens to contain the run's worst
+heartbeat interval (1,119.0 ms), which is one of the two numbers `k` was derived
+from.
+
+**Two deliberate properties of the 08-17 slice, so they are not read as defects.**
+
+1. **It begins mid-stream** — 65 s into the capture — so it has `tx=0`,
+   `snapshots=0` and no `status` frame. That is what it costs to contain the
+   interesting stretch, and the window could not be moved: the fourth of its four
+   >12 s gaps opens at t+139.8 s and **closes at t+158.1 s**, so a window ending
+   at t+140 would have cut it and the file would have contained three of the four
+   gaps it claims.
+2. **It is a LIVENESS golden and NOT a checksum or truncation golden**, and
+   `tools/kraken_frame_economics.py` refuses to pin it for exactly that reason:
+   with no snapshot to baseline from, all 49 of its checksums are computed
+   against a book built from deltas applied to nothing, so it scores **0/49 at
+   any depth**. It is listed in that tool's `NOT_A_CHECKSUM_GOLDEN` table **with
+   its reason**, rather than skipped — an unpinned trace is still a failure
+   there, and "cannot be graded" had to become a third state instead of a hole.
+   Its truncation column would also read CATCHES *for the wrong reason* (0 < 49
+   is true only because everything fails), and `--verify` now says so.
+   **The truncation goldens remain the d10 and d25 BTC/USD slices.**
+### The defensive resubscribe — NAMED, NOT BUILT
+
+The gap the cost above leaves is a subscription that dies while the connection
+stays healthy: Kraken keeps heart-beating, the panel keeps its colour, and no
+book update ever arrives again. Stage 0 already found the shape of it — a refused
+`depth` leaves exactly that state — and the ruling's own point 6 concedes it.
+
+The obvious defence is a **defensive resubscribe**: after N x the liveness
+threshold with no book event, tear the subscription down and re-subscribe, on the
+theory that a snapshot either arrives (the book was genuinely quiet, nothing lost
+but bytes) or does not (the subscription really was dead).
+
+**Deliberately not built, at the owner's instruction, and the cost of building it
+is the reason:** the trigger is *book silence*, which is the exact quantity the
+ruling just established carries no information. A resubscribe armed on it would
+fire on MINA/GBP roughly every 26 seconds of a perfectly healthy market, throwing
+away a good subscription and paying a fresh snapshot each time — the crying-wolf
+inversion, moved from the panel to the wire where it costs more. Any version
+worth having needs a second signal that distinguishes *quiet* from *dead*, and
+this venue does not publish one. Recorded as an open option for stage B with
+that condition attached, rather than as a to-do.
+
+---
 
 ## Kraken sends a 1 Hz heartbeat, and it is not in the brief's doc summary at all
 
@@ -517,7 +758,25 @@ loudly on any move. A moved number means either a tooling regression or a
 deliberate re-capture — and in the second case the expectations and this
 document's figures move in the same commit. Never the third thing.
 
-### These traces are not readable by `dc_replay`, deliberately
+### These traces were not readable by `dc_replay`, deliberately — CLOSED at M4 stage A
+
+**Superseded 2026-08-17.** The section below is left standing unedited, because
+it is the statement of a problem and the reasoning is the part worth keeping;
+this is what happened to it. `dc_replay` now reads all four committed slices end
+to end (`dc_replay_kraken_*` in ctest), and the resolution is the **first** of
+the three options it names: the metadata contract gained a `venue` tag and one
+reader dispatches to per-venue decoders. The rule is written up in
+[`NOTES.md` § The trace metadata contract](NOTES.md#the-trace-metadata-contract--binding-for-every-trace-all-venues-both-languages)
+and the decision is `ARCHITECTURE.md` §9, 2026-08-17. Nothing was reshaped: the
+four slices are byte-for-byte the files stage 0 committed, and the heartbeat and
+the ack — which this section says are the two frames the findings rest on — are
+now *named and counted* rather than merely tolerated. The record taxonomy that
+came out of reading them is the next section but one.
+
+The one correction to the text below: it says the `status` frame has no `type`.
+It has one — `{"channel":"status","type":"update",…}` — and it is the two
+`subscribe` records (the one this side sent and the ack) that make up the 61
+alongside 59 heartbeats. The count was right; one of the three names was not.
 
 Run today, verbatim:
 
@@ -542,6 +801,79 @@ venue-tagged, or the reader learns a second dialect, or Kraken traces get their
 own reader. Bending the *capture* to fit today's reader would have thrown away
 the heartbeat and the ack — the two frames Headline 1 and the depth trap rest
 on — which is precisely the wrong trade.
+
+---
+
+## The record taxonomy, measured (M4 stage A)
+
+Added 2026-08-17. Every figure below is read out of the committed files by
+`dc_taxonomy`, the C++ reader that now dispatches on the venue tag, and every one
+of them is **pinned** in `harness/include/dc_harness/taxonomy_pins.inc` with
+`ctest`'s `trace_taxonomy_selfcheck` failing on any move. They were
+cross-checked against an independent Python pass over the same files before
+being pinned, and the pin was mutation-verified — four deliberate breakages
+(renaming a kind, counting the sent subscribe as venue traffic, moving the
+declared threshold, and dropping the resync rule) are each caught.
+
+| kind | d10 | d25 | d100 | MINA/GBP d25 |
+| --- | ---: | ---: | ---: | ---: |
+| `book/update` | 838 | 1,536 | 2,471 | 29 |
+| `book/snapshot` | 1 | 1 | 1 | 1 |
+| `heartbeat` | 60 | **59** | 60 | 60 |
+| `status/update` | 1 | 1 | 1 | 1 |
+| `ack:subscribe` | 1 | 1 | 1 | 1 |
+| `tx:subscribe` | 1 | 1 | 1 | 1 |
+| **total records** | **902** | **1,599** | **2,535** | **93** |
+| of which untyped | 62 | **61** | 62 | 62 |
+| of which sent by us | 1 | 1 | 1 | 1 |
+| book events | 839 | 1,537 | 2,472 | 30 |
+
+**The 61 are explained, and they are three things, not one.** In the depth-25
+slice: **59 heartbeats** (`{"channel":"heartbeat"}`, no payload at all),
+**1 subscribe ack** (`method` + `result` + `success`, no `channel` and no
+`type`), and **1 subscribe this side sent** (`"dir": "tx"`). The other three
+slices read 62 because their 60-second window caught 60 heartbeats rather than
+59 — the 1 Hz broadcast and the window edge, nothing else. No untyped record in
+any committed slice is unaccounted for; total = typed + untyped exactly, on all
+four.
+
+Two of the three were the reason not to reshape the traces, and they earned it:
+the heartbeat is Headline 1's whole argument, and the ack is where a refused
+subscription is visible at all. The classifier names a refused one
+`ack:subscribe REFUSED` rather than folding it into the ack count, so an
+instrument counting acks cannot hide the trap.
+
+**`status` is not one of the untyped.** It carries
+`{"channel":"status","type":"update",…}` — the section above got that name wrong
+while getting the count right, and the correction is recorded there.
+
+### The two clocks, now measured per trace
+
+The same pass counts what the M1 replay rule would do to these files at Anvil's
+1,000 ms threshold and at Kraken's declared 15,000 ms. Every firing in the middle
+two columns is a **disconnect that did not happen**:
+
+| trace | worst record gap | worst book gap | record rule @1,000 | book rule @1,000 | either @15,000 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BTC/USD d10 | 1,005 ms | 5,058 ms | 7 | 13 | **0** |
+| BTC/USD d25 | 1,003 ms | 4,535 ms | 5 | 10 | **0** |
+| BTC/USD d100 | 998 ms | 1,371 ms | **0** | 3 | **0** |
+| MINA/GBP d25 | 1,026 ms | 9,007 ms | **25** | 12 | **0** |
+
+Read the record-rule column across the four rows before anything else. It goes
+7, 5, **0**, 25 — and the worst record gap in all four is within 27 ms of one
+second (998.1, 1,002.9, 1,004.6, 1,026.2), because the 1 Hz heartbeat is the
+floor. **Whether the Anvil constant
+trips on a Kraken trace is heartbeat jitter, not signal.** Depth 100 happens to
+come in at 998 ms and looks clean; the same subscription five minutes later would
+not. That is stage 0's "straddles the constant" finding arriving as four numbers,
+and it is the argument against the any-data-frame rule (ARCHITECTURE §9,
+2026-08-17, decision 2) in the only form that can be checked.
+
+The book-rule column is the honest one — it counts silence in the thing
+invariant #5 actually cares about — and it says the quiet pair is legitimately
+silent past a second twelve times a minute, worst 9,007 ms. At the declared
+15,000 ms, every cell in both columns is zero.
 
 ---
 

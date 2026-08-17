@@ -5,6 +5,13 @@ smoked acrylic, rendering live market depth — bids stacking green, asks red, t
 flashing white at the touch, and an honest grey "stale" state whenever the data can't be
 trusted.
 
+**Why the grey state is the point.** On 16 August 2026 the upstream feed went silent for
+**two minutes fifty-six seconds** on a TCP connection that stayed perfectly healthy — no
+error, no disconnect, plain HTTPS to the same host answering in half a second throughout.
+A ladder that kept its colours would have shown a three-minute-old market as live. Had the
+panel existed that day it would have shown that incident, for the whole of it. Everything
+else here is in service of that: knowing when not to be believed.
+
 ![DepthCharge concept sketch](docs/media/depthcharge_concept.svg)
 
 It consumes three venues in ascending order of wire difficulty: **Anvil**
