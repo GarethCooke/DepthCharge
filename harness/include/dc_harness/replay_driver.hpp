@@ -171,6 +171,28 @@ struct ReplayResult {
     // so a tool never has to guess which of the two produced its episodes.
     double threshold_ms = 0.0;
 
+    // ---- THE AGE METER (M4 stage A2) --------------------------------------
+    // The book's estimated queuing lag. `final_snapshot.age_ms` is the reading
+    // at the end of the run; these two are what a whole-run report needs and a
+    // single snapshot cannot carry.
+    //
+    // `worst_age_ms` survives reconnects deliberately — the per-connection peak
+    // is destroyed every time the socket blinks, which is how the 86-minute run
+    // of 2026-08-09 looked healthy.
+    //
+    // TWO CADENCES, AND THEY ARE NOT THE SAME NUMBER. `liveness_median_ms` is
+    // the ROLLING median the grey threshold is derived from, at the end of the
+    // run. `age_baseline_ms` is the interval the age was measured against —
+    // latched from the first calibrated window of the last connection and frozen
+    // there, because a fresh socket's send queue is empty and that is the only
+    // moment a single client can measure the venue's clock. On a healthy trace
+    // they agree; where they DISAGREE the socket's cadence has moved since it
+    // connected, which is the whole signal (age_estimator.hpp).
+    std::uint32_t worst_age_ms = 0;
+    double age_baseline_ms = 0.0;
+    double liveness_median_ms = 0.0;
+    std::size_t liveness_arrivals = 0;
+
     std::int64_t first_rx_ns = 0;
     std::int64_t last_rx_ns = 0;
     double span_seconds() const {

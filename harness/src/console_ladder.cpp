@@ -18,6 +18,8 @@
 
 #include <depthcharge/decimal.hpp>
 
+#include "dc_harness/age_estimator.hpp"
+
 namespace dc::harness {
 namespace {
 
@@ -47,6 +49,12 @@ constexpr std::string_view kTape = "\x1b[97m";
 constexpr std::string_view kTitle = " DEPTHCHARGE ";
 constexpr std::string_view kVenue = " ANVIL ";
 constexpr std::string_view kSeqLabel = " seq ";
+// The age meter (M4 stage A2). It sits in the header beside `seq` — a NUMBER,
+// never a colour — because the 2026-08-17 ruling took book silence away from the
+// staleness clock and gave the panel this instead. A reader must be able to see
+// "live, and 90 seconds behind", which is a state this object had no way to
+// draw for three milestones and which really happened on 2026-08-11.
+constexpr std::string_view kAgeLabel = " age ";
 constexpr std::string_view kBannerLead = "!! STALE - book unknown (";
 constexpr std::string_view kBannerTail = ") - not live data";
 
@@ -251,6 +259,11 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
 
     const std::string id_text = std::to_string(snap.symbol.id);
     const std::string seq_text = std::to_string(static_cast<unsigned long long>(snap.seq));
+    // "-" until the estimator has a window: "no reading yet" and "the book is
+    // current" are different statements, and printing 0.0s for the first is the
+    // reassuring one of the two (age_estimator.hpp).
+    const std::string age_text =
+        snap.has_age ? std::string(AgeText(snap.age_ms).buf) : std::string("-");
     const std::string_view reason = reason_text(snap.stale_reason);
     const std::string status =
         stale ? std::string("STALE ") + std::string(reason) : std::string("LIVE");
@@ -266,6 +279,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
     // + seq label + seq + ' ', then ' ' + dot + ' ' + status.
     const std::size_t header_cols = 2 + kTitle.size() + 1 + kVenue.size() + id_text.size() +
                                     1 + 1 + kSeqLabel.size() + seq_text.size() + 1 +
+                                    1 + kAgeLabel.size() + age_text.size() + 1 +
                                     kStatusLead + status.size();
     // v + ' ' + lead + reason + tail.
     const std::size_t banner_cols =
@@ -296,6 +310,10 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
         r.glyph(g.sep);
         r.put(kSeqLabel);
         r.put(seq_text);
+        r.put(" ");
+        r.glyph(g.sep);
+        r.put(kAgeLabel);
+        r.put(age_text);
         r.put(" ");
         r.esc(ansi::kFrame);
         // Status sits hard against the right edge, where the eye lands last.

@@ -35,9 +35,11 @@
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
 
+#include "dc_harness/age_estimator.hpp"
 #include "dc_harness/console_ladder.hpp"
 #include "dc_harness/replay_driver.hpp"
 #include "dc_harness/trace.hpp"
+#include "dc_harness/venue.hpp"
 
 namespace {
 
@@ -199,6 +201,23 @@ void print_report(const Args& args, const ReplayResult& r) {
             std::printf("never cleared (still stale at end of trace)\n");
         }
     }
+
+    // THE AGE METER, ON ITS OWN LINE AND NOT NEAR THE WATCHDOG (M4 stage A2).
+    // The two are computed from the same arrivals and mean opposite things: the
+    // watchdog above says whether the panel greys, and this says how far behind
+    // a panel that is NOT greying has fallen. Both numbers are printed with the
+    // median they derive from, because every age here is `elapsed - n x median`
+    // and a reader who cannot see the median cannot check the arithmetic.
+    const dc::harness::AgeText worst_age(r.worst_age_ms);
+    const dc::harness::AgeText final_age(r.final_snapshot.age_ms);
+    const std::string_view signal = dc::harness::venue_traits(r.meta.venue).liveness_signal;
+    std::printf("age       : worst %s   at end %s   (queuing lag, never a grey signal)\n",
+                worst_age.buf,
+                r.final_snapshot.has_age ? final_age.buf : "no reading yet");
+    std::printf("            %zu x %.*s: baseline %.1f ms (this connection's own first "
+                "window), rolling median %.1f ms\n",
+                r.liveness_arrivals, static_cast<int>(signal.size()), signal.data(),
+                r.age_baseline_ms, r.liveness_median_ms);
     std::printf("\n");
 }
 

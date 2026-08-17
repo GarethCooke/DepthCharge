@@ -5,6 +5,7 @@
 
 #include <depthcharge/feed_event.hpp>
 
+#include "dc_harness/age_estimator.hpp"
 #include "dc_harness/liveness_clock.hpp"
 #include "dc_harness/trace_decoder.hpp"
 
@@ -62,7 +63,18 @@ public:
 
             // Feed the calibrator AFTER the gap test, so the threshold a gap is
             // judged against is the one that was in force while it was open.
-            if (decoder_.classify(frame).is_liveness) { liveness_.on_liveness(frame.rx_ns); }
+            // The age meter reads the SAME arrivals and extracts a different
+            // quantity from them: the clock decides when to grey and must keep a
+            // ROLLING median, the estimator says how far behind the book is and
+            // needs a reference that does not move with the backlog it is
+            // measuring. Neither derives its number from the other's window —
+            // see age_estimator.hpp for the reconnect case where that would be a
+            // silent wrong answer (M4 stage A2).
+            if (decoder_.classify(frame).is_liveness) {
+                ++liveness_arrivals_;
+                liveness_.on_liveness(frame.rx_ns);
+                age_.on_liveness(frame.rx_ns);
+            }
 
             current_frame_ = frame.index;
             current_rx_ns_ = frame.rx_ns;
@@ -81,11 +93,20 @@ public:
 
         // Latest published state is the run's answer; if the trace produced no
         // event at all the channel still holds the stale-by-construction start.
-        if (channel_.published_version() == 0) { book_.publish(latest_); }
+        if (channel_.published_version() == 0) {
+            book_.publish(latest_);
+            stamp_age(latest_);
+        }
 
         result.frames = frames_;
         result.events = events_;
         result.threshold_ms = threshold_ms();
+        result.worst_age_ms = age_.worst_ms();
+        result.age_baseline_ms = age_.baseline_ms();
+        result.liveness_median_ms = liveness_.median_ms();
+        // The TOTAL, not the clock's 32-sample window: a report that says "32 x
+        // summary" over a two-minute trace looks like a thin feed.
+        result.liveness_arrivals = liveness_arrivals_;
         result.adapter = decoder_.adapter().stats();
         result.book = book_.stats();
         result.episodes = episodes_;
@@ -126,6 +147,43 @@ private:
         current_rx_ns_ = watchdog_ns;
         decoder_.on_transport_gap(GapReason::Disconnect,
                                   [this](const FeedEvent& ev) { on_event(ev); });
+
+        // THE BACKLOG DIED WITH THE SOCKET (M4 stage A2). A reconnect is given a
+        // fresh server-side send queue and a fresh snapshot, so an estimate
+        // carried across it would be measuring a queue that no longer exists.
+        // Reset here rather than at the resync: the peak is banked on the way
+        // down, and doing it AFTER the Gap has published leaves the grey frame
+        // carrying the age the book had actually reached when the watchdog
+        // fired. Everything after it reads "no reading yet" until the new
+        // connection has delivered a window — which is the honest answer, and
+        // the panel is grey throughout it anyway.
+        //
+        // The liveness clock is deliberately NOT reset: cadence is a property of
+        // the venue, not of the connection, and the hole enters its median
+        // window as a single sample that moves a rank rather than the median.
+        age_.on_reconnect(watchdog_ns);
+    }
+
+    // The age, stamped one line after the publish that filled everything else.
+    //
+    // WHY THE BOOK DOES NOT DO IT: `engine/` has no clock and is not being given
+    // one (invariant #1 keeps it host-buildable and I/O-free, and a book that
+    // reads a clock is a book whose replay is no longer deterministic). So
+    // `Book::publish` fills the market state and the feed side — the same single
+    // writer, one line later (invariant #8) — stamps how far behind it is.
+    //
+    // Stamped at PUBLISH, so the number on screen is as fresh as the last
+    // published frame. That is exact rather than approximate: age only moves
+    // when the liveness signal thins, and a feed whose liveness signal has
+    // thinned is still delivering the book frames that publish. When nothing
+    // publishes at all, either the market is quiet and the age is genuinely
+    // unchanged (Kraken's 25.8 s book hole with heartbeats on time), or the feed
+    // has stopped and the panel is grey — where grey, not a number, is the
+    // honesty channel.
+    void stamp_age(DisplaySnapshot& snap) noexcept {
+        const AgeReading r = age_.read_and_bank(current_rx_ns_);
+        snap.has_age = r.valid;
+        snap.age_ms = r.ms;
     }
 
     void on_event(const FeedEvent& ev) {
@@ -148,6 +206,7 @@ private:
         }
 
         book_.publish(latest_);
+        stamp_age(latest_);
         channel_.publish(latest_);
 
         if (is_stale && !saw_stale_ && ev.kind == FeedEvent::Kind::Gap) {
@@ -181,6 +240,7 @@ private:
     // through the readers before and after it.
     AnvilTraceDecoder decoder_;
     LivenessClock liveness_;
+    AgeEstimator age_;
     Book book_;
     SnapshotChannel channel_;
     DisplaySnapshot latest_{};
@@ -189,6 +249,7 @@ private:
     std::vector<StaleEpisode> episodes_;
     std::size_t frames_ = 0;
     std::size_t events_ = 0;
+    std::size_t liveness_arrivals_ = 0;
     std::size_t current_frame_ = 0;
     std::int64_t current_rx_ns_ = 0;
     std::int64_t prev_rx_ns_ = 0;
