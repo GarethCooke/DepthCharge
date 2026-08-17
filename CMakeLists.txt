@@ -198,6 +198,7 @@ add_executable(dc_tests
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
   harness/tests/test_staleness.cpp
+  harness/tests/test_trace_venue.cpp
   harness/tests/test_ws_frame.cpp
   harness/tests/test_ws_ping.cpp
   harness/tests/test_ws_supervisor.cpp)
