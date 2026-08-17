@@ -58,6 +58,28 @@ struct DisplaySnapshot {
     // version stamp ARCHITECTURE §5 requires of the double buffer.
     std::uint32_t version{};
 
+    // How far behind the venue this book is, in milliseconds — QUEUING LAG, and
+    // not time since the last frame or time since the book last changed (M4
+    // stage A2; the definition is pinned in dc_harness/age_estimator.hpp and in
+    // ARCHITECTURE §5). `has_age` is false until the estimator has calibrated,
+    // because "no reading yet" and "the book is current" are different
+    // statements and exactly one of them is reassuring.
+    //
+    // NOT WRITTEN BY THE BOOK. The engine has no clock and is not being given
+    // one: `Book::publish` fills every other field, and the feed side stamps
+    // these two immediately afterwards from the venue's liveness deficit. Same
+    // single writer (invariant #8), one line later.
+    //
+    // **NOTHING BRANCHES ON IT** (invariant #5): age is rendered as a number,
+    // never as grey. Grey is `status`, which counts a different signal for a
+    // different reason (the 2026-08-17 ruling).
+    //
+    // Placed HERE, and beside `has_last` below, for a reason worth keeping: both
+    // land in alignment padding this struct already had — the 4-byte hole after
+    // `version` and the 2 bytes before `last_px` — so the render hand-off did
+    // not grow. See the static_assert at the foot of this file.
+    std::uint32_t age_ms{};
+
     SymbolSpec symbol{};
 
     // Seq of the last event folded into this snapshot.
@@ -73,6 +95,8 @@ struct DisplaySnapshot {
     std::uint8_t trade_count{};
 
     bool       has_last{};
+    bool       has_age{};   // see age_ms above; packs into existing padding
+
     PriceTicks last_px{};
 
     BookLevel  bids[kDisplayLevels]{};    // best-first: descending px
@@ -98,5 +122,18 @@ struct DisplaySnapshot {
 // design change, not an implementation detail (invariant #7).
 static_assert(std::is_trivially_copyable_v<DisplaySnapshot>,
               "DisplaySnapshot must stay trivially copyable (ARCHITECTURE invariant #7)");
+
+// AND IT IS A FIXED SIZE, PINNED, because three documents quote a byte count
+// derived from it: `firmware/src/main.cpp`'s static-footprint block (staging
+// 1,168 B, SnapshotChannel 3,528 B), `snapshot_channel.hpp`'s cost note, and
+// ARCHITECTURE §9's 2026-08-07 row, which sized the third mailbox slot on the
+// target toolchain at 1,176 -> 3,528 B of `.data`. M4 stage A2 added two fields
+// and this number did not move, because both went into padding — that is a
+// property worth holding rather than rediscovering, since the next field added
+// carelessly costs 3x its own size in the mailbox and silently invalidates three
+// numbers nobody will re-measure. If this fires, the growth is fine but it is a
+// DECISION: take it, and correct the three places above in the same commit.
+static_assert(sizeof(DisplaySnapshot) == 1168,
+              "DisplaySnapshot changed size — see the note above before adjusting this");
 
 }  // namespace depthcharge
