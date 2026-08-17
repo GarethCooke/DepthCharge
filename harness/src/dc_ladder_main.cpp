@@ -183,7 +183,9 @@ void print_report(const Args& args, const ReplayResult& r) {
                 ull(r.book.gaps),
                 ull(r.book.deltas_rejected));
     std::printf("watchdog  : %.0f ms  ->  %zu stale episode(s)\n",
-                args.replay.disconnect_gap_ms, r.episodes.size());
+                args.replay.disconnect_gap_ms > 0.0 ? args.replay.disconnect_gap_ms
+                                                    : r.threshold_ms,
+                r.episodes.size());
     for (const StaleEpisode& ep : r.episodes) {
         std::printf("            after frame %zu: %.0f ms silence", ep.frame_before,
                     ep.observed_gap_ms);

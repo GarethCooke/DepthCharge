@@ -33,6 +33,27 @@ using depthcharge::GapReason;
 using depthcharge::Side;
 using depthcharge::anvil::kAnvilTicker101;
 using dc::harness::ReplayOptions;
+
+// EVERY GOLDEN IN THIS FILE PINS THE M1 RULE EXPLICITLY, via
+// `ReplayOptions::legacy_anvil()` (1,000 ms, record-arrival armed) — WITH ONE
+// DELIBERATE EXCEPTION, which is the point of the exception: see
+// "reconnect trace: THE CALIBRATED PATH" below. Invariant #6 has no clause
+// exempting new behaviour that was merely reported in a session log, so the
+// shipped default path carries a golden of its own.
+//
+// Since the 2026-08-17 ruling the driver's DEFAULT is to calibrate its threshold
+// from the venue's liveness signal, which at Anvil settles at 4 x 500 ms =
+// 2,000 ms. That is the right default and it is deliberately not what these
+// tests use: a golden whose expectations depend on a calibration would move the
+// day a trace is re-captured with slightly different cadence, and these
+// expectations are pinned M1/M3 measurements. Concretely, the reconnect trace's
+// grey window is `cleared_rx - (prev_rx + threshold)`, so calibrating would
+// shorten the pinned 3,468 ms to 2,468 ms — a moved golden, for no finding.
+//
+// One trace therefore carries TWO pins, and the pair documents the ruling better
+// than either alone: the same 4,468 ms hole, judged by the constant it used to be
+// judged by and by the rule that replaced it, with the only difference being how
+// much of the hole is grey.
 using dc::harness::ReplayResult;
 using dc::harness::run_replay_file;
 using dc::harness::run_replay_text;
@@ -53,7 +74,7 @@ std::string baseline_2026_08_path() {
 }
 
 ReplayResult replay(const std::string& path, std::size_t max_frames = 0) {
-    ReplayOptions opts;
+    ReplayOptions opts = ReplayOptions::legacy_anvil();
     opts.max_frames = max_frames;
     return run_replay_file(path, kAnvilTicker101, opts);
 }
@@ -89,7 +110,7 @@ TEST_CASE("baseline trace: every frame is consumed and nothing is malformed") {
 TEST_CASE("baseline trace: the wire seq misbehaves and the synthesised Seq does not") {
     std::vector<depthcharge::Seq> seqs;
     std::size_t gaps = 0;
-    ReplayOptions opts;
+    ReplayOptions opts = ReplayOptions::legacy_anvil();
     dc::harness::TraceReader reader(baseline_path());
     const ReplayResult r = dc::harness::run_replay(
         reader, kAnvilTicker101, opts,
@@ -201,7 +222,7 @@ TEST_CASE("baseline trace: final book and the whole trade ring") {
 
 TEST_CASE("baseline trace: the ladder never goes stale on a healthy feed") {
     std::size_t stale_publishes = 0;
-    ReplayOptions opts;
+    ReplayOptions opts = ReplayOptions::legacy_anvil();
     dc::harness::TraceReader reader(baseline_path());
     const ReplayResult r = dc::harness::run_replay(
         reader, kAnvilTicker101, opts,
@@ -230,7 +251,7 @@ TEST_CASE("baseline trace: the ladder never goes stale on a healthy feed") {
 // from this code's output.
 TEST_CASE("2026-08 capture: Anvil's cadence still clears the watchdog by 6x") {
     std::vector<std::int64_t> event_rx;
-    ReplayOptions opts;
+    ReplayOptions opts = ReplayOptions::legacy_anvil();
     dc::harness::TraceReader reader(baseline_2026_08_path());
     const ReplayResult r = dc::harness::run_replay(
         reader, kAnvilTicker101, opts,
@@ -323,10 +344,69 @@ TEST_CASE("reconnect trace: the panel goes stale at the outage and recovers on r
     CHECK(r.final_snapshot.seq == 1117);
 }
 
+// --- the same outage, on the SHIPPED DEFAULT path ---------------------------
+//
+// This is the only golden in the file that runs the driver as it actually ships:
+// `ReplayOptions{}`, threshold 0, meaning "calibrate from the venue's liveness
+// signal". Everything else pins `legacy_anvil()` so that a re-capture cannot move
+// it, and that was the right trade fourteen times — but it left the default path
+// with no replay coverage at all, and invariant #6 does not have an exemption for
+// behaviour that was reported rather than covered.
+//
+// What it pins, and why these numbers: Anvil's `summary` runs at a 499.9 ms
+// median in this trace, so `kThresholdMultiple = 4` calibrates to 2,000 ms
+// against the 1,000 ms the case above uses. The hole is the same 4,468 ms, the
+// episode count is the same 1, and the ONE thing that moves is how much of the
+// hole is grey: 4,468 - 2,000 = 2,469 ms rather than 3,468 ms.
+//
+// The calibration is not a free variable here. It is 4 x a median this trace
+// establishes 172 times, so if Anvil's cadence ever changed, this golden and the
+// legacy one above would move in opposite directions — the legacy grey window
+// would stretch while this one held at 4x the new median. That divergence is
+// worth more than either number.
+TEST_CASE("reconnect trace: THE CALIBRATED PATH greys for 2,469 ms, not 3,468") {
+    const ReplayResult r = run_replay_file(reconnect_path(), kAnvilTicker101,
+                                           ReplayOptions{});
+
+    // The threshold was derived, not passed in.
+    CHECK(r.threshold_ms == doctest::Approx(2000.0).epsilon(0.001));
+
+    // Everything the adapter sees is identical to the legacy run — the ruling
+    // changed when the panel greys, not what the book is told.
+    CHECK(r.frames == 1288);
+    CHECK(r.events == 1117);
+    CHECK(r.adapter.snapshot_frames == 1);
+    CHECK(r.adapter.book_frames == 1012);
+    CHECK(r.adapter.trade_frames == 103);
+    CHECK(r.adapter.summary_ignored == 172);
+    CHECK(r.book.gaps == 1);
+    CHECK(r.book.snapshots_adopted == 1013);
+
+    // One episode, same hole, same frames either side.
+    REQUIRE(r.episodes.size() == 1);
+    const auto& ep = r.episodes.front();
+    CHECK(ep.reason == GapReason::Disconnect);
+    CHECK(ep.frame_before == 382);
+    CHECK(ep.cleared);
+    CHECK(ep.cleared_frame == 383);
+    CHECK(ep.observed_gap_ms > 4468.0);
+    CHECK(ep.observed_gap_ms < 4469.0);
+
+    // THE ASSERTION THAT DISTINGUISHES THIS FROM THE CASE ABOVE.
+    CHECK(ep.stale_ms > 2468.0);
+    CHECK(ep.stale_ms < 2470.0);
+
+    // And the invariant-5 half still holds: greyed, not blanked, then live again.
+    CHECK(r.saw_stale);
+    CHECK(r.first_stale_snapshot.status == FeedStatus::Stale);
+    CHECK(r.first_stale_snapshot.bid_count == depthcharge::kDisplayLevels);
+    CHECK(r.final_snapshot.live());
+}
+
 TEST_CASE("reconnect trace: exactly one published frame is stale, and it is the Gap's") {
     std::vector<std::size_t> stale_events;
     std::size_t first_live_after_stale = 0;
-    ReplayOptions opts;
+    ReplayOptions opts = ReplayOptions::legacy_anvil();
     dc::harness::TraceReader reader(reconnect_path());
     const ReplayResult r = dc::harness::run_replay(
         reader, kAnvilTicker101, opts,
@@ -379,7 +459,7 @@ TEST_CASE("the watchdog threshold is what decides a disconnect, and it is tunabl
         "\n";
 
     SUBCASE("default 1000 ms watchdog: the hole is a disconnect") {
-        ReplayOptions opts;
+        ReplayOptions opts = ReplayOptions::legacy_anvil();
         const ReplayResult r = run_replay_text(trace, kAnvilTicker101, opts);
         REQUIRE(r.episodes.size() == 1);
         CHECK(r.episodes[0].observed_gap_ms == doctest::Approx(5000.0));
@@ -390,7 +470,7 @@ TEST_CASE("the watchdog threshold is what decides a disconnect, and it is tunabl
     }
 
     SUBCASE("a 10 s watchdog: the same hole is just a quiet market") {
-        ReplayOptions opts;
+        ReplayOptions opts = ReplayOptions::legacy_anvil();
         opts.disconnect_gap_ms = 10000.0;
         const ReplayResult r = run_replay_text(trace, kAnvilTicker101, opts);
         CHECK(r.episodes.empty());
@@ -416,7 +496,7 @@ TEST_CASE("consecutive outages with no resync between them are one grey window")
         R"("bids":[{"price":"10.002","qty":7,"orders":1}],"asks":[]}})"
         "\n";
 
-    const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions{});
+    const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions::legacy_anvil());
 
     REQUIRE(r.episodes.size() == 1);
     const auto& ep = r.episodes.front();
@@ -443,7 +523,7 @@ TEST_CASE("an outage that never resyncs leaves the panel stale to the last frame
         R"("price":"10.0","qty":3,"aggr":"B","takerId":"a","makerId":"b","ts":1}})"
         "\n";
 
-    const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions{});
+    const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions::legacy_anvil());
 
     REQUIRE(r.episodes.size() == 1);
     CHECK_FALSE(r.episodes[0].cleared);
@@ -476,7 +556,7 @@ TEST_CASE("an observer that stops the replay does not consume the next line") {
         std::size_t seen = 0;
         dc::harness::TraceReader reader(trace, dc::harness::in_memory, "<stop>");
         const ReplayResult r = dc::harness::run_replay(
-            reader, kAnvilTicker101, ReplayOptions{},
+            reader, kAnvilTicker101, ReplayOptions::legacy_anvil(),
             [&](const dc::harness::ReplayStep&, const depthcharge::DisplaySnapshot&) -> bool {
                 ++seen;
                 return seen < 2;   // stop after the second event
@@ -487,7 +567,7 @@ TEST_CASE("an observer that stops the replay does not consume the next line") {
     }
 
     SUBCASE("stopping via --at") {
-        ReplayOptions opts;
+        ReplayOptions opts = ReplayOptions::legacy_anvil();
         opts.max_frames = 2;
         dc::harness::TraceReader reader(trace, dc::harness::in_memory, "<at>");
         const ReplayResult r = dc::harness::run_replay(reader, kAnvilTicker101, opts);
@@ -496,7 +576,7 @@ TEST_CASE("an observer that stops the replay does not consume the next line") {
     }
 
     SUBCASE("running to the end does still reject the malformed line") {
-        CHECK_THROWS_AS(run_replay_text(trace, kAnvilTicker101, ReplayOptions{}),
+        CHECK_THROWS_AS(run_replay_text(trace, kAnvilTicker101, ReplayOptions::legacy_anvil()),
                         dc::harness::TraceError);
     }
 }
@@ -516,13 +596,13 @@ TEST_CASE("trailing silence greys the panel only when the caller reports it") {
         "\n";
 
     SUBCASE("default: unknown silence, so the replay ends live") {
-        const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions{});
+        const ReplayResult r = run_replay_text(trace, kAnvilTicker101, ReplayOptions::legacy_anvil());
         CHECK(r.episodes.empty());
         CHECK(r.final_snapshot.live());
     }
 
     SUBCASE("silence shorter than the watchdog is just a quiet market") {
-        ReplayOptions opts;
+        ReplayOptions opts = ReplayOptions::legacy_anvil();
         opts.end_of_trace_silence_ms = 500.0;   // under the 1000 ms threshold
         const ReplayResult r = run_replay_text(trace, kAnvilTicker101, opts);
         CHECK(r.episodes.empty());
@@ -530,7 +610,7 @@ TEST_CASE("trailing silence greys the panel only when the caller reports it") {
     }
 
     SUBCASE("silence past the watchdog greys it, and nothing clears it") {
-        ReplayOptions opts;
+        ReplayOptions opts = ReplayOptions::legacy_anvil();
         opts.end_of_trace_silence_ms = 30000.0;
         const ReplayResult r = run_replay_text(trace, kAnvilTicker101, opts);
         REQUIRE(r.episodes.size() == 1);

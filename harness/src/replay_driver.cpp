@@ -5,6 +5,9 @@
 
 #include <depthcharge/feed_event.hpp>
 
+#include "dc_harness/liveness_clock.hpp"
+#include "dc_harness/trace_decoder.hpp"
+
 namespace dc::harness {
 namespace {
 
@@ -14,7 +17,6 @@ using depthcharge::FeedEvent;
 using depthcharge::FeedStatus;
 using depthcharge::GapReason;
 using depthcharge::SnapshotChannel;
-using depthcharge::anvil::AnvilAdapter;
 
 // Holds the wiring for one replay. The engine pieces are members, in the same
 // arrangement the firmware feed task will own them (invariant #8: this object
@@ -23,7 +25,14 @@ class Replay {
 public:
     Replay(const depthcharge::SymbolSpec& symbol, const ReplayOptions& opts,
            const ReplayObserver& observer)
-        : opts_(opts), observer_(observer), adapter_(symbol), book_(symbol) {}
+        : opts_(opts), observer_(observer), decoder_(symbol), book_(symbol) {}
+
+    // The threshold in force right now: the caller's override if it gave one,
+    // otherwise whatever this venue's own liveness signal has calibrated to.
+    double threshold_ms() const noexcept {
+        return opts_.disconnect_gap_ms > 0.0 ? opts_.disconnect_gap_ms
+                                             : liveness_.threshold_ms();
+    }
 
     ReplayResult run(TraceReader& reader) {
         ReplayResult result;
@@ -39,7 +48,7 @@ public:
                reader.next(frame)) {
             if (have_prev_rx_) {
                 const double gap_ms = static_cast<double>(frame.rx_ns - prev_rx_ns_) / 1e6;
-                if (gap_ms > opts_.disconnect_gap_ms) {
+                if (gap_ms > threshold_ms()) {
                     raise_watchdog_gap(gap_ms);
                     if (stopped_) { break; }
                 }
@@ -51,9 +60,13 @@ public:
             result.last_rx_ns = frame.rx_ns;
             frames_ = frame.index;
 
+            // Feed the calibrator AFTER the gap test, so the threshold a gap is
+            // judged against is the one that was in force while it was open.
+            if (decoder_.classify(frame).is_liveness) { liveness_.on_liveness(frame.rx_ns); }
+
             current_frame_ = frame.index;
             current_rx_ns_ = frame.rx_ns;
-            adapter_.on_frame(frame.frame_json, [this](const FeedEvent& ev) { on_event(ev); });
+            decoder_.decode(frame, [this](const FeedEvent& ev) { on_event(ev); });
         }
 
         // The trace ended. If the caller told us how long the stream stayed
@@ -61,7 +74,7 @@ public:
         // file has no "now", so this is the only way trailing silence can grey
         // the panel the way the M3 timer would.
         if (!stopped_ && have_prev_rx_ &&
-            opts_.end_of_trace_silence_ms > opts_.disconnect_gap_ms) {
+            opts_.end_of_trace_silence_ms > threshold_ms()) {
             raise_watchdog_gap(opts_.end_of_trace_silence_ms);
             result.last_rx_ns = prev_rx_ns_;
         }
@@ -72,7 +85,8 @@ public:
 
         result.frames = frames_;
         result.events = events_;
-        result.adapter = adapter_.stats();
+        result.threshold_ms = threshold_ms();
+        result.adapter = decoder_.adapter().stats();
         result.book = book_.stats();
         result.episodes = episodes_;
         result.final_snapshot = latest_;
@@ -87,7 +101,7 @@ private:
     // had on the panel.
     void raise_watchdog_gap(double gap_ms) {
         const std::int64_t watchdog_ns =
-            prev_rx_ns_ + static_cast<std::int64_t>(opts_.disconnect_gap_ms * 1e6);
+            prev_rx_ns_ + static_cast<std::int64_t>(threshold_ms() * 1e6);
 
         // Only a Snapshot clears stale, and frames that emit no event (summary)
         // or no re-baseline (trade) cannot. So a hole arriving while the panel
@@ -110,7 +124,7 @@ private:
 
         current_frame_ = 0;  // no frame arrived; this event is the transport's
         current_rx_ns_ = watchdog_ns;
-        adapter_.on_transport_gap(GapReason::Disconnect,
+        decoder_.on_transport_gap(GapReason::Disconnect,
                                   [this](const FeedEvent& ev) { on_event(ev); });
     }
 
@@ -160,7 +174,13 @@ private:
     ReplayOptions opts_;
     const ReplayObserver& observer_;
 
-    AnvilAdapter adapter_;
+    // The venue's decoder, not the adapter directly (M4 stage A, deliverable 2).
+    // A pure forwarding wrapper today — that is the point: the driver now names
+    // a seam a second venue can fill rather than naming Anvil, and the change
+    // is provably behaviour-free because every committed trace was diffed
+    // through the readers before and after it.
+    AnvilTraceDecoder decoder_;
+    LivenessClock liveness_;
     Book book_;
     SnapshotChannel channel_;
     DisplaySnapshot latest_{};
@@ -189,6 +209,19 @@ depthcharge::SymbolSpec symbol_for(const TraceMeta& meta) {
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,
                         const ReplayOptions& opts, const ReplayObserver& observer) {
+    // The driver feeds THE VENUE'S OWN ADAPTER (ARCHITECTURE §9, 2026-08-17),
+    // and at stage A there is exactly one. Refusing here rather than feeding
+    // Kraken's JSON to the Anvil parser is the difference between a loud stop
+    // and a dead ladder over a 100% parse-error count — and the second is the
+    // shape of failure invariant #5 exists to forbid, arriving through the test
+    // rig instead of the panel.
+    if (reader.venue() != Venue::Anvil) {
+        throw TraceError(reader.name(), 1,
+                         "replay driver has no adapter for venue \"" +
+                             std::string(venue_traits(reader.venue()).name) +
+                             "\" (M4 stage A ships its decoder as a classifier; the "
+                             "adapter is stage B). Use dc_taxonomy to read this trace.");
+    }
     Replay replay(symbol, opts, observer);
     return replay.run(reader);
 }

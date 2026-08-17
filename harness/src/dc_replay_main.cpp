@@ -1,18 +1,30 @@
-// dc_replay — DepthCharge M0 replay-trace validator.
+// dc_replay — DepthCharge replay-trace validator.
 //
-// Reads an Anvil capture NDJSON trace, validates its line structure, and prints
-// per-kind frame counts plus cadence and seq observations. No book, no adapter
-// logic yet (M1) — this is the ground-truth reader the later milestones build on.
+// Reads a DepthCharge capture NDJSON trace, validates its line structure, and
+// prints per-kind record counts plus cadence and seq observations. No book, no
+// adapter logic here — this is the ground-truth reader the later milestones
+// build on.
 //
 //   usage: dc_replay <trace.ndjson>
 //
-// Exit 0 if the trace is structurally valid; 1 on bad usage or a malformed trace
-// (with the offending line number).
+// Exit 0 if the trace is structurally valid; 1 on bad usage or a malformed
+// trace (with the offending line number); 2 for a well-formed capture of a
+// venue this build does not know, which is a different thing and only one of
+// them is a bug.
+//
+// TWO REPORTS, ONE READER (M4 stage A). The Anvil report below is UNCHANGED,
+// deliberately down to the byte: stage A's proof that the venue tag cost Anvil
+// nothing is a diff of this program's output over all four committed Anvil
+// traces, and a report that grew a line would have made that proof an argument
+// instead of a diff. The venue, the clock and the two watchdog clocks are
+// printed by dc_taxonomy, which is new and has no baseline to preserve.
 #include <cstdio>
 #include <exception>
 #include <string>
 
 #include "dc_harness/trace.hpp"
+#include "dc_harness/trace_report.hpp"
+#include "dc_harness/venue.hpp"
 
 namespace {
 
@@ -57,6 +69,33 @@ void print_report(const std::string& path, const dc::harness::TraceStats& s) {
     std::printf("\nOK\n");
 }
 
+// Kraken's report. A separate function rather than flags threaded through the
+// Anvil one, because the two venues do not answer the same questions: there is
+// no seq here to be non-monotonic about, and the figures that matter are the
+// record taxonomy and the two clocks. The findings themselves are printed by
+// the shared renderer — this function owns only the metadata header, which is
+// the part that genuinely differs.
+void print_kraken_report(const std::string& path, const dc::harness::TraceStats& s) {
+    const auto& m = s.meta;
+    // `depth` is optional even at Kraken; -1 is "the tool did not record one",
+    // and printing that number would read as a subscription depth of minus one.
+    char depth[32] = "-";
+    if (m.depth >= 0) { std::snprintf(depth, sizeof depth, "%lld", static_cast<long long>(m.depth)); }
+
+    std::printf("dc_replay — DepthCharge trace validator\n\n");
+    std::printf("trace     : %s\n", path.c_str());
+    std::printf("metadata  : ok  (symbol=%s  depth=%s  tool_version=%s  mode=%s  cycles=%lld)\n",
+                m.symbol.c_str(), depth, m.tool_version.c_str(),
+                m.capture_mode.empty() ? "-" : m.capture_mode.c_str(),
+                static_cast<long long>(m.cycles));
+    std::printf("            captured_at=%s\n", m.captured_at.c_str());
+    std::printf("            url=%s\n", m.url.c_str());
+    dc::harness::print_trace_findings(stdout, s, "");
+    std::printf("adapter    : none — stage A's Kraken decoder is a CLASSIFIER; "
+                "0 FeedEvents by design\n");
+    std::printf("\nOK\n");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -67,7 +106,15 @@ int main(int argc, char** argv) {
     const std::string path = argv[1];
     try {
         const dc::harness::TraceStats stats = dc::harness::read_trace(path);
-        print_report(path, stats);
+        switch (stats.meta.venue) {
+            case dc::harness::Venue::Anvil:  print_report(path, stats); break;
+            case dc::harness::Venue::Kraken: print_kraken_report(path, stats); break;
+        }
+    } catch (const dc::harness::UnknownVenueError& e) {
+        // Not a malformed trace. Separated so a caller can tell "this file is
+        // broken" from "this build cannot read this file" — see trace.hpp.
+        std::fprintf(stderr, "dc_replay: %s: %s\n", path.c_str(), e.what());
+        return 2;
     } catch (const dc::harness::TraceError& e) {
         std::fprintf(stderr, "dc_replay: %s: %s\n", path.c_str(), e.what());
         return 1;

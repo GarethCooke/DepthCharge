@@ -19,6 +19,12 @@
 
 #include <nlohmann/json.hpp>
 
+// The reader owns the ENVELOPE; the decoder owns the DIALECT. accumulate()
+// below is a statistics pass, and naming a record's kind is a dialect question
+// the moment there are two venues — so it asks, rather than assuming every
+// venue puts its kind in a field called `type`.
+#include "dc_harness/trace_decoder.hpp"
+
 namespace dc::harness {
 namespace {
 
@@ -51,10 +57,26 @@ void parse_meta(const json& j, const std::string& src, std::size_t line_no, Trac
     take_field(j, "capture_mode", meta.capture_mode, is_str);
     take_field(j, "cycles", meta.cycles, is_int);
 
+    // The venue tag, and the rule that makes it additive: absent reads as
+    // `anvil`, so every trace captured before 2026-08-17 is still valid and
+    // still means what it meant.
+    meta.venue_present = take_field(j, "venue", meta.venue_name, is_str);
+    if (!venue_from_name(meta.venue_name, meta.venue)) {
+        // Not "malformed". The file is fine; this build is the limitation.
+        throw UnknownVenueError(src, line_no, meta.venue_name);
+    }
+    meta.symbol_present = take_field(j, "symbol", meta.symbol, is_str);
+    take_field(j, "depth", meta.depth, is_int);
+    meta.clock_present = take_field(j, "clock", meta.clock, is_str);
+
     if (!meta.complete()) {
+        const VenueTraits& t = venue_traits(meta.venue);
+        std::string need = "captured_at, url, tool_version";
+        if (t.requires_ticker) { need += ", ticker"; }
+        if (t.requires_symbol) { need += ", symbol"; }
         throw TraceError(src, line_no,
-                         "metadata line missing a required field "
-                         "(need captured_at, url, ticker, tool_version)");
+                         "metadata line missing a required field for venue \"" +
+                             std::string(t.name) + "\" (need " + need + ")");
     }
 }
 
@@ -230,8 +252,13 @@ bool TraceReader::next(TraceFrame& out) {
         if (fr_it == j.end() || !fr_it->is_object()) {
             throw TraceError(name_, line_no_, "frame line missing object 'frame'");
         }
+        // Venue-conditional (M4 stage A). Anvil frames all carry a string
+        // `type` and are still held to it; Kraken's heartbeat, subscribe ack and
+        // subscribe carry none, and rejecting them would have rejected exactly
+        // the three frames the stage-0 findings rest on.
         const auto type_it = fr_it->find("type");
-        if (type_it == fr_it->end() || !type_it->is_string()) {
+        const bool have_type = type_it != fr_it->end() && type_it->is_string();
+        if (!have_type && venue_traits(meta_.venue).frames_carry_type) {
             throw TraceError(name_, line_no_, "frame object missing string 'type'");
         }
 
@@ -250,14 +277,21 @@ bool TraceReader::next(TraceFrame& out) {
 
         last_rx_ns_ = rx_ns;
         have_rx_ = true;
-        type_ = type_it->get<std::string>();
+        type_ = have_type ? type_it->get<std::string>() : std::string{};
         ++frame_index_;
+
+        // `"dir": "tx"` marks a record this side sent (capture_kraken.py's
+        // subscribe). Anything else, including its absence, is a receipt.
+        const auto dir_it = j.find("dir");
+        const bool is_tx =
+            dir_it != j.end() && dir_it->is_string() && dir_it->get<std::string>() == "tx";
 
         out.index = frame_index_;
         out.line_no = line_no_;
         out.rx_ns = rx_ns;
         out.frame_json = verbatim;
         out.type = type_;
+        out.is_tx = is_tx;
         out.seq = 0;
         out.has_seq = false;
         if (const auto seq_it = fr_it->find("seq");
@@ -280,28 +314,116 @@ namespace {
 TraceStats accumulate(TraceReader& reader) {
     TraceStats stats;
     stats.meta = reader.meta();
+    const Venue venue = reader.venue();
+    // The two FIXED historical references. Nothing decides on these; they exist
+    // so the pinned columns keep measuring what they measured when pinned.
+    const double legacy_gap_ms = venue_traits(venue).legacy_book_threshold_ms;
+    const double anvil_gap_ms = venue_traits(Venue::Anvil).legacy_book_threshold_ms;
+
+    // The clock that actually matters since the 2026-08-17 ruling. It is fed
+    // ONLY the venue's declared liveness signal and calibrates itself from that
+    // signal's own observed median — see liveness_clock.hpp for why the
+    // threshold cannot be a constant.
+    LivenessClock liveness;
+    std::vector<double> liveness_gaps;
+    std::int64_t prev_liveness_ns = 0;
+    bool have_prev_liveness = false;
 
     std::vector<double> gaps;
     std::int64_t prev_seq = 0;
     bool have_prev_seq = false;
+    RecordClassifier classifier(venue);
+    std::int64_t prev_book_rx_ns = 0;
+    bool have_prev_book = false;
 
     TraceFrame frame;
     while (reader.next(frame)) {
-        const bool is_first_frame = stats.frame_count == 0;
+        ++stats.frame_count;
+        if (frame.type.empty()) { ++stats.untyped_records; }
+        if (frame.is_tx) {
+            // Counted as a record, excluded from every timing figure: our own
+            // upload is not the venue's traffic. Anvil traces contain none, so
+            // nothing about their statistics moves.
+            ++stats.tx_count;
+            ++stats.kind_counts[std::string(classifier.classify(frame).name)];
+            continue;
+        }
+
+        const bool is_first_frame = stats.received_count() == 1;
         if (is_first_frame) {
             stats.first_rx_ns = frame.rx_ns;
         } else {
-            gaps.push_back(static_cast<double>(frame.rx_ns - stats.last_rx_ns) / 1e6);
+            const double gap_ms = static_cast<double>(frame.rx_ns - stats.last_rx_ns) / 1e6;
+            gaps.push_back(gap_ms);
+            // The M1 replay rule, applied at two thresholds. Counting raw
+            // firings rather than the driver's folded episodes: the question
+            // deliverable 4 asks is how many disconnects a threshold INVENTS,
+            // and folding them would report a run of spurious greys as one.
+            if (gap_ms > legacy_gap_ms) { ++stats.watchdog_firings_legacy; }
+            if (gap_ms > anvil_gap_ms) { ++stats.watchdog_firings_at_anvil_threshold; }
         }
         stats.last_rx_ns = frame.rx_ns;
 
-        ++stats.frame_count;
-        ++stats.kind_counts[std::string(frame.type)];
-        if (frame.type == "snapshot") {
+        const RecordKind kind = classifier.classify(frame);
+        ++stats.kind_counts[std::string(kind.name)];
+        if (kind.is_snapshot) {
             ++stats.snapshot_count;
-            // A snapshot arriving mid-trace is a resync, so mid_stream >= 1
-            // evidences a reconnect.
-            if (!is_first_frame) { ++stats.mid_stream_snapshots; }
+            // THE RESYNC RULE, and it is one rule for every venue: a snapshot
+            // with a book event before it in the trace is a resync.
+            //
+            // It used to be "a snapshot that is not the trace's first record",
+            // which is Anvil's shape, not a general one — Kraken's on-connect
+            // snapshot arrives third (status, subscribe ack, snapshot) and that
+            // rule calls every Kraken capture a reconnect. Two venue-specific
+            // repairs were written and both were wrong in different directions
+            // ("first snapshot after a subscribe" misses the reconnect
+            // capture's second subscription; "not the first acked subscription"
+            // misses a WINDOWED reconnect slice, which carries only one ack).
+            // Asking what came BEFORE gets all four cases and needs no venue
+            // split, because it is the actual question: a snapshot re-baselines
+            // a book, and it is a resync exactly when there was a book to
+            // re-baseline. It reproduces Anvil's answers on all four committed
+            // traces, including the reconnect WINDOW that contains no on-connect
+            // snapshot at all.
+            if (stats.book_events > 0) { ++stats.mid_stream_snapshots; }
+        }
+
+        // THE LIVENESS CLOCK — what greys the panel since the 2026-08-17
+        // ruling. The threshold is compared against the median the signal
+        // itself has established, so a firing here means this venue's own
+        // cadence stopped, not that a market went quiet.
+        //
+        // The threshold is sampled BEFORE this arrival is folded in, which is
+        // the honest order: the question a watchdog asks is whether the gap
+        // that just ended was tolerable given what was known while it was open.
+        if (kind.is_liveness) {
+            ++stats.liveness_events;
+            if (have_prev_liveness) {
+                const double lg_ms =
+                    static_cast<double>(frame.rx_ns - prev_liveness_ns) / 1e6;
+                liveness_gaps.push_back(lg_ms);
+                if (lg_ms > stats.max_liveness_gap_ms) { stats.max_liveness_gap_ms = lg_ms; }
+                if (lg_ms > liveness.threshold_ms()) { ++stats.liveness_firings; }
+            }
+            liveness.on_liveness(frame.rx_ns);
+            prev_liveness_ns = frame.rx_ns;
+            have_prev_liveness = true;
+        }
+
+        // THE AGE CLOCK. Book events, and no threshold on them — the ruling's
+        // first clause. The two legacy counters below are the WITHDRAWN
+        // constants, held still so the pinned columns stay comparable.
+        if (kind.is_book_event) {
+            ++stats.book_events;
+            if (have_prev_book) {
+                const double bg_ms =
+                    static_cast<double>(frame.rx_ns - prev_book_rx_ns) / 1e6;
+                if (bg_ms > stats.max_book_gap_ms) { stats.max_book_gap_ms = bg_ms; }
+                if (bg_ms > legacy_gap_ms) { ++stats.book_watchdog_firings_legacy; }
+                if (bg_ms > anvil_gap_ms) { ++stats.book_watchdog_firings_at_anvil_threshold; }
+            }
+            prev_book_rx_ns = frame.rx_ns;
+            have_prev_book = true;
         }
 
         if (frame.has_seq) {
@@ -319,6 +441,16 @@ TraceStats accumulate(TraceReader& reader) {
             have_prev_seq = true;
             ++stats.seq_frames;
         }
+    }
+
+    stats.liveness_threshold_ms = liveness.threshold_ms();
+    if (!liveness_gaps.empty()) {
+        std::sort(liveness_gaps.begin(), liveness_gaps.end());
+        const std::size_t m = liveness_gaps.size() / 2;
+        stats.median_liveness_gap_ms =
+            (liveness_gaps.size() % 2 == 0)
+                ? (liveness_gaps[m - 1] + liveness_gaps[m]) / 2.0
+                : liveness_gaps[m];
     }
 
     if (!gaps.empty()) {

@@ -56,8 +56,45 @@ namespace dc::harness {
 // watchdog alongside the real socket-close callback (which the host has no
 // equivalent of); keeping the same number in both places is what makes the
 // replay a preview rather than an analogy.
+//
+// M4 STAGE A RULING (2026-08-17): THE THRESHOLD IS SELF-CALIBRATING, AND IT IS
+// ARMED ON THE VENUE'S LIVENESS SIGNAL — NOT ON BOOK EVENTS AND NOT ON A
+// CONSTANT.
+//
+// The paragraph below records the previous step and is left standing, because
+// it is right about the problem and wrong only about the fix. What changed:
+// a second quiet-pair window measured a HEALTHY 25,843 ms book silence, 1.72x
+// the 15,000 ms this driver had just declared. No threshold on book silence can
+// be correct — a quiet market and a dead subscription are identical on the wire.
+// So the driver now watches the venue's liveness signal (`summary` at Anvil,
+// `heartbeat` at Kraken) and derives its own threshold from that signal's
+// observed median (liveness_clock.hpp). `disconnect_gap_ms` becomes an OVERRIDE
+// rather than the policy: 0 means "calibrate", which is the default.
+//
+// M4 STAGE A: THE THRESHOLD IS VENUE-DECLARED, AND IT HAD TO BE.
+//
+// Everything above is Anvil's derivation and stays true of Anvil. It is false
+// of Kraken by a factor of nine: that venue publishes on change, its quiet pair
+// is legitimately silent for 9,007 ms with a p90 of 8,480 ms, and the M1 rule
+// applied to a Kraken trace synthesises disconnects that never happened —
+// which, pinned into a golden, would become truth. Measured on the committed
+// slices: the 1000 ms rule fires 25 times on the quiet pair in 60 s and 5-7
+// times on BTC/USD, every one of them spurious.
+//
+// So the number now comes from `venue_traits(v).stale_gap_ms` (venue.hpp),
+// which is the same source of truth the metadata tag selects. Anvil's row IS
+// 1000 ms, so no committed golden moves; the constant simply stopped being
+// written here. `for_venue()` is how a caller that has read a trace asks for
+// the right one.
+//
+// The firmware half of this is stage B's — `kRxWatchdogMs` is untouched. This
+// is decision 2 (ARCHITECTURE §9, 2026-08-17) arriving in the harness first,
+// which is the cheapest place to find out whether the split clock was right.
 struct ReplayOptions {
-    double disconnect_gap_ms = 1000.0;
+    // 0 = calibrate from the trace's own liveness signal (the ruling's rule).
+    // A non-zero value is an explicit override and is what every committed
+    // golden passes, so no golden's meaning depends on the calibration.
+    double disconnect_gap_ms = 0.0;
 
     // Cap on frames processed (0 = whole trace). Used by `dc_ladder --at`.
     std::size_t max_frames = 0;
@@ -75,6 +112,15 @@ struct ReplayOptions {
     // committed golden. Nothing infers it: the capture tool does not record when
     // it stopped listening, so a caller that knows must say.
     double end_of_trace_silence_ms = 0.0;
+
+    // The M1 constant, for a caller that deliberately wants the pre-ruling
+    // behaviour — the committed goldens do, so that what they pin is a fixed
+    // rule rather than a calibration that could drift with a re-capture.
+    static ReplayOptions legacy_anvil() noexcept {
+        ReplayOptions o;
+        o.disconnect_gap_ms = venue_traits(Venue::Anvil).legacy_book_threshold_ms;
+        return o;
+    }
 };
 
 // One stale window, opened by a Gap and closed by the Snapshot that re-baselined
@@ -119,6 +165,11 @@ struct ReplayResult {
     depthcharge::DisplaySnapshot final_snapshot{};
     depthcharge::DisplaySnapshot first_stale_snapshot{};
     bool saw_stale = false;
+
+    // The threshold actually in force at the end of the run — the caller's
+    // override, or whatever the venue's liveness signal calibrated to. Reported
+    // so a tool never has to guess which of the two produced its episodes.
+    double threshold_ms = 0.0;
 
     std::int64_t first_rx_ns = 0;
     std::int64_t last_rx_ns = 0;

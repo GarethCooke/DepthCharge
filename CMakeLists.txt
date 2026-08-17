@@ -150,6 +150,8 @@ target_link_libraries(dc_engine_anvil_streaming
 # fork or a #ifdef (M3 brief, stage B: "same source, two link configs").
 add_library(dc_harness STATIC
   harness/src/trace.cpp
+  harness/src/trace_decoder.cpp
+  harness/src/trace_report.cpp
   harness/src/replay_driver.cpp
   harness/src/console_ladder.cpp)
 target_include_directories(dc_harness PUBLIC
@@ -332,6 +334,29 @@ add_test(NAME dc_ladder_depth27
 # harness/tsan.sh is the same binary with the sanitiser on; this keeps the
 # workload compiling and passing on every host build in between.
 add_test(NAME dc_channel_race COMMAND dc_tsan_workload 1)
+
+# --- the second venue's traces, read end to end (M4 stage A) ------------------
+# Before stage A, dc_replay could not read any of these: it rejected the
+# metadata header on the required `ticker`, and would then have rejected 61 of
+# the depth-25 slice's 1,599 records for carrying no string `type`. These four
+# tests are deliverable 2's provable end state — the reader dispatches to
+# Kraken's decoder, the decoder names every record, and the run exits clean.
+#
+# Only dc_replay, not dc_ladder: the ladder runs the replay DRIVER, which feeds
+# the Anvil adapter, and stage A ships Kraken's decoder as a classifier. The
+# driver refuses a non-Anvil trace loudly for that reason, and
+# dc_replay_kraken_refused_by_driver below pins the refusal.
+foreach(_k d10 d25 d100)
+  add_test(NAME dc_replay_kraken_btcusd_${_k}
+    COMMAND dc_replay
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_btcusd_${_k}_20260816.ndjson)
+endforeach()
+# The quiet pair, which is the only artefact in the repository containing a
+# nine-second healthy silence — deliverable 4's demonstration runs on this file.
+add_test(NAME dc_replay_kraken_quiet_pair
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260816.ndjson)
+
 
 # Explicit timeouts on the two targets that now run threads. A hand-off bug that
 # blocks the writer does not fail an assertion — it hangs — so the useful report
