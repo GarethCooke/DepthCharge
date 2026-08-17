@@ -91,7 +91,7 @@ void print_kraken_report(const std::string& path, const dc::harness::TraceStats&
     std::printf("            captured_at=%s\n", m.captured_at.c_str());
     std::printf("            url=%s\n", m.url.c_str());
     dc::harness::print_trace_findings(stdout, s, "");
-    std::printf("adapter    : none — stage A's Kraken decoder is a CLASSIFIER; "
+    std::printf("adapter     : none — stage A's Kraken decoder is a CLASSIFIER; "
                 "0 FeedEvents by design\n");
     std::printf("\nOK\n");
 }

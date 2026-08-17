@@ -62,8 +62,8 @@ from tracefile import (clock_of, is_book_event, is_liveness, is_trade,
 COUNTING_RULES = (
     ("any record arriving", None),
     ("LIVENESS signal -> GREY", lambda r: r.liveness),
-    ("BOOK AGE (book + trades)", lambda r: r.book_event),
-    ("BOOK AGE (book only)", lambda r: r.book_event and not r.trade),
+    ("BOOK SILENCE (book + trades)", lambda r: r.book_event),
+    ("BOOK SILENCE (book only)", lambda r: r.book_event and not r.trade),
 )
 
 # THE TWO DISTRIBUTIONS, AND WHY THE LABELS SHOUT (2026-08-17 ruling).
@@ -76,12 +76,24 @@ COUNTING_RULES = (
 #   LIVENESS  is the venue's declared liveness signal -- Anvil's `summary`,
 #             Kraken's `heartbeat`. It is the ONLY one that decides the grey,
 #             and `--threshold` is judged against it.
-#   BOOK AGE  is how long the book went without changing. **No threshold on it
-#             can be correct at any venue**: a quiet market and a silently dead
-#             subscription are identical on the wire. MINA/GBP was measured at
-#             25,843 ms of healthy book silence on a socket whose heartbeat kept
-#             936-1,042 ms time throughout. This is a number for the header, not
-#             a colour.
+#   BOOK SILENCE is how long the book went without changing. **No threshold on
+#             it can be correct at any venue**: a quiet market and a silently
+#             dead subscription are identical on the wire. MINA/GBP was measured
+#             at 25,843 ms of healthy book silence on a socket whose heartbeat
+#             kept 936-1,042 ms time throughout.
+#
+# **RENAMED FROM "BOOK AGE" AT M4 STAGE A2, AND THE RENAME IS THE POINT.** Stage
+# A called this row BOOK AGE on the strength of the ruling's "book-event silence
+# becomes age_ms". The follow-up sharpened the definition and the two parted
+# company: `age_ms` is the book's estimated QUEUING LAG, and it is explicitly
+# **not** time since the book last changed -- *a book that has not changed is not
+# old*. At MINA/GBP nobody traded and the displayed book was exactly correct
+# throughout 25,843 ms of this row's measurement. So the two quantities differ by
+# orders of magnitude and one of them was wearing the other's name, in the tool
+# this repository cites for its watchdog numbers. Book silence is market
+# information: it may be displayed, it must never drive a rendered state, and it
+# is not the age. The age is computed from the LIVENESS row, not from this one --
+# see `dc_harness/age_estimator.hpp`.
 THRESHOLD_RULE = "LIVENESS signal -> GREY"
 
 PERCENTILES = (50.0, 90.0, 99.0, 99.9)
@@ -92,7 +104,7 @@ class Rec(NamedTuple):
 
     rx_ns: int
     kind: str          # `book/update`, `trade`, `heartbeat`, ... — venue's spelling
-    book_event: bool   # reaches the book — AGE
+    book_event: bool   # reaches the book — BOOK SILENCE, which is not the age
     trade: bool        # a trade print rather than a resting-level change
     liveness: bool     # the venue's declared liveness signal — GREY
 
