@@ -37,7 +37,9 @@ against *stopped* and against *wrong*; it has no concept of *old*.
 - The number is rendered and **nothing branches on it** — an age that greys the panel would
   put a threshold back on a quantity the ruling removed one from.
 - `cmake --workflow --preset host-mingw`, green.
-- **Commit nothing.**
+- Nothing is committed until the `code-review` skill has been run against the diff and its
+  findings are fixed. *(The owner authorised the commit after that review; the split and
+  its verification are at the foot of this brief.)*
 
 ## Definition of done
 
@@ -56,7 +58,7 @@ against *stopped* and against *wrong*; it has no concept of *old*.
       arrival patterns whose true answer is known by construction, (ii) a test that pins
       the blind spot as a **known limit**, and (iii) a reported measurement over
       `_local/drain-120ms.ndjson` that is deliberately **not** committed as a golden.
-- [x] Green; session log appended; nothing committed.
+- [x] Green; session log appended; reviewed, fixed, and committed as six.
 
 ---
 
@@ -324,19 +326,40 @@ Not fixed, and named instead: `AgeText` duplicates `SecondsText`'s job
 (firmware/src/staleness.hpp). That file is superseded by this stage and stage B
 deletes it — merging them now would mean writing the same code twice.
 
-### Proposed commit split — REVIEW BEFORE ANYTHING IS COMMITTED
+### The commit split, as executed
 
-Six commits, each green at ctest, ordered so the type exists before the code that
-fills it and the goldens land with the behaviour they pin.
+Six commits, ordered so the type exists before the code that fills it and the
+goldens land with the behaviour they pin.
 
-| # | Files | Message |
-| --- | --- | --- |
-| **1** | `engine/include/depthcharge/display_snapshot.hpp` | `engine: DisplaySnapshot carries the book's age, in padding it already had` |
-| **2** | `harness/include/dc_harness/sample_window.hpp`, `liveness_clock.hpp` | `harness: one ring and one median rule, shared by the two clocks` |
-| **3** | `harness/include/dc_harness/age_estimator.hpp`, `replay_driver.{hpp,cpp}`, `console_ladder.cpp`, `dc_ladder_main.cpp`, `CMakeLists.txt` | `harness: the age meter -- a windowed deficit against a per-connection baseline` |
-| **4** | `harness/tests/test_age_estimator.cpp`, `test_replay_goldens.cpp`, `test_console_ladder.cpp` | `harness: pin the age arithmetic, the healthy floor, and the blind spot` |
-| **5** | `harness/src/trace_report.cpp`, `tools/gap_stats.py` | `tools: BOOK AGE was not the age -- rename the row to BOOK SILENCE` |
-| **6** | `ARCHITECTURE.md`, `ROADMAP.md`, `README.md`, `docs/DESIGN.html`, `docs/briefs/M4-triage-of-the-twelve.md`, `docs/briefs/M4-stage-A2-the-age-meter.md` | `docs: M4 triage and stage A2 -- the age meter, and what it cannot see` |
+| # | SHA | Files | Message |
+| --- | --- | --- | --- |
+| **1** | `52af6e0` | `engine/include/depthcharge/display_snapshot.hpp` | `engine: DisplaySnapshot carries the book's age, in padding it already had` |
+| **2** | `98957be` | `harness/include/dc_harness/sample_window.hpp`, `liveness_clock.hpp` | `harness: one ring and one median rule, shared by the two clocks` |
+| **3** | `abb25ab` | `harness/include/dc_harness/{age_estimator,replay_driver}.hpp`, `harness/src/{replay_driver,console_ladder,dc_ladder_main}.cpp` | `harness: the age meter -- a windowed deficit against a per-connection baseline` |
+| **4** | `9b7c675` | `harness/tests/{test_age_estimator,test_replay_goldens,test_console_ladder}.cpp`, `CMakeLists.txt` | `harness: pin the age arithmetic, the healthy floor, and the blind spot` |
+| **5** | `916c53a` | `harness/src/{trace_report,dc_replay_main}.cpp`, `tools/gap_stats.py` | `tools: BOOK AGE was not the age -- rename the row to BOOK SILENCE` |
+| **6** | `91c7a8d` | `ARCHITECTURE.md`, `ROADMAP.md`, `README.md`, `docs/DESIGN.html`, the two briefs, `harness/replay/NOTES.md` | `docs: M4 triage and stage A2 -- the age meter, and what it cannot see` |
+
+**`CMakeLists.txt` moved from 3 to 4 during the split, and the reason is the
+ordering rule itself:** it adds `test_age_estimator.cpp` to `dc_tests`, so a
+commit that carried the CMake entry without the file would not build. The two
+travel together.
+
+**"Green at every commit" was CHECKED rather than asserted** — 1 through 5 built
+and tested in a detached worktree of their own (**24/24 at each**), because the
+working tree passing at the end says nothing about the five states before it.
+Commit 6 is documentation only, so its build is commit 5's.
+
+**The first attempt at that check was itself wrong, and it is the more useful half
+of this note.** It ran `cmake --workflow` in the main directory while checking out
+commits in the worktree, so it rebuilt HEAD three times and reported three passes
+that meant nothing. A verification that does not touch the thing it claims to
+verify is this milestone's own recurring defect — *a measurement that answers a
+nearby question, read as answering the one that mattered* — and it is the same
+shape as a Kraken golden produced by the Anvil parser, which is the trap stage B
+inherits. The rerun was confirmed to be real before its result was believed:
+`CMAKE_HOME_DIRECTORY` in the worktree's cache points at the worktree, not at the
+repository.
 
 **Why 2 is separate from 3.** It is a pure extraction: `LivenessClock` keeps every
 number it had, and a reviewer should be able to check that claim without the new
