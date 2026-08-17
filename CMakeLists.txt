@@ -172,6 +172,14 @@ target_link_libraries(dc_replay PRIVATE dc_harness dc_engine_anvil dc_warnings)
 add_executable(dc_ladder harness/src/dc_ladder_main.cpp)
 target_link_libraries(dc_ladder PRIVATE dc_harness dc_engine_anvil dc_warnings Threads::Threads)
 
+# The record taxonomy of every committed trace, and its pin (M4 stage A).
+# It links a parser implementation only because dc_harness leaves
+# parse_anvil_frame unresolved for the replay driver; the taxonomy pass itself
+# never parses an Anvil frame — it reads the envelope and asks the venue's
+# decoder to name each record.
+add_executable(dc_taxonomy harness/src/dc_taxonomy_main.cpp)
+target_link_libraries(dc_taxonomy PRIVATE dc_harness dc_engine_anvil dc_warnings)
+
 add_executable(dc_tests
   harness/tests/dc_tests.cpp
   harness/tests/alloc_probe.cpp
@@ -357,6 +365,16 @@ add_test(NAME dc_replay_kraken_quiet_pair
   COMMAND dc_replay
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260816.ndjson)
 
+# The taxonomy pin, over EVERY committed trace, Anvil included. An unpinned
+# trace fails rather than skips (see dc_taxonomy_main.cpp): adding a committed
+# trace without recording its figures would otherwise leave a green test that
+# measures nothing about it.
+file(GLOB DC_COMMITTED_TRACES
+  ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_*.ndjson
+  ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_*.ndjson)
+add_test(NAME trace_taxonomy_selfcheck
+  COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES})
+set_tests_properties(trace_taxonomy_selfcheck PROPERTIES TIMEOUT 300)
 
 # Explicit timeouts on the two targets that now run threads. A hand-off bug that
 # blocks the writer does not fail an assertion — it hangs — so the useful report
