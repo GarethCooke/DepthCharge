@@ -528,6 +528,29 @@ mode arriving in a new place** — a measurement that answers a nearby question 
 answering the one that mattered. The difference this time is that the falsifying
 capture already existed, and the cost of checking was one command.
 
+### 2026-08-16 (late) · review pass before commit · the instrument shared the shape of its subject
+
+**The tool that measures a masking effect is a candidate for being masked by it.** The
+stale-re-entry counter was contaminated by the resyncs it exists to quantify:
+`Book.replace` cleared the levels but not the eviction history, so a price evicted
+before a snapshot could be counted as returning after one. **4 → 3**; the conclusion is
+unchanged (840/840, still MISSES), and the figure had already been written into an
+`ARCHITECTURE.md` §9 row, so it was corrected in all four places that quoted it.
+
+Third plausible-number-from-a-broken-instrument of the session, after the truncation
+column that discarded every level entering the top N and the `--verify` float shadow
+that skipped 92 real comparisons — and **the first where the bug shared the shape of the
+thing being measured**, which is why it survived a reading that caught the other two.
+
+**Checklist item for whoever writes the Binance detector at M5:** there the masking
+mechanism is a **scheduled** REST re-snapshot, so it is *constant rather than
+incidental*. Kraken's resyncs arrive when a socket happens to drop, and a capture can
+simply be taken without one; a scheduled re-snapshot cannot be avoided that way, so the
+detector has to account for it by construction rather than by choosing a clean window.
+Deliberately **not** promoted to a §9 row — it is one instance of a rule §9 already
+holds, and the general form (a trace containing the system's own healing events measures
+recovery, not the defect) is the row added earlier this evening.
+
 ---
 
 ## What M4's brief must carry

@@ -486,6 +486,12 @@ Candidates worth pricing when the time comes: bracketing continuity as a weaker
 oracle, a second independent implementation to differential-test against, or a
 periodic REST snapshot used as a checkpoint the streamed book must reproduce.
 
+One checklist item for whoever builds that detector, from this session's own review pass
+(stage-0 brief session log, 2026-08-16 late): **Binance's masking mechanism is a
+*scheduled* REST re-snapshot, so it is constant rather than incidental** — a clean window
+cannot simply be chosen the way it can here, and the detector must account for it by
+construction.
+
 **Only the last clause of the recipe transfers, and it transfers unchanged:**
 *whatever the oracle is, prove the trace catches a deliberately broken
 implementation before pinning it.* The depth heuristic does not transfer, the

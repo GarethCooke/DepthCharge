@@ -1,5 +1,10 @@
 # M4 stage 0 — decisions taken, and what M4 inherits
 
+> **Status: chat-seat record, not a work order.** The four M4 items below are inlined in
+> `M4-stage-0-price-the-kraken-wire.md` under "What M4's brief must carry" — that section
+> is canonical for them. This file is kept for the reasoning and its provenance. Where the
+> two disagree, the brief wins.
+
 *2026-08-16, from the planning seat. Stage 0 executed and green; nothing committed.*
 
 *Corrected 2026-08-16 (late): item 3 below is **superseded in place**, per the §9 convention —
