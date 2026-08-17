@@ -14,7 +14,7 @@ this trace valid" in a project whose premise is that replay files are ground
 truth. That was the C++ half. This is the Python half, before it can happen
 again across two venues.
 
-The format, set at M0 and unchanged:
+The format, set at M0 and extended once, at M4 stage A:
 
   line 1  : metadata object
   line 2+ : {"rx_ns": <ns>, "frame": <verbatim JSON>}
@@ -34,6 +34,22 @@ significant trailing zeros (``0.50930100``), which do not survive
 ``json.loads`` -> ``json.dumps``, so a byte count taken from a re-serialised
 frame is a measurement of Python's float repr and not of the venue.
 
+**The metadata contract is venue-conditional, and this is the Python half of
+the rule** (the C++ half is ``harness/include/dc_harness/venue.hpp``; the prose
+statement both share is ``harness/replay/NOTES.md``). Three fields are required
+of every venue -- ``captured_at``, ``url``, ``tool_version`` -- and what
+identifies the instrument is not portable: Anvil has an integer ``ticker``,
+Kraken a string ``symbol``. ``venue`` itself is OPTIONAL and an absent tag reads
+as ``anvil``, which is what makes the tag additive and what keeps the four
+committed Anvil traces byte-identical: they predate it.
+
+``clock`` names which monotonic clock stamped ``rx_ns``
+(``monotonic_ns`` at Anvil, ``perf_counter_ns`` at Kraken -- 15.0 ms steps
+against 0.0002 ms on this box). An absent ``clock`` reads back as
+``undeclared`` rather than being inferred from the venue: the inference is sound
+today, and a sound inference nobody re-checks is how this project has been wrong
+before. Compare gaps across two traces only when their clocks agree.
+
 Python 3 stdlib only; lives in tools/.
 """
 from __future__ import annotations
@@ -48,6 +64,139 @@ FRAME_KEY = '"frame": '
 
 # The marker capture_kraken.py puts on a line it sent rather than received.
 TX_KEY = '"dir": "tx"'
+
+# --- the venue-conditional metadata contract (M4 stage A) --------------------
+# One table, mirroring kVenueTable in harness/include/dc_harness/venue.hpp.
+# Adding a venue means adding a row in BOTH, and `check_meta` below is what
+# makes a Python tool notice if only one of them was updated.
+DEFAULT_VENUE = "anvil"
+COMMON_REQUIRED = ("captured_at", "url", "tool_version")
+VENUES: dict[str, tuple[str, ...]] = {
+    "anvil": ("ticker",),
+    "kraken": ("symbol",),
+}
+UNDECLARED_CLOCK = "undeclared"
+
+
+def venue_of(meta: dict) -> str:
+    """The trace's venue. An absent tag is `anvil` -- that is the rule."""
+    return meta.get("venue") or DEFAULT_VENUE
+
+
+def is_book_event(venue: str, frame) -> bool:
+    """Does this frame reach the book? Mirrors the C++ decoders' answer.
+
+    Anvil: a full replace (`snapshot`/`book`) or a `trade`. NOT `summary`, which
+    is cross-ticker roster data the adapter tolerates and ignores.
+    Kraken: anything on the `book` channel.
+    """
+    if not isinstance(frame, dict):
+        return False
+    if venue == "anvil":
+        return frame.get("type") in ("snapshot", "book", "trade")
+    return frame.get("channel") == "book"
+
+
+def is_snapshot(venue: str, frame) -> bool:
+    """Does this frame REPLACE the book rather than amend it?"""
+    if not isinstance(frame, dict):
+        return False
+    if venue == "anvil":
+        return frame.get("type") == "snapshot"
+    return frame.get("channel") == "book" and frame.get("type") == "snapshot"
+
+
+def is_trade(venue: str, frame) -> bool:
+    """Is this a trade print rather than a book change?
+
+    Anvil interleaves trades with book frames on one socket, so "reaches the
+    book" and "changes a resting level" are different questions there and the
+    watchdog literature distinguishes them (`gap_stats.py`'s two book-oriented
+    counting rules). Kraken puts trades on their own `trade` channel, which
+    DepthCharge does not subscribe to -- so this is always False on a book
+    capture, and the two counting rules coincide. That coincidence is a property
+    of the subscription, not of the venue, which is why it is spelled out rather
+    than assumed.
+    """
+    if not isinstance(frame, dict):
+        return False
+    if venue == "anvil":
+        return frame.get("type") == "trade"
+    return frame.get("channel") == "trade"
+
+
+def is_liveness(venue: str, frame) -> bool:
+    """Is this the venue's DECLARED LIVENESS SIGNAL?
+
+    Anvil's `summary`, Kraken's `heartbeat` -- the record whose arrival proves
+    the feed is alive, and (since the 2026-08-17 ruling, ARCHITECTURE.md §9) the
+    only clock the panel's grey state is armed on. Mirrors
+    `harness/include/dc_harness/venue.hpp`'s `liveness_signal` field; if the two
+    disagree, the C++ reader and the Python tools are measuring different things
+    about the same file.
+
+    The distinction from `is_book_event` is the whole ruling: `summary` is roster
+    data the adapter ignores, so it is NOT a book event -- and that is exactly
+    what makes it usable here. It proves the server is alive without pretending
+    the book moved.
+    """
+    if not isinstance(frame, dict):
+        return False
+    if venue == "anvil":
+        return frame.get("type") == "summary"
+    return frame.get("channel") == "heartbeat"
+
+
+def record_kind(venue: str, frame, is_tx: bool = False) -> str:
+    """A short label for the record's kind, agreeing with the C++ decoders.
+
+    The strings are the ones `harness/include/dc_harness/trace_decoder.hpp` and
+    `kraken_frame_economics.py` already produce -- `book/update`, `heartbeat`,
+    `ack:subscribe`, `tx:subscribe` -- so a histogram printed by a Python tool
+    and one printed by `dc_taxonomy` are counting the same buckets. At Anvil the
+    kind is the bare wire `type`, unchanged.
+    """
+    if not isinstance(frame, dict):
+        return "?"
+    if venue == "anvil":
+        return frame.get("type") or "?"
+    channel = frame.get("channel")
+    if channel is not None:
+        kind = frame.get("type")
+        return f"{channel}/{kind}" if kind else str(channel)
+    method = frame.get("method")
+    if method is not None:
+        if is_tx:
+            return "tx:" + str(method)
+        refused = frame.get("success") is False or frame.get("error") is not None
+        return "ack:" + str(method) + (" REFUSED" if refused else "")
+    return "error" if frame.get("error") is not None else "?"
+
+
+def clock_of(meta: dict) -> str:
+    """Which clock stamped rx_ns, or `undeclared`. Never inferred."""
+    return meta.get("clock") or UNDECLARED_CLOCK
+
+
+def check_meta(meta: dict) -> str:
+    """Validate the header against its venue's contract; return the venue.
+
+    Raises ValueError with the same distinction the C++ reader draws: a venue
+    this tooling does not know is a DIFFERENT failure from a malformed header,
+    and only the second is a bug in the file.
+    """
+    venue = venue_of(meta)
+    if venue not in VENUES:
+        raise ValueError(
+            f"capture declares venue {venue!r}, which these tools do not know how to "
+            f"read (the header itself looks well-formed). Known: "
+            f"{', '.join(sorted(VENUES))}")
+    missing = [k for k in COMMON_REQUIRED + VENUES[venue] if k not in meta]
+    if missing:
+        raise ValueError(
+            f"metadata line missing a required field for venue {venue!r}: "
+            f"{', '.join(missing)}")
+    return venue
 
 
 class Record(NamedTuple):
@@ -98,10 +247,21 @@ def read_capture(path, *, skip_tx: bool = True):
             yield Record(raw, frame, rx_ns, is_tx, lineno)
 
 
-def read_meta(path) -> dict:
-    """Line 1: the capture's metadata header."""
+def read_meta(path, *, validate: bool = False) -> dict:
+    """Line 1: the capture's metadata header.
+
+    `validate` is opt-in rather than always-on because the enforcement point for
+    "is this a valid trace" is the C++ reader (ARCHITECTURE §9, 2026-08-07: one
+    definition, and it is TraceReader::next). These tools MEASURE captures,
+    including local scratch ones written by the probes, and a measurement tool
+    that refuses to open a file it can read perfectly well would be its own kind
+    of wrong. A caller that is about to make a claim about a venue says so.
+    """
     with open(path, encoding="utf-8") as fh:
         line = fh.readline()
     if not line.strip():
         raise ValueError("empty trace (no capture header)")
-    return json.loads(line)
+    meta = json.loads(line)
+    if validate:
+        check_meta(meta)
+    return meta

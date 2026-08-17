@@ -43,7 +43,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from tracefile import read_capture
+from tracefile import check_meta, read_capture, read_meta
 
 # The envelope a delta frame would still have to carry, charged in full and at
 # the widest `seq` rather than the ~6 digits Anvil actually sends.
@@ -53,8 +53,45 @@ SIDES = ("bids", "asks")
 
 
 def wire_bytes(frame: dict) -> int:
-    """Length of a frame as Anvil sends it: compact JSON, UTF-8, no capture wrapper."""
+    """Length of a frame as Anvil sends it: compact JSON, UTF-8, no capture wrapper.
+
+    THIS IS A MEASUREMENT ONLY AT ANVIL, and `require_anvil()` below is what keeps
+    it one. Re-serialising the PARSED frame recovers the wire exactly because
+    Anvil quotes every price and quantity as a JSON string, so `json.loads` ->
+    `json.dumps` is byte-exact -- which is not an assumption, it is this tool's
+    own `--verify` check #1.
+
+    At Kraken it is false and false quietly. Prices and quantities are BARE JSON
+    numbers with significant trailing zeros (`0.00005100`), which Python reprs as
+    `5.1e-05`. Measured over the committed slices at the M4 stage A review: only
+    51.0% of the depth-25 frames survive the round trip byte-for-byte and the
+    total comes out 5,403 B light (-1.73%); on the quiet pair, 72.8% and -3.49%.
+    At Anvil, 1,406 / 1,406 and +0 B. So pointed at the wrong venue this function
+    returns a measurement of Python's float formatting, printed in a column
+    headed "bytes on the wire".
+    """
     return len(json.dumps(frame, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def require_anvil(trace: Path) -> None:
+    """Refuse a trace this tool cannot measure, loudly and at the front door.
+
+    Added at the M4 stage A review, 2026-08-17. Before it, a Kraken capture
+    produced a complete, plausible byte table and exit 0 -- 1,598 frames,
+    307,805 bytes -- with the only tell being a closing "no `book` frames --
+    nothing to price", which reads as *this capture has no book data* rather
+    than *this is the wrong tool*. The venue tag has existed since stage A and
+    the Kraken counterpart (`kraken_frame_economics.py`, which measures
+    `len(rec.raw)` and is correct at both) has existed since stage 0; nothing was
+    reading either.
+    """
+    meta = read_meta(trace)
+    venue = check_meta(meta)          # also catches a malformed or unknown header
+    if venue != "anvil":
+        sys.exit(f"{trace}: this is a {venue} capture, and this tool prices ANVIL "
+                 f"frames by re-serialising them -- which is byte-exact only where "
+                 f"the venue quotes its numbers as strings. Use "
+                 f"tools/kraken_frame_economics.py, which measures the raw wire text.")
 
 
 def levels(frame: dict, side: str) -> dict[str, tuple]:
@@ -102,6 +139,7 @@ def frames_in(trace: Path):
     and the Kraken one cannot drift about what a capture line is. This wrapper
     keeps the two-tuple every call site here already expects.
     """
+    require_anvil(trace)
     for rec in read_capture(trace):
         yield rec.raw, rec.frame
 

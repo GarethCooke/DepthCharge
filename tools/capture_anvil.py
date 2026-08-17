@@ -8,8 +8,14 @@ harness.
 
 Output format (matches the M0 brief):
 
-  line 1  : metadata object  {captured_at, url, ticker, tool_version, ...}
+  line 1  : metadata object  {captured_at, url, venue, ticker, tool_version, clock, ...}
   line 2+ : one per received frame  {"rx_ns": <monotonic-ns>, "frame": <verbatim JSON>}
+
+``venue`` and ``clock`` arrived at M4 stage A and are additive -- an absent
+``venue`` reads as ``anvil`` and an absent ``clock`` as undeclared, so the four
+traces committed before 2026-08-17 did not move by a byte. The shared rule, in
+one place for both languages, is ``tools/tracefile.py``; the prose statement of
+the contract is ``harness/replay/NOTES.md``.
 
 Frames are stored **verbatim**: the exact JSON text the server sent is spliced
 into the ``frame`` field with no re-serialisation, so key order and number
@@ -57,6 +63,22 @@ TOOL_VERSION = "0.1.0"
 # what the server sees.
 USER_AGENT = "depthcharge-capture/" + TOOL_VERSION
 
+# The venue tag (M4 stage A). See tracefile.VENUES for the shared rule.
+VENUE = "anvil"
+
+# rx_ns is stamped from monotonic_ns and DELIBERATELY STAYS THERE, even though
+# capture_kraken.py measured perf_counter_ns to be four orders of magnitude
+# finer on this box. Changing it would make a new Anvil capture's gap
+# distribution incomparable with the four committed ones, which are the baseline
+# every Anvil cadence figure in this repository is measured against — including
+# the 391 ms worst healthy gap that `kRxWatchdogMs` is derived from. The
+# coarseness is a known +/-16 ms and is recorded in harness/replay/NOTES.md;
+# Anvil's gaps are ~70 ms median, so it is a small error on a large quantity.
+# At Kraken the p50 book gap is 0.1 ms and it would have been the whole
+# measurement, which is why that tool chose differently.
+CAPTURE_CLOCK = time.monotonic_ns
+CAPTURE_CLOCK_NAME = "monotonic_ns"
+
 
 # -- capture orchestration ----------------------------------------------------
 
@@ -64,7 +86,12 @@ USER_AGENT = "depthcharge-capture/" + TOOL_VERSION
 def _connect_with_origin_probe(url: str, origin: str | None, timeout: float):
     """Connect, transparently retrying with a nominated Origin if the server
     rejects an Origin-less upgrade. Returns (client, effective_origin)."""
-    client = WsClient(url, origin=origin, timeout=timeout, user_agent=USER_AGENT)
+    # The clock is passed explicitly, not left to wsclient's default, so the
+    # `clock` field the metadata now declares is a statement about THIS tool
+    # rather than about another file's default argument. Same value, so the
+    # stage-0 byte-identity check still holds.
+    client = WsClient(url, origin=origin, timeout=timeout, user_agent=USER_AGENT,
+                      clock=CAPTURE_CLOCK)
     try:
         client.connect()
         return client, origin
@@ -78,7 +105,8 @@ def _connect_with_origin_probe(url: str, origin: str | None, timeout: float):
             f"[capture] Origin-less upgrade rejected ({exc.status_line}); "
             f"retrying with Origin: {fallback}\n"
         )
-        client = WsClient(url, origin=fallback, timeout=timeout, user_agent=USER_AGENT)
+        client = WsClient(url, origin=fallback, timeout=timeout, user_agent=USER_AGENT,
+                          clock=CAPTURE_CLOCK)
         client.connect()
         return client, fallback
 
@@ -122,11 +150,25 @@ def capture(args) -> int:
         elif args.origin is None:
             origin_note = "server accepted upgrade with no Origin header"
 
+        # `venue` and `clock` are M4 stage A additions and are ADDITIVE: the
+        # reader treats an absent `venue` as "anvil" and an absent `clock` as
+        # "undeclared", so the four traces committed before 2026-08-17 are
+        # unchanged and still valid. New captures declare both.
+        #
+        # The clock is declared even though this tool has always used
+        # monotonic_ns, because the *other* capture tool does not: Kraken's uses
+        # perf_counter_ns, and on this box the two differ by four orders of
+        # magnitude in resolution (15.0 ms vs 0.0002 ms). A gap distribution is
+        # only readable beside the clock that produced it, and "we know which
+        # tool wrote it" is exactly the sound inference that stops being sound
+        # without anyone noticing.
         meta = {
             "captured_at": captured_at,
             "url": url,
+            "venue": VENUE,
             "ticker": args.ticker,
             "tool_version": TOOL_VERSION,
+            "clock": CAPTURE_CLOCK_NAME,
             "capture_mode": "reconnect" if cycles > 1 else "baseline",
             "cycles": cycles,
             "origin_sent": effective_origin,
