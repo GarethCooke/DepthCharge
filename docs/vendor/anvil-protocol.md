@@ -3,9 +3,12 @@ DepthCharge vendored snapshot of Anvil's wire protocol.
 
   Wire version : 1
   Source       : Anvil repo, PROTOCOL.md
-  Source commit: 04db61225aad7c471c7c6b98def99f93f5a8d79f  (2026-08-16)
-  Vendored on  : 2026-08-16  (B1 — re-pinned the same evening, see below)
-  Supersedes   : b4d31c207b16627f19f22209c2b4a63de904f4de  (2026-08-16),
+  Source commit: 4801ed8d8b09b62ec4fcee8e68280f16b3c4780c  (2026-08-17)
+  Vendored on  : 2026-08-17  (M4 stage A close-out — the refresh that closes
+                 ARCHITECTURE.md §9's pending-refresh item)
+  Supersedes   : 04db61225aad7c471c7c6b98def99f93f5a8d79f  (2026-08-16),
+                 vendored 2026-08-16 at B1
+                 b4d31c207b16627f19f22209c2b4a63de904f4de  (2026-08-16),
                  vendored hours earlier at the A7 integration
                  e8d313f2dc71bc39adeb66c0e30a35cdfdcaa13e  (2026-07-26),
                  vendored 2026-08-16 at the M3 close-out
@@ -16,162 +19,53 @@ Canonical source remains the Anvil repository; this pinned copy records exactly
 what DepthCharge was built against. Do not edit here — re-vendor from Anvil to
 update, and bump the commit/date above. See ARCHITECTURE.md "Boundaries".
 
-WHAT MOVED IN THIS RE-PIN. Unlike the last one, this is not documentation only:
-the wire gained a parameter and DepthCharge now sends it. Anvil's hand-back is
-`docs/anvil-handback-2026-08-16.md`, answering `docs/anvil-handover-2026-08-16.md`.
+PENDING REFRESH IS CLOSED BY THIS RE-PIN. The previous snapshot carried a §4
+keepalive clause — "a genuinely idle book produces no frames" — that DepthCharge
+measured to be false and flagged on 2026-08-17, while the staleness ruling of the
+same day was already depending on the behaviour the clause denied. That is now
+resolved at the source rather than annotated here: Anvil corrected the clause in
+`25ade0e` and added the guarantee in the same commit, then cross-referenced it in
+`4801ed8`. **DepthCharge no longer relies on measured behaviour its own vendored
+contract contradicts.** ARCHITECTURE.md §9's item 8 is closed with this SHA.
 
-  §2 `GET /api/book`  `depth` is now honoured. It was previously ACCEPTED AND
-                      SILENTLY IGNORED — which corrects a premise in DepthCharge's
-                      own ask, where the existing parameter was cited as proof
-                      that "the name, concept and validation already exist". The
-                      name existed; the validation did not. Both routes now share
-                      one parser.
-  §3 `depth`          NEW, and the reason this file moved: a per-socket book
-                      depth on `/ws`. Absent or 0 is every published level, so
-                      the web client is untouched.
-  §3 Keepalive        NEW. Client pings are always answered, and the pong is
-                      queued behind whatever is already waiting for that socket.
-                      See the note below — this closes an open DepthCharge item.
-  §4 Slow consumers   NEW. The server queues, it does not shed; unbounded in v1.
-                      This closes the note this file has been carrying since
-                      2026-08-11 — see below.
+WHAT MOVED IN THIS RE-PIN, and it is the reason stage A's ruling is now contract
+rather than observation. Two Anvil commits, +48 / -4 lines, documentation only —
+no wire change, no client change.
 
-WHAT MOVES IN engine/ WITH IT: nothing, and that was the design goal of the ask.
-The adapter already accepts 83-126 levels a side and truncates above
-`kMaxSnapshotLevels` (256) with the truncation counted, so a 30-level book is
-trivially in contract. No field, type, name, unit, frame shape or handshake
-behaviour changed; `depth` only ever truncates a prefix of an already-sorted
-ladder. What DID change is one firmware constant (`kAnvilPath` gains
-`&depth=27`) and one new committed trace.
+  §3 Keepalive       CORRECTED. The false sentence is gone. Where it said the
+  (`25ade0e`)        server sends no unsolicited liveness traffic and a quiet
+                     socket must not be read as dead, it now says the server
+                     sends no WebSocket PING and no dedicated heartbeat FRAME —
+                     and that what it does send unprompted is the data stream
+                     itself, on fixed timers: a `book` frame per subscribed
+                     ticker at ~14 Hz and a `summary` on the `ANVIL_SUMMARY_HZ`
+                     cadence, "both continue on a completely idle book".
+                     That second half also confirms, in the contract, the
+                     12.6 book-frames/s DepthCharge measured against a feeder-off
+                     server (`harness/replay/anvil_101_feederoff_20260817.ndjson`).
 
-NOTE (B1, 2026-08-16) — A SEMANTIC WIRE CHANGE INSIDE WIRE VERSION 1, WITH NO
-VERSION BUMP, AND DEPTHCHARGE IS UNAFFECTED — CHECKED, NOT ASSUMED.
+  §3.5 `summary`     NEW GUARANTEE, and it is the one the staleness ruling rests
+  (`25ade0e`)        on: emission is timer-driven, not activity-driven, stated as
+                     a promise rather than an observation — with the interval
+                     EXPLICITLY EXCLUDED from it. Anvil's own wording:
+                     "A client that needs a staleness threshold must derive it
+                     from the cadence it observes on the connection it is using,
+                     not from a number read out of this document."
+                     That is DepthCharge's self-calibrating threshold
+                     (`liveness_clock.hpp`) arriving as a contract requirement.
+                     The section also now documents global coalescing (a lagging
+                     broadcaster shows as a lower RATE, never a gap), that a frame
+                     is queued rather than dropped for a slow socket, that cadence
+                     is a liveness signal and NOT a freshness signal, and the one
+                     unexplained 2 min 56 s counterexample of 2026-08-16 (A2b).
 
-The `summary` row's `last` was the **book mid** `(bestBid+bestAsk)/2`; it is now
-the ticker's **last traded price** (Anvil `864ee2f`, backlog B1). The wire SHAPE
-is unchanged — same key, same JSON *string* type, same `""` sentinel — so §1's
-version does not bump. Only the meaning moved: `""` now means *this ticker has
-not traded yet* rather than *the book is empty*, and once set the value
-**persists after the book empties**.
+  §4                 Cross-reference added: absence of frames is a separate
+  (`4801ed8`)        signal from lateness of frames.
 
-Anvil's own note says the clients that must care are those that "reasoned about
-it as a mid — deriving a spread from it, or assuming a price exists whenever the
-book is two-sided". **DepthCharge does neither, and the reason is structural
-rather than lucky:** `AnvilAdapter` files `summary` under
-`FrameKind::Summary -> ++stats_.summary_ignored` and returns
-(`anvil_adapter.hpp`), so no field of a summary frame has ever reached the book,
-the ladder or the panel. The one thing this project *does* derive from `summary`
-is its **arrival count as a 2 Hz clock** (`staleness.hpp`), and B1 changes a
-value, not a cadence. So: no engine change, no firmware change, no golden moves,
-and the committed traces stay valid.
-
-**Two things to carry forward anyway.** (1) This is the first change Anvil has
-made to the wire's *meaning* without changing its *shape*, which is precisely the
-class a schema check cannot catch and a re-pin can — the argument for re-vendoring
-on a schedule, made again eight hours after the last time this header made it.
-(2) M7's board mode is the milestone that will finally read `summary`, and it
-should read `last` as a **traded price with a persistence rule**, not as a mid;
-a board built on the old meaning would show a stale-looking price on an empty
-book and be right to.
-
-NOTE (A7, 2026-08-16) — DEPTH IS SERVED IN TIERS, AND THIS IS THE ONE CONTRACT
-FACT A READER OF §3 MUST NOT SKIM. A request rounds **UP** to the next supported
-value — 1,2,3,5,8,10,15,20,30,40,50,75,100,150,200,300,500,1000, then unlimited
-— and never down, so a client is guaranteed at least what it asked for and must
-truncate locally for an exact count. **DepthCharge asks for 27 and is served 30.**
-The tiering is not in DepthCharge's ask; it came out of Anvil's own review, and
-the reason is sound: `depth` arrives from an unauthenticated query string, and
-free-form depth would have cost the broadcaster one serialisation per distinct
-depth in use, per ticker, per tick. Tiering bounds that by a constant.
-
-Measured on this side rather than taken on trust, because the ask's whole lesson
-was that a nearby measurement gets read as answering the question that mattered.
-`harness/replay/anvil_101_depth27_20260816.ndjson` — 90 s, 1,399 frames, priced
-by `tools/anvil_frame_economics.py`:
-
-    book frame mean   8,428 B  ->  2,471 B   (Anvil's deployed figure: 2,476 B)
-    levels per frame  ~205     ->  60.0      (30 a side — the tier, confirmed)
-    90 s of wire      10.4 MB  ->  2.84 MB   = 27.3% of the 2026-08-09 baseline
-    sustained         112.6    ->  30.8 KiB/s
-
-against the 23.6 h soak's worst measured hour of 56 KiB/s: **1.8x headroom where
-there was 0.5x.** DepthCharge's own pre-measurement predicted 27.8%; this is
-27.3%. The tier's cost is real and worth stating precisely because Anvil sized it
-as "a few percent": 30 served against 27 rendered is **9.7% of book bytes** the
-panel never draws.
-
-NOTE (M3, 2026-08-11) — CLOSED 2026-08-16 BY §4 "Slow consumers". This header
-used to carry, at length, what the deployed server does to a slow consumer —
-**it queues, without bound** — precisely because §3 and §4 did not say so. They
-say so now, in Anvil's own words, with DepthCharge's measured figures cited in
-the text: every frame kind thinned by the same fraction, lag rising linearly to
-111 s over 150 s with no plateau, ~12.4 MB implied for one socket. The client
-rule DepthCharge asked for is now contract rather than folklore: **measure
-freshness against your own clock, never infer it from message rate.** The two
-consequences that outlive this pin are unchanged and still binding on M4/M5:
-(1) that rule itself, and (2) this venue is lossless-but-stale ONLY because
-§3.1/§3.2 are idempotent full replaces — the delta feed DepthCharge is still
-asking for (backlog A1) would make the same queue lossy, so A1 and A3 part 2 have
-to be answered together. Anvil's hand-back agrees and goes further: it warns that
-if A3 part 2 is resolved by DROPPING `book` frames, end-to-end gap detection
-breaks — benign under full replaces, fatal under deltas — so **A3 must be
-decided before A1**, not alongside it. Bounding the queue remains open (A3 pt 2).
-
-NOTE (A2, 2026-08-16) — THE PONG ORDERING IS MEASURED NOW, NOT READ FROM SOURCE,
-and DepthCharge's D5 instrument rests on it. §3 Keepalive states that a client
-ping is always answered and that the pong is queued behind whatever is already
-waiting for that socket. DepthCharge had accepted that from reading Anvil's
-vendored Crow and had recorded, in ROADMAP D5, that it was "never captured under
-induced backpressure — read the number as evidence rather than as a guarantee".
-It has now been captured: Anvil's `tests/tools/pong_ordering_probe.py` stops
-reading until frames back up in the send queue, then sends one ping and reports
-the pong's POSITION in the byte stream rather than its RTT — because a slow
-reader inflates the round-trip whether or not the server reordered anything, so
-timing alone cannot separate a server-side queue from a client-side one. Result:
-425,890 bytes drained as 149 frames, **the pong at index 148 — last, with zero
-frames after it.** Read it as a guarantee. Two things would still silently break
-it and are "please don't change" rather than defects: a ping arriving after a
-two-way close handshake is never ponged, and the behaviour depends on
-`max_payload` staying default with `CROW_ENFORCE_WS_SPEC` undefined. §3 now says
-to re-run the probe on a Crow upgrade rather than assume it survived.
-
-NOTE (M0, 2026-07-23) — CLOSED. This header used to say that §1/§4's "monotonic
-seq" was not what the deployed server does, the wire `seq` being a single global
-counter that is non-monotonic within one ticker's subsequence. **Anvil fixed the
-document on 2026-07-26** (`e8d313f`, brief:
-`Anvil/docs/briefs/anvil-protocol-seq-reconciliation.md`, raised by this finding)
-and the text below now says it directly, in §1 and §4, going further than the ask:
-§4 additionally states that ring-overflow loss is not signalled on the wire at all
-in v1. The correction stopped being DepthCharge's to carry three weeks before the
-2026-08-16 re-pin; that it sat here unnoticed is the argument for re-vendoring on
-a schedule rather than on a symptom. Background: `harness/replay/NOTES.md`.
-
-NOTE (M3, 2026-08-09) — **WITHDRAWN 2026-08-11.** This header used to assert that
-the deployed server sheds to a slow consumer — `book` frames coalesced per socket,
-a slow consumer receiving proportionally fewer messages at an unchanged inter-frame
-cadence rather than a queue of stale ones. That conclusion is retracted
-(ARCHITECTURE §9, 2026-08-11). It rested on a rate-and-gap measurement, **and a
-measurement of rate or of inter-message gap cannot distinguish a shed stream from a
-queued one.** The numbers under it (16.95/s at full drain, 8.32/s at a 120 ms
-drain, 4.01/s at 250 ms) are all still true; the sentence written under them was
-not. Anvil's §4 now carries the correct version, and its own backlog retires the
-bullet DepthCharge had put there — with the record of what it claimed, when it was
-withdrawn and why, rather than by deletion. It also names the distinction the
-original conflated: coalescing DOES exist, but it is the ~14 Hz book tick, which is
-upstream and global, not per socket.
-
-NOTE (M3, 2026-08-10) — CLOSED 2026-08-15, client-side, and Anvil is exonerated.
-This header used to hold open a single wire-level hypothesis for the board's
-~1,281 parse rejects in the first ~60 s of each connect: §1 says "one complete JSON
-object each" per frame but does not say *unfragmented*, and a capture cannot see
-WebSocket-level fragmentation because the capture tool's library reassembles it
-first. The M3 transport rewrite settled it without needing to know: DepthCharge's
-own client reads the FIN bit off the wire (the old library's reassembler could not,
-and published each fragment separately for the parser to reject), and a day-long
-soak on the rewritten client reports **zero `SPLIT@` rejects and a clean parser**.
-Nothing here becomes a protocol claim. Detail: `harness/replay/NOTES.md` "M3
-addendum — the connect burst", and
-`docs/briefs/M3-transport-own-the-websocket-client.md`.
+Three DepthCharge measurements appear in the new text, contributed through
+`docs/anvil-handover-2026-08-16.md` and the stage A findings: the 62-frames-over-
+31 s idle proof, the global-coalescing consequence, and the A2b counterexample as
+a bound a client must size against.
 -->
 
 # Anvil Demo — Wire Protocol
@@ -505,9 +399,16 @@ sockets connect.
 
 #### Keepalive — client pings are answered, and they measure stream freshness
 
-**The server never initiates a ping, a heartbeat, or any other unsolicited liveness
-traffic in v1.** A client must not wait for one, and must not treat a quiet socket as a
-dead one — a genuinely idle book produces no frames.
+**The server never initiates a WebSocket ping, and there is no dedicated heartbeat frame
+in v1.** A client that waits for either waits forever.
+
+What the server does send unprompted is the **data stream itself, on fixed timers that do
+not depend on order flow**: one `book` frame per subscribed ticker on the ~14 Hz publish
+tick, and one `summary` frame on the `ANVIL_SUMMARY_HZ` cadence ([§3.5](#35-summary)).
+Both continue on a completely idle book — one with nothing resting, nothing arriving and
+nothing trading — because the engine thread's publish deadlines are timers, not activity
+hooks. A quiet socket is therefore **not** the normal appearance of a quiet market; see
+[§3.5](#35-summary) for what may and may not be concluded from silence.
 
 Client-initiated pings are always answered:
 
@@ -668,6 +569,41 @@ the client's roster view — never a delta.
 [`GET /api/summary`](#get-apisummary) returns the same rows without the `type`/`seq`
 envelope, for the first paint before the stream opens.
 
+**Emission is timer-driven, not activity-driven — this part is a guarantee.** `summary`
+is published by the engine thread on a fixed deadline (`EngineHarness::run` →
+`publish_summary`), checked every loop iteration alongside the book deadline and reached
+by the inbound queue's `wait_until` timeout, so it fires whether or not a message ever
+arrives. Order flow determines the *contents*, never the *timing*: an idle book — nothing
+resting, nothing arriving, nothing trading — keeps publishing, and each publish stamps a
+fresh `seq`, so consecutive frames differ in `seq` even when the roster does not. Measured
+with the feeder stopped against a static book: 62 consecutive frames over 31 s of zero
+order flow, `tickers` bodies byte-identical throughout; an empty, never-traded book gives
+the same with all-zero rows.
+
+**The interval is not part of that guarantee.** It is operator configuration
+(`ANVIL_SUMMARY_HZ`), tunable per deployment, and is deliberately not stated here as a
+value a client may rely on. What is promised is that frames keep coming when nothing is
+happening. **A client that needs a staleness threshold must derive it from the cadence it
+observes on the connection it is using**, not from a number read out of this document.
+
+Three further properties bear on any use of this frame as a liveness signal:
+
+- **Coalescing is global, never per socket.** If the broadcaster falls behind the publish
+  cadence it emits only the latest roster, so a client sees a *lower rate* of frames
+  rather than a gap it could detect. A coalesced summary is still a live signal.
+- **A frame is never dropped for one slow socket** — it is queued behind that socket's
+  backlog ([§4](#4-reconnect--idempotency)). Arrival therefore proves the server was
+  alive when the frame was *generated*, not that it is fresh: on a backlogged socket a
+  `summary` can arrive minutes after its contents were true. **Cadence is a liveness
+  signal, not a freshness signal** — freshness still requires a client ping timed
+  against your own clock ([§4](#slow-consumers--the-server-queues-it-does-not-shed)).
+- **There is one unexplained counterexample.** On 2026-08-16 the WS endpoint went silent
+  for 2 min 56 s on a live TCP connection and then resumed on that same connection; the
+  cause is unresolved, and both leading internal hypotheses (fan-out head-of-line
+  blocking, engine-thread publish starvation) would silence `summary` along with
+  everything else. A client that treats absence as loss of service must either size its
+  threshold above that observation or accept the false positive.
+
 ```json
 {"type":"summary","seq":12,"tickers":[{"ticker":101,"restingBuy":1820,"restingSell":1640,"last":"10.0098"},{"ticker":102,"restingBuy":900,"restingSell":1200,"last":""}]}
 ```
@@ -751,7 +687,9 @@ cares about freshness must timestamp on arrival and act on the delta itself. (An
 application-level ping whose reply the client times works too, and measures true
 end-to-end stream freshness rather than TCP liveness: a WebSocket pong is appended to
 the *same* per-connection buffer as data, so during a backlog it arrives *behind* the
-queued frames rather than jumping them.)
+queued frames rather than jumping them.) **Absence of frames is a separate signal from
+lateness of frames:** emission does not depend on order flow, so silence is never merely
+a quiet market — see [§3.5](#35-summary).
 
 **Why this is currently safe, and what it is coupled to.** The stream is
 lossless-but-stale rather than lossy *only* because `snapshot` and `book` are
