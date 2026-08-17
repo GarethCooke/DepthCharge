@@ -130,7 +130,7 @@ inline constexpr Glyph kGlyphs[kGlyphCount] = {
     {{9, 9, 6, 6, 9, 9}},         // X
     {{9, 9, 6, 2, 2, 2}},         // Y
     {{15, 1, 2, 4, 8, 15}},       // Z
-    {{0, 0, 0, 0, 0, 6}},         // .  — two pixels wide, so a decimal point is
+    {{0, 0, 6, 6, 0, 0}},         // .  — two pixels wide, two high, so a decimal point is
                                   //      visible at desk distance
     {{0, 0, 0, 6, 0, 0}},         // -
     {{0, 6, 0, 0, 6, 0}},         // :
