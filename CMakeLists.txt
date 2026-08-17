@@ -339,3 +339,39 @@ add_test(NAME dc_channel_race COMMAND dc_tsan_workload 1)
 # default and looking like the machine died.
 set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_channel_race
   PROPERTIES TIMEOUT 120)
+
+# --- the Python measurement tools, held to the same standard (M4 stage 0) -----
+# The FIRST test in this file that is not C++, and it exists because of a specific
+# failure: tools/kraken_frame_economics.py produced every figure in
+# harness/replay/NOTES-kraken.md and the M4 stage-0 brief, and it shipped two bugs
+# on the way there — a truncation column that discarded every level entering the
+# top N, and a verify pass whose float shadow silently skipped 92 real checksum
+# comparisons. Both printed believable numbers. The firmware's instruments are
+# pinned by host goldens; the Python ones were not, and that asymmetry cost real
+# time twice in one evening (owner's process item, docs/briefs/).
+#
+# `--selfcheck` recomputes the committed slices and compares against the figures
+# recorded in the tool's KNOWN_ANSWERS table, so a tooling regression fails in the
+# normal build loop instead of reporting something plausible. Mutation-verified:
+# removing the truncation, keeping leading zeros in the checksum token, and
+# widening the CRC to the top 12 are each caught.
+#
+# Optional by design, exactly like dc_engine_target_check above — a contributor
+# without a Python 3 interpreter still gets a complete C++ build and a STATUS line
+# saying which check was skipped.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  file(GLOB DC_KRAKEN_TRACES
+    ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_*.ndjson)
+  if(DC_KRAKEN_TRACES)
+    add_test(NAME kraken_tool_selfcheck
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tools/kraken_frame_economics.py
+              ${DC_KRAKEN_TRACES} --selfcheck)
+    set_tests_properties(kraken_tool_selfcheck PROPERTIES TIMEOUT 300)
+  endif()
+else()
+  message(STATUS
+    "kraken_tool_selfcheck SKIPPED: no Python 3 interpreter found. The Python "
+    "measurement tools are unpinned in this configuration.")
+endif()

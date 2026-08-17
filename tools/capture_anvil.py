@@ -23,6 +23,14 @@ tool is strictly more portable ("no exotic dependencies"). The trade-off is a
 hand-rolled framer; it only has to read server->client text/close/ping frames
 and answer pings, which is a small, well-tested surface. See the M0 session log.
 
+**That client now lives in ``tools/wsclient.py``**, extracted at M4 stage 0 so
+``capture_kraken.py`` uses the same one rather than a second copy. The move was
+made under the brief's condition -- this tool's output must stay byte-identical
+across it -- and that was checked by replaying a committed trace at both
+versions from a loopback WS server, not assumed. The method and the result are
+in ``wsclient.py``'s header. Nothing in the capture format, the metadata header,
+the Origin probe or the reconnect cycle changed.
+
 Reconnect trace: ``--cycles N --reconnect-after S`` opens the socket N times,
 capturing S seconds each, so the trace contains N ``snapshot`` frames and the
 per-connection ``seq`` baseline reset is on record without touching the host
@@ -33,286 +41,30 @@ Python 3 stdlib only. Lives in tools/ (Python is allowed nowhere else).
 from __future__ import annotations
 
 import argparse
-import base64
 import collections
-import hashlib
-import itertools
 import json
-import os
-import signal
-import socket
 import ssl
-import struct
 import sys
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
+from wsclient import HandshakeRejected, WsClient, install_sigint, stop_requested
+
 TOOL_VERSION = "0.1.0"
-WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # RFC 6455 magic
-
-# WebSocket opcodes
-OP_CONT = 0x0
-OP_TEXT = 0x1
-OP_BINARY = 0x2
-OP_CLOSE = 0x8
-OP_PING = 0x9
-OP_PONG = 0xA
-
-
-class WsError(RuntimeError):
-    """WebSocket protocol / handshake failure."""
-
-
-class HandshakeRejected(WsError):
-    """The upgrade was refused (non-101 status). Carries the status line."""
-
-    def __init__(self, status_line: str, headers: dict[str, str]):
-        super().__init__(f"upgrade rejected: {status_line}")
-        self.status_line = status_line
-        self.headers = headers
-
-
-class WsClient:
-    """Minimal RFC 6455 text client: connect, iterate messages, close.
-
-    Reads unmasked server frames, reassembles continuation fragments, answers
-    ping with pong, and masks the few frames it sends (close). It never sends
-    application data — this is a pure market-data consumer.
-    """
-
-    def __init__(self, url: str, origin: str | None, timeout: float = 20.0):
-        parts = urlsplit(url)
-        if parts.scheme not in ("ws", "wss"):
-            raise WsError(f"unsupported scheme {parts.scheme!r} (want ws/wss)")
-        self.tls = parts.scheme == "wss"
-        self.host = parts.hostname
-        self.port = parts.port or (443 if self.tls else 80)
-        self.path = parts.path or "/"
-        if parts.query:
-            self.path += "?" + parts.query
-        self.origin = origin
-        self.timeout = timeout
-        self.sock: socket.socket | None = None
-        self._buf = bytearray()
-        # Recorded from the handshake so the caller can answer the Origin
-        # known-unknown empirically.
-        self.handshake_status = ""
-
-    # -- connection lifecycle -------------------------------------------------
-
-    def connect(self) -> None:
-        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        if self.tls:
-            ctx = ssl.create_default_context()
-            self.sock = ctx.wrap_socket(raw, server_hostname=self.host)
-        else:
-            self.sock = raw
-        self.sock.settimeout(1.0)  # poll cadence so recv can observe deadlines
-        self._handshake()
-
-    def _handshake(self) -> None:
-        key = base64.b64encode(os.urandom(16)).decode("ascii")
-        lines = [
-            f"GET {self.path} HTTP/1.1",
-            f"Host: {self.host}",
-            "Upgrade: websocket",
-            "Connection: Upgrade",
-            f"Sec-WebSocket-Key: {key}",
-            "Sec-WebSocket-Version: 13",
-            "User-Agent: depthcharge-capture/" + TOOL_VERSION,
-        ]
-        if self.origin is not None:
-            lines.append(f"Origin: {self.origin}")
-        request = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
-        self.sock.sendall(request)
-
-        header_bytes = self._read_until(b"\r\n\r\n")
-        head = header_bytes.decode("iso-8859-1")
-        status_line, _, rest = head.partition("\r\n")
-        self.handshake_status = status_line.strip()
-        headers: dict[str, str] = {}
-        for line in rest.split("\r\n"):
-            if ":" in line:
-                name, _, val = line.partition(":")
-                headers[name.strip().lower()] = val.strip()
-
-        parts = status_line.split(" ", 2)
-        code = parts[1] if len(parts) > 1 else ""
-        if code != "101":
-            raise HandshakeRejected(status_line.strip(), headers)
-
-        accept = headers.get("sec-websocket-accept", "")
-        expect = base64.b64encode(
-            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()
-        ).decode("ascii")
-        if accept != expect:
-            raise WsError("Sec-WebSocket-Accept mismatch (bad handshake)")
-
-    def _read_until(self, needle: bytes) -> bytes:
-        """Read into the buffer until *needle* appears; return through it."""
-        deadline = time.monotonic() + self.timeout
-        while True:
-            idx = self._buf.find(needle)
-            if idx != -1:
-                end = idx + len(needle)
-                out = bytes(self._buf[:end])
-                del self._buf[:end]
-                return out
-            if time.monotonic() > deadline:
-                raise WsError("timed out reading handshake response")
-            self._fill()
-
-    def _fill(self) -> int:
-        """Pull one chunk into the buffer. Returns bytes read (0 on timeout)."""
-        try:
-            chunk = self.sock.recv(65536)
-        except socket.timeout:
-            return 0
-        if chunk == b"":
-            raise ConnectionError("server closed the connection")
-        self._buf.extend(chunk)
-        return len(chunk)
-
-    # -- frame parsing --------------------------------------------------------
-
-    def _next_frame(self, deadline: float) -> tuple[int, bytes] | None:
-        """Return (opcode, payload) for the next frame, or None on deadline."""
-        while True:
-            frame = self._try_parse_frame()
-            if frame is not None:
-                return frame
-            if _STOP or time.monotonic() > deadline:
-                return None  # honour Ctrl-C even while the stream is quiet
-            self._fill()
-
-    def _try_parse_frame(self) -> tuple[int, bytes] | None:
-        b = self._buf
-        if len(b) < 2:
-            return None
-        b0, b1 = b[0], b[1]
-        fin = b0 & 0x80
-        opcode = b0 & 0x0F
-        masked = b1 & 0x80
-        length = b1 & 0x7F
-        offset = 2
-        if length == 126:
-            if len(b) < offset + 2:
-                return None
-            length = struct.unpack_from(">H", b, offset)[0]
-            offset += 2
-        elif length == 127:
-            if len(b) < offset + 8:
-                return None
-            length = struct.unpack_from(">Q", b, offset)[0]
-            offset += 8
-        mask_key = b""
-        if masked:
-            if len(b) < offset + 4:
-                return None
-            mask_key = bytes(b[offset:offset + 4])
-            offset += 4
-        if len(b) < offset + length:
-            return None
-        payload = bytes(b[offset:offset + length])
-        if masked:  # servers must not mask, but tolerate defensively
-            payload = bytes(b ^ m for b, m in zip(payload, itertools.cycle(mask_key)))
-        del b[:offset + length]
-        return (fin | opcode, payload)
-
-    def messages(self, deadline: float):
-        """Yield (rx_ns, text) for each complete text message until deadline.
-
-        Handles fragmentation (continuation frames) and answers control frames.
-        rx_ns is captured the instant the final fragment of the message arrives.
-        """
-        assembling: list[bytes] = []
-        assembling_op = None
-        while True:
-            frame = self._next_frame(deadline)
-            if frame is None:
-                return  # deadline reached
-            header, payload = frame
-            fin = header & 0x80
-            opcode = header & 0x0F
-
-            if opcode == OP_PING:
-                self._send_frame(OP_PONG, payload)
-                continue
-            if opcode == OP_PONG:
-                continue
-            if opcode == OP_CLOSE:
-                try:
-                    self._send_frame(OP_CLOSE, payload[:2])
-                except OSError:
-                    pass
-                raise ConnectionError("server sent CLOSE")
-
-            if opcode == OP_CONT:
-                if assembling_op is None:
-                    raise WsError("continuation frame with nothing to continue")
-                assembling.append(payload)
-            elif opcode in (OP_TEXT, OP_BINARY):
-                assembling = [payload]
-                assembling_op = opcode
-            else:
-                raise WsError(f"unexpected opcode {opcode:#x}")
-
-            if fin:
-                rx_ns = time.monotonic_ns()
-                data = b"".join(assembling)
-                op = assembling_op
-                assembling, assembling_op = [], None
-                if op == OP_TEXT:
-                    yield rx_ns, data.decode("utf-8")
-                # binary frames are unexpected on this stream; skip silently
-
-    def _send_frame(self, opcode: int, payload: bytes = b"") -> None:
-        mask = os.urandom(4)
-        masked = bytes(b ^ m for b, m in zip(payload, itertools.cycle(mask)))
-        header = bytearray([0x80 | opcode])
-        n = len(payload)
-        if n < 126:
-            header.append(0x80 | n)
-        elif n < 65536:
-            header.append(0x80 | 126)
-            header += struct.pack(">H", n)
-        else:
-            header.append(0x80 | 127)
-            header += struct.pack(">Q", n)
-        header += mask
-        self.sock.sendall(bytes(header) + masked)
-
-    def close(self) -> None:
-        if self.sock is None:
-            return
-        try:
-            self._send_frame(OP_CLOSE, struct.pack(">H", 1000))
-        except OSError:
-            pass
-        try:
-            self.sock.close()
-        finally:
-            self.sock = None
+# The exact handshake header this tool has always sent. Spelled out here rather
+# than left to a default in wsclient, so the extraction cannot silently change
+# what the server sees.
+USER_AGENT = "depthcharge-capture/" + TOOL_VERSION
 
 
 # -- capture orchestration ----------------------------------------------------
-
-_STOP = False
-
-
-def _install_sigint():
-    def handler(signum, frame):  # noqa: ARG001
-        global _STOP
-        _STOP = True
-    signal.signal(signal.SIGINT, handler)
-    signal.signal(signal.SIGTERM, handler)
 
 
 def _connect_with_origin_probe(url: str, origin: str | None, timeout: float):
     """Connect, transparently retrying with a nominated Origin if the server
     rejects an Origin-less upgrade. Returns (client, effective_origin)."""
-    client = WsClient(url, origin=origin, timeout=timeout)
+    client = WsClient(url, origin=origin, timeout=timeout, user_agent=USER_AGENT)
     try:
         client.connect()
         return client, origin
@@ -326,13 +78,13 @@ def _connect_with_origin_probe(url: str, origin: str | None, timeout: float):
             f"[capture] Origin-less upgrade rejected ({exc.status_line}); "
             f"retrying with Origin: {fallback}\n"
         )
-        client = WsClient(url, origin=fallback, timeout=timeout)
+        client = WsClient(url, origin=fallback, timeout=timeout, user_agent=USER_AGENT)
         client.connect()
         return client, fallback
 
 
 def capture(args) -> int:
-    _install_sigint()
+    install_sigint()
     captured_at = datetime.now(timezone.utc).isoformat()
     # `depth` is omitted entirely when 0 rather than sent as `&depth=0`, because
     # those are the same request to the server and the shorter one is what every
@@ -387,16 +139,16 @@ def capture(args) -> int:
         try:
             for cycle in range(cycles):
                 if cycle > 0:
-                    if _STOP:
+                    if stop_requested():
                         break
                     if args.reconnect_gap > 0:
                         sys.stderr.write(
                             f"[capture] simulated drop: {args.reconnect_gap}s gap\n"
                         )
                         gap_end = time.monotonic() + args.reconnect_gap
-                        while time.monotonic() < gap_end and not _STOP:
+                        while time.monotonic() < gap_end and not stop_requested():
                             time.sleep(0.25)  # stay responsive to Ctrl-C
-                        if _STOP:
+                        if stop_requested():
                             break
                     client, effective_origin = _connect_with_origin_probe(
                         url, effective_origin, timeout=args.connect_timeout
@@ -407,7 +159,7 @@ def capture(args) -> int:
                 deadline = time.monotonic() + per_cycle
                 try:
                     for rx_ns, text in client.messages(deadline):
-                        if _STOP:
+                        if stop_requested():
                             break
                         # Verbatim: validate it parses, but write original text.
                         try:
@@ -440,7 +192,7 @@ def capture(args) -> int:
                     sys.stderr.write(f"\n[capture] connection ended: {exc}\n")
                 finally:
                     client.close()
-                if _STOP or (args.max_frames and frame_count >= args.max_frames):
+                if stop_requested() or (args.max_frames and frame_count >= args.max_frames):
                     break
         except KeyboardInterrupt:
             pass

@@ -43,16 +43,13 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from tracefile import read_capture
+
 # The envelope a delta frame would still have to carry, charged in full and at
 # the widest `seq` rather than the ~6 digits Anvil actually sends.
 DELTA_ENVELOPE = b'{"type":"book_delta","seq":4294967295,"ticker":101,"bids":[],"asks":[]}'
 
 SIDES = ("bids", "asks")
-
-# Where the frame starts on a capture line. The capture writes the wrapper with
-# default separators and splices the frame in as its original compact text, so
-# this recovers the exact bytes Anvil sent -- which is what `--verify` checks.
-FRAME_KEY = '"frame": '
 
 
 def wire_bytes(frame: dict) -> int:
@@ -99,25 +96,14 @@ def truncated_bytes(frame: dict, depth: int) -> int:
 
 
 def frames_in(trace: Path):
-    """Yield (raw_frame_text, parsed_frame) per capture line, skipping the header."""
-    with trace.open(encoding="utf-8") as fh:
-        header = fh.readline()
-        if not header.strip():
-            raise ValueError("empty trace (no capture header)")
-        for lineno, line in enumerate(fh, start=2):
-            line = line.strip()
-            if not line:
-                continue
-            start = line.find(FRAME_KEY)
-            if start < 0:
-                raise ValueError(f"line {lineno}: no {FRAME_KEY!r} field -- not an Anvil capture?")
-            raw = line[start + len(FRAME_KEY):].rstrip()
-            if raw.endswith("}"):
-                raw = raw[:-1]  # the capture wrapper's own closing brace
-            try:
-                yield raw, json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"line {lineno}: unparseable frame ({exc})") from exc
+    """Yield (raw_frame_text, parsed_frame) per capture line, skipping the header.
+
+    The reading itself moved to `tools/tracefile.py` at M4 stage 0, so this tool
+    and the Kraken one cannot drift about what a capture line is. This wrapper
+    keeps the two-tuple every call site here already expects.
+    """
+    for rec in read_capture(trace):
+        yield rec.raw, rec.frame
 
 
 def verify(trace: Path) -> int:

@@ -80,6 +80,31 @@ versus ~27 MiB raw. The book frames are ~8 KB and highly repetitive, so they com
 ~50×. **This sets the trace-commit policy before Kraken traces arrive at M4:**
 capture long locally, commit a compact sliced window, quote the gzip size.
 
+### Trace naming and dating — binding for every committed trace, all venues
+
+Added 2026-08-16 (M4 stage 0). This section **documents existing practice rather
+than imposing a new rule**, and that was checked before it was written: every
+dated trace in this directory already agrees with its own `captured_at`.
+
+**A date in a trace filename is the UTC date of its `captured_at`, never the desk's
+local date.** `anvil_101_baseline_20260809` was captured `2026-08-09T18:03Z`,
+`anvil_101_depth27_20260816` at `2026-08-16T16:34Z`, and the four Kraken slices at
+`2026-08-16T23:37Z`. The two M0 traces carry no date at all and are unaffected.
+
+**The convention held by luck until it was written down.** Both dated Anvil
+captures were taken in the afternoon, when the UK local date and the UTC date
+coincide, so nothing had ever tested it. The Kraken captures are the first taken
+across midnight UTC — 23:37Z is 00:37 BST *the following day* — and were briefly
+named `_20260817` from the desk clock, which would have made a file disagree with
+the header inside it. Fixed before commit; recorded here because the next capture
+after 23:00 BST will face the same fork and should not have to re-derive the
+answer.
+
+Scope, stated so it is not over-read: this binds **trace files in this directory**.
+Serial-monitor logs (`device-monitor-260815-002728.log`) and bench records
+(`hardware/bench-2026-08-16-*.md`) are desk-local by nature — a serial monitor
+stamps the wall clock in front of the owner — and are deliberately left alone.
+
 Full local captures (git-ignored, `_local/`): baseline 4658 frames / 300 s /
 ~30 MB; reconnect 1836 frames / ~124 s / ~15 MB; the 2026-08-09 baseline 20,418
 frames / 1,199.9 s / ~128 MB, plus `drain-120ms.ndjson` (1,992 frames / 239.9 s),
@@ -311,6 +336,16 @@ cadence change goes red on the desk instead of grey on the panel.
 > that matters (391 vs 1000 ms) but does mean p50 = 63 ms should be read as "~60–70 ms,
 > unchanged from M0" and not as a real shift. To avoid it next time, capture from WSL or
 > raise the process timer resolution first.
+>
+> **Half of that last sentence is wrong, measured 2026-08-16 (M4 stage 0) — see
+> [`NOTES-kraken.md`](NOTES-kraken.md).** Raising the process timer resolution does
+> **not** work: `timeBeginPeriod(1)` leaves `time.monotonic_ns()` on a 15.0 ms grid on
+> Python 3.12 / Windows 11. Changing the *clock* does — `time.perf_counter_ns()` steps
+> at 0.0002 ms, and `capture_kraken.py` uses it for exactly this reason.
+> `capture_anvil.py` deliberately still uses `monotonic_ns`, so the four committed Anvil
+> traces stay comparable with each other; switching it is a one-line change and a
+> decision for whoever next re-captures this venue. Left standing above rather than
+> edited, per ARCHITECTURE §9's own rule about superseded reasoning.
 
 ### Anvil sheds to a slow consumer — new, and not in the protocol doc
 
