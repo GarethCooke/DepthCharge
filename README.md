@@ -12,6 +12,13 @@ A ladder that kept its colours would have shown a three-minute-old market as liv
 panel existed that day it would have shown that incident, for the whole of it. Everything
 else here is in service of that: knowing when not to be believed.
 
+Grey is only half of it, though, and the other half is harder. A feed can be arriving,
+parsing and rendering perfectly while the book on screen is a hundred seconds behind the
+market — that happened on 11 August 2026 with every counter on the board reading healthy.
+So the header also carries the book's **age**: an estimate of how far behind the venue this
+particular socket has fallen, printed as a number and never as a colour, because *stopped*,
+*wrong* and *old* are three different failures and only the first two grey a panel.
+
 ![DepthCharge concept sketch](docs/media/depthcharge_concept.svg)
 
 It consumes three venues in ascending order of wire difficulty: **Anvil**

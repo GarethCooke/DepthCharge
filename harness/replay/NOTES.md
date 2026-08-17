@@ -381,6 +381,64 @@ it all arrived, late.
 
 ---
 
+## M4 stage A2 addendum (2026-08-17) — what the age meter reads on these files, and the one it cannot read
+
+The estimator is `dc_harness/age_estimator.hpp`; the definition it computes is **queuing
+lag**, not time since the last frame and not time since the book last changed.
+
+### The healthy floor is one interval, and the M1 trace's 0.9 s is real
+
+| trace | baseline latched | worst age | grey episodes |
+| --- | ---: | ---: | ---: |
+| `anvil_101_baseline` | 500.6 ms | **0.9 s** | 0 |
+| `anvil_101_baseline_20260809` | 500.0 ms | 0.5 s | 0 |
+| `anvil_101_depth27_20260816` | 500.0 ms | 0.6 s | 0 |
+| `anvil_101_feederoff_20260817` | 500.0 ms | 0.5 s | 0 |
+| `anvil_101_reconnect` | 499.3 ms | **2.3 s** | 1 |
+
+One interval is the instrument's resolution — between two liveness arrivals the elapsed
+term grows and the delivered term does not. The rest of the M1 trace's 0.9 s is Anvil's
+occasional slipped `summary` tick, and the interesting part is that **a slip is never
+repaid**: the engine's publish deadline is a fixed timer, not a phase-locked schedule, so it
+does not run fast afterwards to catch up. The deficit therefore stays in the window until it
+ages out of it. Calling that lag is correct rather than generous — from one socket, a late
+broadcast and a late delivery are the same observation.
+
+### `_local/drain-120ms.ndjson` — the blind spot, on real bytes
+
+This is the file the triage nominated for stage A2, and what it demonstrates is a **limit**
+rather than a capability. Measured through the driver:
+
+- 236 `summary` frames over 239.9 s = **0.98/s, against Anvil's 2.0/s broadcast** — the
+  socket received 49% of the stream, so at the end of the run the true lag is near **122 s**;
+- the meter latches its baseline at **969 ms** and reports **12.5 s**.
+
+**A 10× under-read, and not a bug.** The capture tool sleeps 120 ms per message from the
+*first* message, so the socket was already behind when the baseline was measured — and from
+one socket that case is not identifiable at all: *"the venue broadcasts at 2 Hz and I am two
+minutes behind"* and *"the venue broadcasts at 0.5 Hz and I am current"* are byte-identical
+on the wire. The baseline is legitimate precisely because a **fresh** socket's server-side
+queue is empty; a client that is too slow from birth never gets that moment.
+
+Three consequences, all deliberate:
+
+1. **No slice of this file is committed.** A golden here would pin a known-wrong number and
+   read as coverage, which is what the triage's item 8 says must not happen. (It is also
+   13.5 MB; a 60 s slice at pre-A7 frame sizes is ~4 MB, against a repo whose largest
+   committed trace is 200 KiB.)
+2. **The limit is pinned as a host test instead** (`test_age_estimator.cpp` drives a
+   throttled-from-birth socket and asserts the meter reads zero), so the next reader meets
+   it as a property rather than discovering it as a defect.
+3. **The baseline is printed beside every age**, because it is the only visible symptom: a
+   connection that latches 969 ms where its predecessor latched 500 ms has told a human what
+   it cannot work out for itself.
+
+What closes it is the client ping — a pong cannot overtake a backlog in Crow's
+per-connection buffer, so a round trip prices the queue directly. Deferred to M6 with the
+reason recorded (M4 triage, decision (a)).
+
+---
+
 ## Frame kinds and shapes
 
 Four kinds seen — `snapshot`, `book`, `trade`, `summary`. No `error` frame ever

@@ -373,7 +373,7 @@
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status green">M3 <b>done 2026-08-16 — live Anvil on the panel</b></span>
-    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0)</b></span>
+    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0) · <b>stage A2 done 2026-08-17</b> — the age meter: <code>age_ms</code> on <code>DisplaySnapshot</code>, a sliding-window deficit against a baseline the connection measures for itself, rendered to minutes, and nothing branches on it (strain 17)</b></span>
     <span class="status">first-party C++ <b>~19,600 lines</b></span>
     <span class="status">drawn from source at <b>79c1867</b></span>
   </div>
@@ -453,7 +453,7 @@
 
         <rect x="248" y="446" width="264" height="46" rx="23" fill="#F1F5F3" stroke="#4A5B55" stroke-width="1.4"/>
         <text x="380" y="468" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="14" fill="#131A18">DisplaySnapshot</text>
-        <text x="380" y="483" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">top 27/side · tape · status · 1,168 B</text>
+        <text x="380" y="483" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#64756E">top 27/side · tape · status · age · 1,168 B</text>
 
         <line x1="380" y1="492" x2="380" y2="524" stroke="#4A5B55" stroke-width="1.3" marker-end="url(#ar)"/>
         <text x="392" y="512" font-family="ui-monospace, Consolas, monospace" font-size="11" fill="#4A5B55">publish() — wait-free on the writer · inv #4</text>
@@ -1047,8 +1047,9 @@ classDiagram
     }
 
     class DisplaySnapshot {
-        &lt;&lt;value type - 1168 B&gt;&gt;
+        &lt;&lt;value type - 1168 B, pinned&gt;&gt;
         +version : uint32
+        +age_ms : uint32
         +symbol : SymbolSpec
         +seq : Seq
         +status : FeedStatus
@@ -1057,6 +1058,7 @@ classDiagram
         +ask_count : uint8
         +trade_count : uint8
         +has_last : bool
+        +has_age : bool
         +last_px : PriceTicks
         +bids : BookLevel x27
         +asks : BookLevel x27
@@ -1600,6 +1602,8 @@ classDiagram
     class Replay {
         &lt;&lt;file-local — the single writer&gt;&gt;
         -decoder_ : AnvilTraceDecoder
+        -liveness_ : LivenessClock
+        -age_ : AgeEstimator
         -book_ : Book
         -channel_ : SnapshotChannel
         -latest_ : DisplaySnapshot
@@ -1608,6 +1612,35 @@ classDiagram
         +run(TraceReader) ReplayResult
         -raise_watchdog_gap(double) void
         -on_event(FeedEvent) void
+        -stamp_age(DisplaySnapshot) void
+    }
+
+    class SampleRing~T,N~ {
+        &lt;&lt;shared: one ring, one median rule&gt;&gt;
+        +push(T) void
+        +clear() void
+        +size() size_t
+        +at(size_t) T
+    }
+
+    class LivenessClock {
+        &lt;&lt;ESP-IDF-free — stage B lifts it&gt;&gt;
+        -intervals_ : SampleRing~double,32~
+        +on_liveness(int64) void
+        +median_ms() double
+        +threshold_ms() double
+    }
+
+    class AgeEstimator {
+        &lt;&lt;ESP-IDF-free — stage B lifts it&gt;&gt;
+        -arrivals_ : SampleRing~int64,256~
+        -baseline_ms_ : double
+        -worst_ms_ : uint32
+        +on_liveness(int64) void
+        +on_reconnect(int64) void
+        +read(int64) AgeReading
+        +read_and_bank(int64) AgeReading
+        +baseline_ms() double
     }
 
     class ReplayOptions {
@@ -1638,6 +1671,9 @@ classDiagram
         +final_snapshot : DisplaySnapshot
         +first_stale_snapshot : DisplaySnapshot
         +saw_stale : bool
+        +threshold_ms : double
+        +worst_age_ms : uint32
+        +age_baseline_ms : double
     }
 
     class LadderStyle {
@@ -1665,15 +1701,27 @@ classDiagram
     Replay ..> AnvilAdapter : owns
     Replay ..> Book : owns
     Replay ..> SnapshotChannel : owns
+    Replay *-- LivenessClock : one signal...
+    Replay *-- AgeEstimator : ...two consumers
+    LivenessClock *-- SampleRing~T,N~
+    AgeEstimator *-- SampleRing~T,N~
     render_ladder ..> DisplaySnapshot : reads
     render_ladder *-- LadderStyle
 </pre>
     </div>
     <figcaption>
       <b>harness/</b> — <code>trace.hpp</code>, <code>replay_driver.hpp</code>,
-      <code>console_ladder.hpp</code>. <code>Replay</code> is file-local by design: the
+      <code>console_ladder.hpp</code>, and since M4 stage A2
+      <code>age_estimator.hpp</code>. <code>Replay</code> is file-local by design: the
       engine pieces are members in the same arrangement the firmware feed task will own
-      them, so the object <em>is</em> invariant #8's single writer.
+      them, so the object <em>is</em> invariant #8's single writer. <b>The two clocks read
+      the same arrivals and must not share a number:</b> <code>LivenessClock</code>'s median
+      is <em>rolling</em>, because the grey threshold has to adapt to a feed that has
+      permanently slowed; <code>AgeEstimator</code> latches a <em>baseline</em> once per
+      connection, because an age measured against an adapting median reads zero through a
+      backlog — which is the failure the age meter exists to catch. They share the ring and
+      the median convention (<code>sample_window.hpp</code>) so that what differs between
+      them is only what is meant to.
     </figcaption>
   </figure>
 
@@ -2840,7 +2888,44 @@ classDiagram
       that is <em>fresh</em>", which puts a wall clock inside a book that is deliberately
       clock-free and replay-driven.
     </p>
-    <p class="verdict">Resolves: <b>half open, and split cleanly. The <em>measurement</em> landed at stage E1 — the mechanism is settled at the desk and the board now reports its own age. What is owed is the calibration (the owner's lag-versus-uptime stopwatch run on one connection) and the decision the proposal asks for: put an age on <code>DisplaySnapshot</code> (§5) and extend invariant #5 to cover <em>old</em>, or leave the panel honest about stopped and silent about old. The recommendation is §5, because the §4 route reaches §5 anyway by the longer road. Written up for the owner in <code>docs/briefs/M3-stage-E-the-age-of-the-book.md</code>; desk evidence in <code>hardware/bench-2026-08-11-feed-lag.md</code></b></p>
+    <p>
+      <b>Decided and landed at M4 stage A2 (2026-08-17): the §5 route, and invariant #5 is
+      NOT extended.</b> <code>DisplaySnapshot</code> carries <code>age_ms</code> and
+      <code>has_age</code> — both in padding the hand-off already had, so the 1,168 B is
+      unmoved and now pinned — the console header renders it to minutes and hours, and
+      <em>nothing branches on it</em>. That last clause is what the paragraph above argues
+      for and it survived contact: age stays a number, grey stays the liveness clock's, and
+      the flicker problem never arises because no clear condition had to be redefined.
+      <b>What did change is how the number is computed.</b> Stage E integrated a deficit
+      from a hardcoded 2 Hz since connect; A2 replaces that with the supremum of the deficit
+      over a sliding 256-arrival window, taken against a baseline the connection
+      <em>measures for itself</em> in its first window and then freezes — because a fresh
+      socket's server-side queue is empty, and that is the only moment a single client can
+      measure the venue's clock. The rolling median the grey threshold uses cannot serve
+      here: an age computed against it reads <b>0.0 s through a 111 s backlog</b>.
+    </p>
+    <p>
+      <b>Two residues, both named rather than closed.</b> (1) <code>firmware/src/
+      staleness.hpp</code> still runs the stage-E cumulative estimator with
+      <code>kSummaryPeriodUs = 500000</code> in it, so until stage B lifts
+      <code>age_estimator.hpp</code> across, <b>the host and the target compute the book's
+      age two different ways</b> — a divergence that is invisible in any host test by
+      construction, which is exactly why it is written here. (2) The estimator has a proved
+      blind spot: a socket already behind when it latched cannot detect it, because
+      <em>"the venue broadcasts at 2 Hz and I am two minutes behind"</em> and <em>"the venue
+      broadcasts at 0.5 Hz and I am current"</em> are byte-identical on the wire. On the one
+      real backlogged capture it reads <b>12.5 s against a true ~122 s</b>. That is the case
+      the client ping closes, deferred to M6 with its reason recorded.
+    </p>
+    <p class="verdict">Resolves: <b>the measurement landed at stage E1, the rendering and the
+    §5 decision at M4 stage A2 — <code>age_ms</code> is on <code>DisplaySnapshot</code>,
+    invariant #5 is untouched, and the panel can finally say <em>live, and ninety seconds
+    behind</em>. Still open, and both now have owners: stage B lifts the estimator into
+    <code>firmware/</code> and deletes the cumulative one (until then host and target disagree
+    by construction), and M6 owes the client ping, which is the only instrument that can see a
+    socket that was behind from birth. Briefs: <code>docs/briefs/M3-stage-E-the-age-of-the-book.md</code>
+    (the proposal), <code>docs/briefs/M4-stage-A2-the-age-meter.md</code> (what shipped); desk
+    evidence in <code>hardware/bench-2026-08-11-feed-lag.md</code></b></p>
   </div>
 
   <div class="strain">
