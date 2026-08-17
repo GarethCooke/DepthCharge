@@ -54,6 +54,23 @@
      /*wd_declared=*/1, /*wd_anvil=*/1, /*book_wd_declared=*/1, /*book_wd_anvil=*/1,
      /*liveness_events=*/172, /*liveness_firings=*/1,
      "book=1012 snapshot=1 summary=172 trade=103"},
+// Added 2026-08-17. The first capture of an IDLE Anvil — local server, feeder
+// never started, three tickers, empty books throughout — and the only committed
+// trace in which no order ever exists. `trade=0` is why the kinds string has
+// three entries where every other Anvil row has four.
+//
+// It is the file the 2026-08-17 ruling's point 2 rests on: `summary` at
+// **2.008/s** with a p50 of exactly 500.0 ms on a queue that never had anything
+// in it. Read the row beside `NOTES.md`'s idle-emission section before treating
+// `book=1511` as noise — 1,511 book frames over an empty book, byte-identical
+// apart from `seq`, is the measurement that says a genuinely idle Anvil book
+// does NOT produce no frames.
+    {"anvil_101_feederoff_20260817.ndjson", "anvil",
+     /*records=*/1753, /*tx=*/0, /*untyped=*/0, /*book_events=*/1512,
+     /*snapshots=*/1, /*resyncs=*/0,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/241, /*liveness_firings=*/0,
+     "book=1511 snapshot=1 summary=241"},
 
 // --- Kraken -----------------------------------------------------------------
 // `untyped` is the number M4 stage A exists for: 61 of the depth-25 slice's

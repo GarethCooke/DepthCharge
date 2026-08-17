@@ -339,6 +339,19 @@ add_test(NAME dc_ladder_reconnect
 add_test(NAME dc_ladder_depth27
   COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_depth27_20260816.ndjson
           --no-color)
+# The idle server (2026-08-17): 1,753 frames over an EMPTY book, so the whole
+# chain runs with zero levels on either side from the first frame to the last.
+# Every other committed trace has a populated book within one frame, so nothing
+# before this exercised the empty case end to end — and the panel's answer to
+# "no orders exist" must be a clean empty ladder, not a crash and not a stale
+# state. That is a different claim from "no data arrived", which is what the
+# watchdog covers.
+add_test(NAME dc_replay_feederoff
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_feederoff_20260817.ndjson)
+add_test(NAME dc_ladder_feederoff
+  COMMAND dc_ladder ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_feederoff_20260817.ndjson
+          --no-color)
 # One second of the real two-thread race, uninstrumented. The TSan run in
 # harness/tsan.sh is the same binary with the sanitiser on; this keeps the
 # workload compiling and passing on every host build in between.
