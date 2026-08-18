@@ -470,6 +470,21 @@ if(Python3_Interpreter_FOUND)
               ${DC_KRAKEN_TRACES} --selfcheck)
     set_tests_properties(kraken_tool_selfcheck PROPERTIES TIMEOUT 300)
   endif()
+
+  # The SECOND Python tool held to the same standard (M4 stage B2), and it is
+  # the one that writes committed artefacts rather than merely measuring them.
+  #
+  # `slice_trace.py` had no test of any kind until B2. Its reconnect mode cut
+  # windows without checking that they contained the event they were named for,
+  # which is the `t+65..t+160` defect of stage A one layer up: an order for a
+  # 4-gap window that would have produced a 3-gap file. It takes NO trace
+  # argument on purpose — the cases that matter are the ones no committed
+  # capture contains, because every committed capture satisfies both rules and a
+  # corpus-driven test here would be five copies of one observation.
+  add_test(NAME slice_tool_selfcheck
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/slice_trace.py --selfcheck)
+  set_tests_properties(slice_tool_selfcheck PROPERTIES TIMEOUT 120)
 else()
   message(STATUS
     "kraken_tool_selfcheck SKIPPED: no Python 3 interpreter found. The Python "

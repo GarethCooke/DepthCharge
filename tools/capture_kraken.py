@@ -77,7 +77,7 @@ from datetime import datetime, timezone
 
 from wsclient import HandshakeRejected, WsClient, install_sigint, stop_requested
 
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.2.0"   # 0.2.0: --resubscribe-after, the provoked mid-stream snapshot (M4 B2)
 USER_AGENT = "depthcharge-capture/" + TOOL_VERSION
 
 # rx_ns is stamped from perf_counter_ns, not monotonic_ns. Both are monotonic;
@@ -122,6 +122,21 @@ def subscribe_text(symbol: str, depth: int) -> str:
             "depth": depth,
             "snapshot": True,
         },
+    }, separators=(",", ":"))
+
+
+def unsubscribe_text(symbol: str, depth: int) -> str:
+    """The unsubscribe frame. Same shape as the subscribe, minus `snapshot`.
+
+    Sent only by `--resubscribe-after`, and sent BEFORE the re-subscribe rather
+    than instead of it: Kraken answers a second subscribe on a channel it already
+    holds, and what it answers is not documented. Unsubscribing first means the
+    provoked snapshot is a fresh subscription's snapshot and not a special case
+    somebody has to reason about later.
+    """
+    return json.dumps({
+        "method": "unsubscribe",
+        "params": {"channel": "book", "symbol": [symbol], "depth": depth},
     }, separators=(",", ":"))
 
 
@@ -182,7 +197,9 @@ def capture(args) -> int:
             "subscribe": sub,
             "tool_version": TOOL_VERSION,
             "clock": CAPTURE_CLOCK_NAME,
-            "capture_mode": "reconnect" if cycles > 1 else "baseline",
+            "capture_mode": ("reconnect" if cycles > 1
+                             else "resubscribe" if args.resubscribe_after > 0
+                             else "baseline"),
             "cycles": cycles,
             "origin_sent": args.origin,
             "handshake_status": client.handshake_status,
@@ -215,6 +232,22 @@ def capture(args) -> int:
                 out.flush()
 
                 deadline = time.monotonic() + per_cycle
+                # THE PROVOKED RESYNC (M4 stage B2). One connection, two
+                # subscriptions: at `--resubscribe-after` seconds this sends an
+                # unsubscribe and then, `--resubscribe-gap` later, the original
+                # subscribe again — so the venue serves a second `book/snapshot`
+                # MID-STREAM, after book events, which is the resync the
+                # venue-free predicate detects.
+                #
+                # It is deliberately NOT `--cycles 2`. That reconnects, which is
+                # a Cloudflare connection attempt (150 per rolling 10 minutes per
+                # IP, with a ban on breach) and produces a different artefact: a
+                # hole in rx_ns and a Gap{Disconnect} as well as a snapshot. This
+                # produces the snapshot alone, on a socket that never blinks,
+                # which is the case a CRC-failure resync will actually take.
+                resub_at = time.monotonic() + args.resubscribe_after \
+                    if args.resubscribe_after > 0 else None
+                resub_send_at = None
                 try:
                     for rx_ns, text in client.messages(deadline):
                         if stop_requested():
@@ -239,6 +272,42 @@ def capture(args) -> int:
                             out.flush()
                             sys.stderr.write(
                                 f"[capture] {frame_count} frames {dict(kind_counts)}\r")
+                        # THE PROVOKED RESYNC, SENT AFTER THIS MESSAGE HAS BEEN
+                        # WRITTEN — and the order is the whole of it.
+                        #
+                        # The first draft ran this at the TOP of the loop body,
+                        # which stamps the tx record with `now` and then writes
+                        # the already-received message behind it: **rx_ns goes
+                        # backwards, and TraceReader rejects the entire file at
+                        # that line.** Found by replaying the first capture, not
+                        # by writing it — a capture tool contains no reader, and
+                        # that asymmetry is why ARCHITECTURE §9 (2026-08-07) made
+                        # TraceReader::next the ONE definition of a valid trace.
+                        # A capture is not finished until it has been read back.
+                        # Checked per received message rather than on a timer:
+                        # the 1 Hz heartbeat guarantees control comes back here
+                        # at least once a second, so the two sends land within
+                        # about a heartbeat of when they were asked for, and the
+                        # capture loop stays single-threaded.
+                        now = time.monotonic()
+                        if resub_at is not None and now >= resub_at:
+                            unsub = unsubscribe_text(args.symbol, args.depth)
+                            tx = client.send_text(unsub)
+                            out.write('{"rx_ns": %d, "dir": "tx", "frame": %s}\n'
+                                      % (tx, unsub))
+                            out.flush()
+                            sys.stderr.write("\n[capture] unsubscribed at "
+                                             f"t+{args.resubscribe_after:.0f}s\n")
+                            resub_at = None
+                            resub_send_at = now + args.resubscribe_gap
+                        elif resub_send_at is not None and now >= resub_send_at:
+                            tx = client.send_text(sub)
+                            out.write('{"rx_ns": %d, "dir": "tx", "frame": %s}\n'
+                                      % (tx, sub))
+                            out.flush()
+                            sys.stderr.write("[capture] re-subscribed; a mid-stream "
+                                             "snapshot should follow\n")
+                            resub_send_at = None
                         if args.max_frames and frame_count >= args.max_frames:
                             raise KeyboardInterrupt
                 except (ConnectionError, ssl.SSLError) as exc:
@@ -280,6 +349,13 @@ def main(argv=None) -> int:
                    help="seconds per cycle before reconnecting (reconnect mode)")
     p.add_argument("--reconnect-gap", type=float, default=MIN_RECONNECT_GAP_S,
                    help=f"seconds disconnected between cycles (floor {MIN_RECONNECT_GAP_S:g}s)")
+    p.add_argument("--resubscribe-after", type=float, default=0.0,
+                   help="seconds into the capture at which to unsubscribe and "
+                        "re-subscribe on the SAME socket, provoking a mid-stream "
+                        "snapshot (0 = never). Not a reconnect: no new connection, "
+                        "so no Cloudflare attempt and no rx_ns hole.")
+    p.add_argument("--resubscribe-gap", type=float, default=1.0,
+                   help="seconds between the unsubscribe and the re-subscribe")
     p.add_argument("--origin", default=None,
                    help="Origin header to send (default: none). Unlike Anvil there "
                         "is no auto-retry: a rejected upgrade here is reported, not "

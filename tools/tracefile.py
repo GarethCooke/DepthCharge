@@ -106,6 +106,42 @@ def is_snapshot(venue: str, frame) -> bool:
     return frame.get("channel") == "book" and frame.get("type") == "snapshot"
 
 
+def rebaselines(venue: str, frame) -> bool:
+    """After this frame, is the book FULLY KNOWN — no earlier record required?
+
+    NOT the same question as `is_snapshot`, and the difference is Anvil's
+    (added M4 stage B2, for `slice_trace`'s self-containment rule).
+
+    At Anvil `snapshot` and `book` are the same thing on the wire — a full top-N
+    replace, confirmed byte-identical at M0 — and `AnvilAdapter::on_frame`
+    emits `FeedEvent::Snapshot` for BOTH (`anvil_adapter.hpp`'s switch is the
+    authority). So every `book` frame re-baselines, and a window that begins on
+    one is perfectly replayable. `is_snapshot` deliberately says False for them,
+    because it answers a different question — *is this the record a resync would
+    arrive as* — and at Anvil that is specifically the connect-time `snapshot`.
+    Measured on `anvil_101_reconnect.ndjson`: there is no `type:"snapshot"`
+    anywhere before the reconnect one at t+29.9, so a self-containment rule
+    written on `is_snapshot` would refuse to cut the very trace the mode exists
+    for.
+
+    At Kraken the two coincide: only `book/snapshot` replaces, an update amends,
+    and `KrakenAdapter::apply_update` drops deltas outright until a snapshot has
+    arrived (*no baseline, no deltas*).
+
+    NO C++ TWIN, deliberately. The three other predicates here mirror
+    `harness/include/dc_harness/trace_decoder.hpp` because the C++ reader asks
+    those questions too; nothing in the harness asks this one — only the slicer
+    does — and adding an unused field to `RecordKind` would move the taxonomy
+    pins to carry weight nobody lifts. If a C++ caller ever needs it, the
+    authority to mirror is the adapters' own dispatch, named above.
+    """
+    if not isinstance(frame, dict):
+        return False
+    if venue == "anvil":
+        return frame.get("type") in ("snapshot", "book")
+    return is_snapshot(venue, frame)
+
+
 def is_trade(venue: str, frame) -> bool:
     """Is this a trade print rather than a book change?
 
