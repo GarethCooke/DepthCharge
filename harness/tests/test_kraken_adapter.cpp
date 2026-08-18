@@ -726,9 +726,47 @@ TEST_CASE("a transport gap drops the baseline as well as greying the panel") {
 // DELIVERABLE 7 — the queue-vs-shed premise, RECORDED rather than assumed
 // ---------------------------------------------------------------------------
 
-TEST_CASE("age_ms runs at Kraken tonight on an UNPROVEN premise — B2 owns closing it") {
+TEST_CASE("age_ms at Kraken rests on a MEASURED premise: this venue queues") {
     // ============================================================================
-    // THIS TEST ASSERTS AN ASSUMPTION, NOT A BEHAVIOUR, AND THAT IS DELIBERATE.
+    // B1 PINNED AN ASSUMPTION HERE AND NAMED B2 AS ITS OWNER. B2 MEASURED IT.
+    // THE DEBT IS DISCHARGED, AND THE ANSWER IS THE ONE THE NUMBER NEEDED.
+    // ============================================================================
+    //
+    // **Kraken QUEUES.** Measured 2026-08-18 by `tools/kraken_backpressure_probe.py`
+    // — one connection, BTC/USD depth 25, 80 s in three phases — and three
+    // independent signals agree:
+    //
+    //   * **331 / 331 checksums clean** through the throttled phase. A SHED
+    //     update leaves a level wrong and the venue's own CRC32 says so within a
+    //     message or two; not one failed. Nothing was lost.
+    //   * **Lag grew +0.690 s per second**, from the venue's own microsecond
+    //     `timestamp` on every book message, reaching 26.0 s. Everything was
+    //     late.
+    //   * **On release the backlog drained at 64.2 msg/s against a 19.5 msg/s
+    //     baseline** and the lag decayed at -1.411 s/s back to where it started.
+    //     A server that had shed would have had nothing to catch up with.
+    //
+    // The arithmetic closes on itself, which is the check that makes it more
+    // than three plausible columns: a slope of 0.690 means we drained at 31% of
+    // the venue's rate, so the venue was producing 8.63 / 0.31 = ~27.8 msg/s —
+    // and the release phase independently implies ~27 msg/s from the volume it
+    // had to clear. Two routes to the venue's true rate, neither derived from
+    // the other.
+    //
+    // So the deficit `age_estimator.hpp` computes IS a queuing lag at this venue,
+    // and `age_ms` stands. The three-outcome table in the M4 stage B2 brief is
+    // answered on row one; rows two (shed) and three (disconnected) did not
+    // occur — the socket survived a 26 s backlog without closing.
+    //
+    // WHAT THE MEASUREMENT DOES NOT SAY, stated so it is not over-read: the
+    // lever is TCP backpressure, so what was measured is the whole path's
+    // behaviour and not a statement about Kraken's internal send queue. That is
+    // the right question for `age_ms` — the panel experiences the path — but it
+    // is not a contract, and unlike Anvil's (whose `CrowWsSubscriber::deliver()`
+    // is readable source) it could change without notice.
+    //
+    // THE ASSERTIONS BELOW ARE UNCHANGED AND STILL ASSERT THE SHAPE OF THE
+    // CLAIM, NOT THE MEASUREMENT.
     // ============================================================================
     //
     // `age_estimator.hpp` is venue-free arithmetic: over a window of wall time W
@@ -762,8 +800,10 @@ TEST_CASE("age_ms runs at Kraken tonight on an UNPROVEN premise — B2 owns clos
     //     triage applied to the client ping, decision (a)).
     //   * PIN IT HERE, NAMING THE STAGE THAT CLOSES IT. Taken.
     //
-    // **B2 IS THE OWNER, AND IT CLOSES THIS AS A SIDE EFFECT OF WORK IT IS ALREADY
-    // DOING.** B2 builds the CRC path. A SHED update breaks the checksum — the
+    // **B2 WAS THE OWNER AND IT CLOSED THIS AS A SIDE EFFECT OF WORK IT WAS
+    // ALREADY DOING** — the reasoning below is kept verbatim because it is the
+    // design of the experiment that ran. B2 builds the CRC path. A SHED update
+    // breaks the checksum — the
     // book we hold would be missing a level the venue's book has, and the CRC32
     // covers the top 10 — while a QUEUED update arrives late and checksums
     // clean. So:
@@ -806,12 +846,15 @@ TEST_CASE("age_ms runs at Kraken tonight on an UNPROVEN premise — B2 owns clos
     CHECK(q.worst_age_ms <= 1100);
     CHECK(q.liveness_arrivals == 95);
 
-    // 5. THE DEBT, PINNED. If a future session deletes this line, it is deleting
-    //    the record that the number above rests on an unmeasured venue property.
-    MESSAGE("OWED BY M4 STAGE B2: Kraken's queue-vs-shed behaviour is UNMEASURED. "
-            "age_ms is reported at this venue on Anvil's premise. The experiment is "
-            "CRC mismatch under induced backpressure: shed updates break the "
-            "checksum, queued ones do not.");
+    // 5. THE DEBT, DISCHARGED. The line B1 left here said this number rested on
+    //    an unmeasured venue property. It no longer does, and what replaced it
+    //    is a measurement rather than a deletion — the experiment is repeatable
+    //    with one command and the tool prints the same verdict logic every time.
+    MESSAGE("CLOSED BY M4 STAGE B2 (2026-08-18): Kraken QUEUES. "
+            "331/331 checksums clean under a throttled socket while the venue's own "
+            "timestamp showed lag growing 0.690 s/s to 26.0 s, and the backlog then "
+            "drained at 3.3x the baseline rate on release. The deficit is an age. "
+            "Re-run: tools/kraken_backpressure_probe.py --delay-ms 120");
 }
 
 // ---------------------------------------------------------------------------
