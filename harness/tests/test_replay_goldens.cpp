@@ -118,6 +118,7 @@ TEST_CASE("baseline trace: every frame is consumed and nothing is malformed") {
     // apply them, which is the property this commit could most easily break.
     CHECK(r.book.deltas_applied == 0);
     CHECK(r.book.deltas_absent == 0);
+    CHECK(r.decoder == "anvil");
 }
 
 TEST_CASE("baseline trace: the wire seq misbehaves and the synthesised Seq does not") {

@@ -148,10 +148,6 @@ target_link_libraries(dc_engine_anvil_streaming
 # be inventing the obligation. So this library is what the harness AND the
 # firmware link, it never sees dc_vendor, and it is in DC_ENGINE_TARGET_SOURCES
 # above so the xtensa compiler builds it on every host configure.
-#
-# Nothing links it yet -- the replay driver picks it up in the next commit. It is
-# defined here because it is the adapter's build rule, and a library defined
-# beside its sources is easier to read than one that appears with its first user.
 add_library(dc_engine_kraken STATIC engine/src/kraken/kraken_frame_streaming.cpp)
 target_link_libraries(dc_engine_kraken
   PUBLIC dc_engine
@@ -208,6 +204,7 @@ add_executable(dc_tests
   harness/tests/test_console_ladder.cpp
   harness/tests/test_frame_reassembler.cpp
   harness/tests/test_gap_histogram.cpp
+  harness/tests/test_kraken_adapter.cpp
   harness/tests/test_ladder_render.cpp
   harness/tests/test_panel_budget.cpp
   harness/tests/test_parser_equivalence.cpp
@@ -384,20 +381,30 @@ add_test(NAME dc_channel_race COMMAND dc_tsan_workload 1)
 # tests are deliverable 2's provable end state — the reader dispatches to
 # Kraken's decoder, the decoder names every record, and the run exits clean.
 #
-# Only dc_replay, not dc_ladder: the ladder runs the replay DRIVER, which feeds
-# the Anvil adapter, and stage A ships Kraken's decoder as a classifier. The
-# driver refuses a non-Anvil trace loudly for that reason, and
-# dc_replay_kraken_refused_by_driver below pins the refusal.
+# M4 STAGE B1: dc_ladder RUNS THESE NOW TOO. Stage A could only offer dc_replay,
+# because the ladder drives the replay DRIVER and the driver had no Kraken
+# adapter — it refused the venue loudly instead. With the adapter in, the whole
+# chain (parse -> ladder -> truncate -> apply -> publish -> draw) runs end to
+# end on every committed slice, which is the invariant-#6 claim for this stage
+# and is a strictly stronger statement than "the reader can name the records".
 foreach(_k d10 d25 d100)
   add_test(NAME dc_replay_kraken_btcusd_${_k}
     COMMAND dc_replay
             ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_btcusd_${_k}_20260816.ndjson)
+  add_test(NAME dc_ladder_kraken_btcusd_${_k}
+    COMMAND dc_ladder
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_btcusd_${_k}_20260816.ndjson
+            --no-color)
 endforeach()
 # The quiet pair, which is the only artefact in the repository containing a
 # nine-second healthy silence — deliverable 4's demonstration runs on this file.
 add_test(NAME dc_replay_kraken_quiet_pair
   COMMAND dc_replay
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260816.ndjson)
+add_test(NAME dc_ladder_kraken_quiet_pair
+  COMMAND dc_ladder
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260816.ndjson
+          --no-color)
 # ...and the EXTREME of the same case, captured at a second hour (2026-08-17):
 # 25,843 ms of healthy book silence with the heartbeat keeping 936-1,042 ms time
 # straight through it. This is the trace the staleness ruling exists to serve,
@@ -406,6 +413,13 @@ add_test(NAME dc_replay_kraken_quiet_pair
 add_test(NAME dc_replay_kraken_quiet_pair_extreme
   COMMAND dc_replay
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260817.ndjson)
+# The mid-stream slice through the LADDER: no subscribe, no ack, no snapshot, so
+# the whole chain runs with a permanently stale book and an empty ladder. That is
+# a different claim from "no data arrived" and nothing else committed makes it.
+add_test(NAME dc_ladder_kraken_quiet_pair_extreme
+  COMMAND dc_ladder
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260817.ndjson
+          --no-color)
 
 # The taxonomy pin, over EVERY committed trace, Anvil included. An unpinned
 # trace fails rather than skips (see dc_taxonomy_main.cpp): adding a committed
