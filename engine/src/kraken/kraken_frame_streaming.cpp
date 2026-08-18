@@ -391,6 +391,16 @@ private:
         std::size_t channel_len = 0;
         char type[16] = {};
         std::size_t type_len = 0;
+        // The method NAME, not merely its presence. Until M4 stage B2 this
+        // parser filed every `method` frame as a subscribe ack, which was true
+        // of every frame in every capture and false of the wire: the healing
+        // path sends an UNSUBSCRIBE, and its ack has the identical shape.
+        // `unsubscribe` is 11 characters, so 16 holds it with room and a longer
+        // method truncates into a name that matches neither literal below and
+        // therefore reads as Unknown, which is the right answer for a method
+        // this build does not know.
+        char method[16] = {};
+        std::size_t method_len = 0;
 
         // `data` is scanned in place when it is met, which requires knowing the
         // channel first. Every captured book message puts `channel` before
@@ -424,6 +434,7 @@ private:
             } else if (key_is(key, "method")) {
                 StringToken v;
                 if (!scan_string(v, /*capture=*/true)) { return ParseStatus::NotJson; }
+                method_len = copy_small(method, sizeof method, v.text);
                 have_method = true;
             } else if (key_is(key, "success")) {
                 bool b = false;
@@ -476,7 +487,16 @@ private:
         }
         if (have_channel && ch == "heartbeat") { return finish(FrameKind::Heartbeat); }
         if (have_channel && ch == "status") { return finish(FrameKind::Status); }
-        if (have_method) { return finish(FrameKind::SubscribeAck); }
+        if (have_method) {
+            const std::string_view m(method, method_len);
+            if (m == "subscribe") { return finish(FrameKind::SubscribeAck); }
+            if (m == "unsubscribe") { return finish(FrameKind::UnsubscribeAck); }
+            // A method this build does not know — `ping`/`pong` are the ones
+            // Kraken v2 offers and M6 owns. Tolerated, counted, ignored, exactly
+            // as an unknown channel is: filing it as a subscribe ack is how the
+            // defect above happened.
+            return finish(FrameKind::Unknown);
+        }
         return finish(FrameKind::Unknown);
     }
 

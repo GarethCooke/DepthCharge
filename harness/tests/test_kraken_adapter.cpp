@@ -1353,3 +1353,99 @@ TEST_CASE("the checksum ledger is total: seen == matched + failed + unverifiable
     CHECK(k.checksums_seen ==
           k.checksums_matched + k.checksums_failed + k.checksums_unverifiable);
 }
+
+// ---------------------------------------------------------------------------
+// M4 STAGE B2 — THE FRAME THAT HAD NEVER BEEN CAPTURED
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an unsubscribe ack is not a subscribe ack") {
+    // ========================================================================
+    // FOUND BY CAPTURING THE RESYNC SLICE, NOT BY READING THE PARSER.
+    // ========================================================================
+    //
+    // `{"method":"unsubscribe","result":{...},"success":true}` is identical in
+    // every structural respect to a subscribe ack — no `channel`, no `type`,
+    // `method` + `result` + `success` — and until B2 the parser did not read the
+    // method name at all: `if (have_method) return SubscribeAck`.
+    //
+    // NO CAPTURE COULD HAVE CAUGHT IT, and that is the point rather than an
+    // excuse. The healing path is the first thing this project has ever built
+    // that SENDS an unsubscribe, so before 2026-08-18 no trace at any venue
+    // contained one. Same class as B1's truncation defect: the discriminating
+    // input did not exist, so the code and every committed file agreed.
+    //
+    // Benign while the venue says `success:true`. The failure it was one refused
+    // unsubscribe away from is not benign at all — `on_ack` would have latched
+    // `Refused`, which the firmware turns into `die()`.
+    std::vector<FeedEvent> events;
+    auto sink = [&events](const FeedEvent& ev) { events.push_back(ev); };
+
+    SUBCASE("a successful unsubscribe leaves the subscription state alone") {
+        KrakenAdapter adapter(kKrakenBtcUsd, 25);
+        adapter.on_frame(
+            R"({"method":"subscribe","result":{"channel":"book","depth":25,)"
+            R"("snapshot":true,"symbol":"BTC/USD"},"success":true})",
+            sink);
+        REQUIRE(adapter.subscribe_state() == KrakenAdapter::SubscribeState::Subscribed);
+
+        adapter.on_frame(
+            R"({"method":"unsubscribe","result":{"channel":"book","depth":25,)"
+            R"("symbol":"BTC/USD"},"success":true})",
+            sink);
+        CHECK(adapter.stats().unsubscribe_acks == 1);
+        CHECK(adapter.stats().acks == 1);          // NOT counted as a second subscribe
+        CHECK_FALSE(adapter.refused());
+    }
+
+    SUBCASE("a REFUSED unsubscribe does not latch refused() and kill the board") {
+        // The assertion the defect was one wire answer away from failing.
+        KrakenAdapter adapter(kKrakenBtcUsd, 25);
+        adapter.on_frame(
+            R"({"method":"unsubscribe","result":{"channel":"book"},)"
+            R"("success":false,"error":"Subscription Not Found"})",
+            sink);
+        CHECK(adapter.stats().unsubscribe_acks == 1);
+        CHECK(adapter.stats().unsubscribe_refused == 1);
+        CHECK_FALSE(adapter.refused());
+        CHECK(adapter.subscribe_state() == KrakenAdapter::SubscribeState::Unknown);
+        // It still drops the book, because we no longer know what we are
+        // subscribed to and grey is the conservative direction.
+        REQUIRE(events.size() == 1);
+        CHECK(events[0].reason == GapReason::Resync);
+    }
+
+    SUBCASE("the ack drops the book, so a frozen ladder cannot render live") {
+        KrakenAdapter adapter(kKrakenBtcUsd, 25);
+        adapter.on_frame(kHealSnapshot, sink);
+        REQUIRE(adapter.has_baseline());
+        REQUIRE(adapter.bid_count() == 2);
+
+        adapter.on_frame(
+            R"({"method":"unsubscribe","result":{"channel":"book","depth":25,)"
+            R"("symbol":"BTC/USD"},"success":true})",
+            sink);
+        REQUIRE(events.size() == 2);
+        CHECK(events[1].kind == FeedEvent::Kind::Gap);
+        CHECK(events[1].reason == GapReason::Resync);
+        CHECK_FALSE(adapter.has_baseline());
+        CHECK(adapter.bid_count() == 0);
+        // AND IT IS NOT A RESYNC REQUEST. The transport sent the unsubscribe; it
+        // is mid-sequence and about to subscribe. A latch asking it to do what it
+        // is already doing is the retry storm §9 (2026-08-16 pm) is about.
+        CHECK_FALSE(adapter.resync_wanted());
+        CHECK(adapter.stats().resyncs_requested == 0);
+    }
+
+    SUBCASE("a method this build does not know is tolerated, counted, ignored") {
+        // `ping`/`pong` are Kraken v2's other methods and M6 owns them. Filing an
+        // unrecognised method as a subscribe ack is precisely how the defect
+        // above happened, so the fallback is Unknown rather than the nearest
+        // familiar thing.
+        KrakenAdapter adapter(kKrakenBtcUsd, 25);
+        adapter.on_frame(R"({"method":"pong","time_in":"x","time_out":"y"})", sink);
+        CHECK(adapter.stats().unknown_kind == 1);
+        CHECK(adapter.stats().acks == 0);
+        CHECK(adapter.stats().unsubscribe_acks == 0);
+        CHECK(events.empty());
+    }
+}

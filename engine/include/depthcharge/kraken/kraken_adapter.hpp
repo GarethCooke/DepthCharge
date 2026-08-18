@@ -267,7 +267,9 @@ public:
         std::uint64_t update_frames = 0;
         std::uint64_t heartbeats = 0;       // the liveness signal
         std::uint64_t status_frames = 0;
-        std::uint64_t acks = 0;
+        std::uint64_t acks = 0;              // method == "subscribe"
+        std::uint64_t unsubscribe_acks = 0;  // method == "unsubscribe" — B2's resync
+        std::uint64_t unsubscribe_refused = 0;
         std::uint64_t unknown_kind = 0;
         std::uint64_t parse_errors = 0;     // NotJson / BadShape
         std::uint64_t price_errors = 0;     // BadPrice — a scale disagreement
@@ -385,6 +387,7 @@ public:
             case FrameKind::Heartbeat:    ++stats_.heartbeats; break;
             case FrameKind::Status:       ++stats_.status_frames; break;
             case FrameKind::SubscribeAck: on_ack(sink); break;
+            case FrameKind::UnsubscribeAck: on_unsubscribe_ack(sink); break;
             // The verification runs AFTER the events are emitted, not instead of
             // them, and the order is the honest one: the deltas we applied did
             // happen, and the Gap that follows says the result cannot be trusted.
@@ -533,6 +536,37 @@ private:
             static_cast<std::uint32_t>(frame_.ack_depth) != depth_) {
             ++stats_.ack_depth_mismatch;
         }
+    }
+
+    // THE VENUE HAS CONFIRMED IT WILL STOP TELLING US ABOUT THIS BOOK, WHICH IS
+    // A FACT ON THE WIRE AND NOT A POLICY — so the book goes with it.
+    //
+    // Measured on the resync capture of 2026-08-18: between the unsubscribe ack
+    // and the re-subscription's snapshot there is a **3,548 ms hole in book
+    // events**, and the 1 Hz heartbeat runs straight through it. So no watchdog
+    // fires, nothing else on the connection looks wrong, and a book left
+    // baselined across that window is a ladder that has stopped moving while
+    // rendering live — invariant #5's one unacceptable output, produced by our
+    // own resubscribe rather than by anything the venue did.
+    //
+    // `Gap{Resync}` and no new vocabulary: §4 has carried that reason since M0
+    // for exactly this, and `Book`'s own initial `stale_reason` is already
+    // `Resync` for the same "nothing has baselined this" meaning.
+    //
+    // A REFUSED unsubscribe drops the book too, and that is deliberate rather
+    // than an oversight. We asked to leave, the venue said no, and what we now
+    // hold is a book whose subscription state we do not know — the conservative
+    // direction is grey, and the venue keeps streaming updates that will
+    // re-baseline nothing until the transport sorts it out. It does NOT set
+    // `resync_wanted`: the transport initiated this and is mid-sequence, and a
+    // latch asking it to do again what it is already doing is the retry storm
+    // ARCHITECTURE §9 (2026-08-16 pm) is about.
+    template <typename Sink>
+    void on_unsubscribe_ack(Sink& sink) {
+        ++stats_.unsubscribe_acks;
+        if (!frame_.ack_success || frame_.ack_has_error) { ++stats_.unsubscribe_refused; }
+        has_checksum_ = false;
+        drop_book(GapReason::Resync, sink);
     }
 
     // A snapshot REPLACES, **AND IT TRUNCATES TO THE SUBSCRIBED DEPTH LIKE

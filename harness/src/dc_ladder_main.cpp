@@ -182,14 +182,18 @@ void print_anvil_adapter(const ReplayResult& r) {
 
 void print_kraken_adapter(const ReplayResult& r) {
     const auto& k = r.kraken;
+    // `unsub` is printed beside `ack` rather than folded into it: the two frames
+    // are structurally identical on this wire and mean opposite things, and an
+    // adapter that conflated them was the defect the resync capture found.
     std::printf("adapter   : events=%llu  snapshot=%llu update=%llu heartbeat=%llu "
-                "status=%llu ack=%llu\n",
+                "status=%llu ack=%llu unsub=%llu\n",
                 ull(k.events_out),
                 ull(k.snapshot_frames),
                 ull(k.update_frames),
                 ull(k.heartbeats),
                 ull(k.status_frames),
-                ull(k.acks));
+                ull(k.acks),
+                ull(k.unsubscribe_acks));
     std::printf("            parse_errors=%llu price_errors=%llu qty_errors=%llu "
                 "other_symbol=%llu unknown_kind=%llu\n",
                 ull(k.parse_errors),

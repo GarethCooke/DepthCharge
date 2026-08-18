@@ -65,6 +65,21 @@ enum class FrameKind : std::uint8_t {
     BookSnapshot,  // book/snapshot — a full replace to the subscribed depth
     BookUpdate,    // book/update   — levels amended; qty 0 removes
     SubscribeAck,  // no `channel`, no `type`: method + result + success
+    // THE SAME SHAPE AS THE ABOVE, AND A DIFFERENT MEANING (M4 stage B2).
+    //
+    // `{"method":"unsubscribe","result":{...},"success":true}` — identical in
+    // every structural respect to a subscribe ack, distinguished only by the
+    // method name. Until B2 this parser did not read that name, so an
+    // unsubscribe ack was filed as a subscribe ack: harmless while it said
+    // `success:true`, and a latched `refused()` — which the firmware turns into
+    // `die()` — the first time an unsubscribe failed.
+    //
+    // No capture could have caught it. The healing path is the first thing in
+    // this project that ever sends an `unsubscribe`, so until the resync slice
+    // was captured on 2026-08-18 there was no such frame in the corpus at all.
+    // Same class as the truncation defect of B1's review: the discriminating
+    // input did not exist, so the code and every file agreed.
+    UnsubscribeAck,
 };
 
 enum class ParseStatus : std::uint8_t {
