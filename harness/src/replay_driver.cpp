@@ -163,8 +163,14 @@ private:
 
         current_frame_ = 0;  // no frame arrived; this event is the transport's
         current_rx_ns_ = watchdog_ns;
+        // This function owns the episode bookkeeping for its own gap, because a
+        // watchdog gap is timed from the EXPIRY and not from a frame that never
+        // arrived. The flag tells `on_event` to keep its hands off — see the
+        // adapter-gap branch there.
+        synthesising_watchdog_gap_ = true;
         decoder_.on_transport_gap(GapReason::Disconnect,
                                   [this](const FeedEvent& ev) { on_event(ev); });
+        synthesising_watchdog_gap_ = false;
 
         // THE BACKLOG DIED WITH THE SOCKET (M4 stage A2). A reconnect is given a
         // fresh server-side send queue and a fresh snapshot, so an estimate
@@ -211,9 +217,49 @@ private:
         book_.apply(ev);
         const bool is_stale = book_.status() == FeedStatus::Stale;
 
-        if (ev.kind == FeedEvent::Kind::Gap && !episodes_.empty() &&
-            episodes_.back().gap_seq == 0) {
-            episodes_.back().gap_seq = ev.seq;
+        if (ev.kind == FeedEvent::Kind::Gap) {
+            const bool open = !episodes_.empty() && !episodes_.back().cleared;
+            if (synthesising_watchdog_gap_) {
+                if (open && episodes_.back().gap_seq == 0) {
+                    episodes_.back().gap_seq = ev.seq;
+                }
+            } else if (!open) {
+                // AN ADAPTER-ORIGINATED GAP OPENS AN EPISODE TOO (M4 stage B2).
+                //
+                // Until B2 every Gap in this harness came from the watchdog
+                // above, so `episodes` and "windows the panel was grey for" were
+                // the same list by accident. The Kraken adapter now raises three
+                // of its own — `ChecksumFail` when the venue's CRC32 disagrees,
+                // `Resync` when an unsubscribe ack says the venue has stopped
+                // talking about this book, and `Disconnect` on a refused
+                // subscribe — and every one of them greys the panel through
+                // `Book::mark_stale` while leaving this list empty.
+                //
+                // That is an instrument pointed one inch to the left of the
+                // thing it is named for: `StaleEpisode`'s own comment calls it
+                // "the invariant-5 evidence the goldens assert on", and the
+                // resync slice's entire purpose is a stale window it would have
+                // reported as none. No committed golden moves, because no
+                // committed slice yet contains an adapter-raised Gap — which is
+                // also exactly why nothing caught it.
+                //
+                // `watchdog_rx_ns` is the arriving frame's own timestamp here,
+                // not an expiry: this outage began when the message that proved
+                // it arrived, so the grey window is measured from there.
+                // `observed_gap_ms` stays 0, which is the true statement — no
+                // silence caused this, a frame's CONTENT did.
+                StaleEpisode ep;
+                ep.reason = ev.reason;
+                ep.frame_before = current_frame_;
+                ep.watchdog_rx_ns = current_rx_ns_;
+                ep.gap_events = 1;
+                ep.gap_seq = ev.seq;
+                episodes_.push_back(ep);
+            } else {
+                // Already grey, and told again — the same outage continuing, for
+                // the same reason the watchdog folds its own repeats in.
+                ++episodes_.back().gap_events;
+            }
         }
         if (was_stale && !is_stale && !episodes_.empty() && !episodes_.back().cleared) {
             StaleEpisode& ep = episodes_.back();
@@ -264,6 +310,9 @@ private:
     DisplaySnapshot first_stale_{};
 
     std::vector<StaleEpisode> episodes_;
+    // True only while raise_watchdog_gap is driving the adapter, so on_event can
+    // tell a gap this harness synthesised from one the adapter decided on.
+    bool synthesising_watchdog_gap_ = false;
     std::size_t frames_ = 0;
     std::size_t events_ = 0;
     std::size_t liveness_arrivals_ = 0;

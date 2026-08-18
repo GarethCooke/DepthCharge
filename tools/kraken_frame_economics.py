@@ -170,6 +170,24 @@ KNOWN_ANSWERS: dict[str, dict[str, int]] = {
         frames=92, checksummed=30, ok_truncating=30, ok_never_truncating=30,
         ok_from_float=0, roundtrip_survivors=67, price_decimals=4, qty_decimals=8,
         evicted=19, stale_reentries=0),
+    # THE RESYNC SLICE (M4 stage B2). Two subscriptions on one connection, so 19
+    # checksums split across two books -- and 19/19 clean, which is the figure
+    # that says the second baseline is as good as the first.
+    #
+    # `ok_never_truncating` reads 19 as well, so THIS TRACE DOES NOT GUARD THE
+    # TRUNCATION RULE and must never be cited as if it did. Two independent
+    # reasons, both already on record: the quiet pair does not retrace enough
+    # ranks for a wrongly-kept level to re-enter the top 10 (see
+    # `stale_reentries` and its counterexample above), and a resync HEALS a
+    # non-truncating book outright because `replace()` clears every level -- so a
+    # trace containing one is a WORSE truncation golden than a trace without.
+    # The d10 and d25 BTC/USD slices hold that role and this one holds the
+    # resync; the tool prints the same warning after `--pin` rather than leaving
+    # it to be inferred from a column.
+    "kraken_minagbp_d25_resync_20260818.ndjson": dict(
+        frames=96, checksummed=19, ok_truncating=19, ok_never_truncating=19,
+        ok_from_float=0, roundtrip_survivors=91, price_decimals=4, qty_decimals=8,
+        evicted=3, stale_reentries=0),
 }
 
 

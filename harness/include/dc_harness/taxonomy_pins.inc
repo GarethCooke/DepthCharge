@@ -135,3 +135,32 @@
      /*wd_declared=*/0, /*wd_anvil=*/36, /*book_wd_declared=*/3, /*book_wd_anvil=*/10,
      /*liveness_events=*/95, /*liveness_firings=*/0,
      "book/update=49 heartbeat=95"},
+// Added 2026-08-18 (M4 stage B2). THE RESYNC SLICE, and the first committed
+// trace at any venue in which this client SPEAKS TWICE: `tx=3` is a subscribe,
+// an unsubscribe and a second subscribe, provoked deliberately mid-capture by
+// `capture_kraken.py --resubscribe-after` on ONE connection.
+//
+// `snapshots=2, resyncs=1` is the whole row. The venue serves a second
+// `book/snapshot` mid-stream and — measured on the wire the same evening — it
+// is byte-shape IDENTICAL to the on-connect one: same channel, same type, same
+// `data[0]` keys, no marker of any kind. So the resync is detectable ONLY by
+// position, which is exactly what the venue-free predicate uses, and a
+// Kraken-specific branch would have had nothing to branch on.
+//
+// `ack:unsubscribe=1` is new to this table and it found a defect: the adapter's
+// parser filed every `method` frame as a subscribe ack, because until this
+// capture existed no trace at any venue contained an unsubscribe. See
+// kraken_frame.hpp's FrameKind::UnsubscribeAck.
+//
+// The quiet pair, deliberately: a resync needs a wall-clock window long enough
+// for both subscriptions to calibrate their heartbeat clocks, and only a slow
+// pair gives 72 s of that in 14 KiB. The busy equivalent
+// (BTC/USD d25, 2,661 frames in 46 s) was captured the same evening, ran the
+// same path, and is 636 KiB — kept in `_local/`, quoted in NOTES-kraken.md.
+    {"kraken_minagbp_d25_resync_20260818.ndjson", "kraken",
+     /*records=*/99, /*tx=*/3, /*untyped=*/79, /*book_events=*/19,
+     /*snapshots=*/2, /*resyncs=*/1,
+     /*wd_declared=*/0, /*wd_anvil=*/32, /*book_wd_declared=*/2, /*book_wd_anvil=*/7,
+     /*liveness_events=*/73, /*liveness_firings=*/0,
+     "ack:subscribe=2 ack:unsubscribe=1 book/snapshot=2 book/update=17 heartbeat=73 "
+     "status/update=1 tx:subscribe=2 tx:unsubscribe=1"},

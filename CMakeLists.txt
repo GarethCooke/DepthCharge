@@ -422,6 +422,27 @@ add_test(NAME dc_ladder_kraken_quiet_pair_extreme
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260817.ndjson
           --no-color)
 
+# THE RESYNC SLICE (M4 stage B2) — the artefact the triage has owed since stage
+# A, and the only committed trace at any venue in which the CLIENT SPEAKS TWICE.
+# One connection, one deliberate unsubscribe/re-subscribe provoked mid-capture,
+# and a genuine mid-stream `book/snapshot` from the venue. Nothing about it is
+# synthetic: the resubscribe is a thing a client does and the snapshot is a thing
+# Kraken sent.
+#
+# What it holds that nothing else does: an ADAPTER-RAISED Gap — the unsubscribe
+# ack drops the book and raises Gap{Resync} — a 1,047 ms grey window that no
+# watchdog produced, a second baseline, and 19/19 checksums verified across both
+# subscriptions. Committed on the quiet pair because a resync needs a wall-clock
+# window long enough for two heartbeat calibrations and only a slow pair fits
+# that in 14 KiB.
+add_test(NAME dc_replay_kraken_resync
+  COMMAND dc_replay
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_resync_20260818.ndjson)
+add_test(NAME dc_ladder_kraken_resync
+  COMMAND dc_ladder
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_resync_20260818.ndjson
+          --no-color)
+
 # The taxonomy pin, over EVERY committed trace, Anvil included. An unpinned
 # trace fails rather than skips (see dc_taxonomy_main.cpp): adding a committed
 # trace without recording its figures would otherwise leave a green test that

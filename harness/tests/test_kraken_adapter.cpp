@@ -98,6 +98,8 @@ const char* kD25 = "kraken_btcusd_d25_20260816";
 const char* kD100 = "kraken_btcusd_d100_20260816";
 const char* kQuiet = "kraken_minagbp_d25_20260816";
 const char* kExtreme = "kraken_minagbp_d25_20260817";
+// M4 stage B2: one connection, two subscriptions, a real mid-stream snapshot.
+const char* kResync = "kraken_minagbp_d25_resync_20260818";
 
 ReplayResult replay(std::string_view name) {
     dc::harness::TraceReader reader(trace_path(name));
@@ -1447,5 +1449,97 @@ TEST_CASE("an unsubscribe ack is not a subscribe ack") {
         CHECK(adapter.stats().acks == 0);
         CHECK(adapter.stats().unsubscribe_acks == 0);
         CHECK(events.empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M4 STAGE B2 — THE RESYNC SLICE, CAPTURED DELIBERATELY
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the resync slice: one connection, two subscriptions, two books") {
+    // ========================================================================
+    // THE ARTEFACT THE TRIAGE HAS OWED SINCE STAGE A, AND WHAT MAKES IT REAL
+    // RATHER THAN SYNTHESISED.
+    // ========================================================================
+    //
+    // Captured 2026-08-18 by `capture_kraken.py --resubscribe-after 34`: one
+    // connection, one deliberate unsubscribe and re-subscribe sent mid-capture,
+    // and a genuine `book/snapshot` from the venue in reply. The CLIENT's half
+    // is provoked — that is what makes the case capturable at all, and it is a
+    // thing a client really does — and the VENUE's half is untouched. Nothing
+    // here is synthetic, which is the distinction ARCHITECTURE §9 (2026-08-18)
+    // draws between this and the checksum-mismatch case above.
+    //
+    // Measured on the wire while capturing, and it is the answer to the open
+    // question this stage inherited: **the mid-stream snapshot is byte-shape
+    // IDENTICAL to the on-connect one** — same `channel`, same `type`, same
+    // `data[0]` keys, no flag, no marker. So a resync is detectable only by
+    // POSITION, the venue-free predicate is the only thing that could work, and
+    // a Kraken-specific branch would have had nothing to branch on.
+    const ReplayResult r = replay(kResync);
+
+    CHECK(r.decoder == "kraken");
+    CHECK(r.frames == 99);
+    CHECK(r.kraken.snapshot_frames == 2);        // the on-connect one and the resync
+    CHECK(r.kraken.update_frames == 17);
+    CHECK(r.kraken.heartbeats == 73);
+    CHECK(r.kraken.status_frames == 1);
+    CHECK(r.kraken.acks == 2);                   // two subscribes, both accepted
+    CHECK(r.kraken.unsubscribe_acks == 1);
+    CHECK(r.kraken.unsubscribe_refused == 0);
+    CHECK(r.kraken.parse_errors == 0);
+    CHECK(r.kraken.unknown_kind == 0);
+    CHECK(r.kraken.levels_evicted == 3);
+
+    SUBCASE("both books check out against the venue, across the resync") {
+        // 19 = 2 snapshots + 17 updates, split across two subscriptions. The
+        // second baseline is as good as the first, and nothing is unverifiable:
+        // every book message arrived with a book to compare it to.
+        CHECK(r.kraken.checksums_seen == 19);
+        CHECK(r.kraken.checksums_matched == 19);
+        CHECK(r.kraken.checksums_failed == 0);
+        CHECK(r.kraken.checksums_unverifiable == 0);
+        CHECK(r.kraken.book_msgs_unchecksummed == 0);
+        CHECK(r.kraken.resyncs_requested == 0);   // nothing went wrong; we asked
+    }
+
+    SUBCASE("the unsubscribe ack greys the panel, and the snapshot clears it") {
+        // THE BOOK IS DROPPED BY A FRAME, NOT BY A TIMEOUT — which is the whole
+        // reason this slice had to exist. Measured on the busier BTC/USD capture
+        // of the same evening: 3,548 ms of no book events between the
+        // unsubscribe ack and the re-subscription's snapshot, with the 1 Hz
+        // heartbeat running straight through. So no watchdog fires, nothing on
+        // the connection looks wrong, and a book left baselined across that
+        // window renders live while standing still.
+        CHECK(r.book.gaps == 1);
+        REQUIRE(r.episodes.size() == 1);
+        const auto& ep = r.episodes[0];
+        CHECK(ep.reason == GapReason::Resync);
+        CHECK(ep.cleared);
+        CHECK(ep.gap_events == 1);
+        // ZERO SILENCE CAUSED IT. `observed_gap_ms` is the hole that opened the
+        // episode, and there was none — a frame's CONTENT did this. That is a
+        // different shape of outage from everything committed before tonight and
+        // it is worth an assertion rather than a comment.
+        CHECK(ep.observed_gap_ms == doctest::Approx(0.0));
+        CHECK(ep.stale_ms > 900.0);
+        CHECK(ep.stale_ms < 1300.0);
+        // ...and it really did clear, from the second snapshot rather than by
+        // running out of trace.
+        CHECK(ep.cleared_frame > ep.frame_before);
+        CHECK(r.final_snapshot.live());
+        CHECK(r.final_snapshot.bid_count == 25);
+        CHECK(r.final_snapshot.ask_count == 25);
+    }
+
+    SUBCASE("the liveness clock never notices, and that is correct") {
+        // The heartbeat is a property of the CONNECTION, and the connection did
+        // not blink. So the calibrated grey threshold sees nothing here — the
+        // panel greyed because the adapter said so, not because a clock expired.
+        // The two mechanisms are independent and this trace is the only place
+        // that shows it.
+        CHECK(r.liveness_arrivals == 73);
+        CHECK(r.liveness_median_ms == doctest::Approx(1000.0).epsilon(0.01));
+        CHECK(r.worst_age_ms <= 1100);
     }
 }
