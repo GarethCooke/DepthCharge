@@ -34,6 +34,23 @@ engine, host-first development, replay files as ground truth.
 Before committing a non-trivial change, run the owner's `code-review` skill against the
 diff. Commit messages: imperative, scoped, e.g. `engine: add FeedEvent contract types`.
 
+## Commit discipline — when per-commit verification runs
+
+*Verify each commit in a detached worktree* and *commit nothing* cannot both hold, and a session
+told both should say so rather than fake a verification it did not run. The resolution, standing
+from 2026-08-18:
+
+> **Per-commit verification runs as part of EXECUTING an approved split, not before it.** Propose
+> the split first, with the review done and nothing committed. Once approved: create the commits,
+> verify each one in a detached worktree with `CMAKE_HOME_DIRECTORY` **confirmed to point at the
+> worktree** before believing a pass, and amend the split if any commit is red. **Nothing is pushed
+> until every commit has been shown green in isolation.**
+
+The worktree confirmation is not ceremony. A per-commit verification that was silently building the
+main tree is one of the three failures behind the mutation-verification rule in `ARCHITECTURE.md`
+§9 (2026-08-18) — it passed, and it was measuring the wrong tree. Delete stale worktrees when done:
+a stale one is precisely where a green build comes from the wrong source.
+
 ## Hand-off protocol (end of every session)
 
 1. Append to the brief's **Session log**: date · model · done · decisions **with why** ·

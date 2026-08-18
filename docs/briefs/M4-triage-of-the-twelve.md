@@ -20,7 +20,7 @@ made it look, A2 is larger, and one item turns out to belong to C.
 | 6 | Freshness needs the client ping; Crow answers unconditionally and a pong behind a backlog measures the backlog | **deferred out of M4** | See decision (a). It is transport work, not estimator work. |
 | 7 | `age_ms` definition — queuing lag, not time-since-frame, not time-since-change | **A2** | Definition the code is written against. |
 | 8 | Backlogged-socket coverage gap; invariant #6 cannot be satisfied by a golden here | **A2** | A2 must say so in its own DoD rather than appear covered. |
-| 9 | The venue table no longer duplicates `kRxWatchdogMs`; stage B deletes a constant rather than reconciling two | **B** | Firmware-side, and the deletion is the easiest thing B does. |
+| 9 | The venue table no longer duplicates `kRxWatchdogMs`; stage B deletes a constant rather than reconciling two | **B** → **D (first act)**, 2026-08-18 | Firmware-side, and *the deletion is the easiest thing B does* was wrong — it was the easiest thing to WRITE and the only one that cannot be shown correct on the desk. See the reassignment below. |
 | 10 | Absence of a subscribe is not failure of a subscribe | **B** | The adapter's state machine, and the trap that makes the extreme slice unusable if missed. |
 | 11 | Healthy feed, no snapshot yet — two defensible renderings, unsettled | **split C / D** | See decision (b). The engine needs the state; the panel decides what it looks like. |
 | 12 | Synthesised snapshots named and rejected | **record only** | Done. No work order. |
@@ -62,9 +62,11 @@ deficit against the liveness signal; the header renders to minutes; the DoD stat
 backlogged-socket gap as uncoverable rather than passing over it. Uses the feeder-off Anvil trace
 and `drain-120ms`. No Kraken, no adapter, no capture. **One evening, unblocked now.**
 
-**B1 — the adapter.** Parse, subscribe-ack handling including item 10, deltas onto the phase-1
-book. Item 9's constant deleted. The `run_replay` guard comes off and `symbol_for()` /
-`console_ladder` are fixed in the same evening because that is when they break. **One evening.**
+**B1 — the adapter. ✅ done 2026-08-18.** Parse, subscribe-ack handling including item 10, deltas
+onto the phase-1 book. The `run_replay` guard comes off and `symbol_for()` / `console_ladder` are
+fixed in the same evening because that is when they break — and they were, exactly as predicted.
+**Item 9's constant was NOT deleted, and the reassignment is recorded below rather than left to
+read as a drop.** **One evening.**
 
 **B2 — the healing path.** CRC32, resync, item 2's captured slice, item 1's decoder-identity
 mutation test, and `slice_trace`'s reconnect self-containment settled alongside the capture
@@ -73,10 +75,39 @@ policy. **One evening.**
 **C — the dense-window book.** `engine/` only, plus item 11's uninitialised state. Goldens.
 **One evening, shares with nothing.**
 
-**D — the bench.** Item 3's criterion, item 11's rendering decided at the panel, venue proven on
-hardware. **One evening, [B] track, yours.**
+**D — the bench.** **Item 8/9's firmware lift FIRST** (see the reassignment below), then item 3's
+criterion, item 11's rendering decided at the panel, venue proven on hardware. **One evening,
+[B] track, yours.**
 
-Five evenings. Four agentic, one bench.
+~~Five evenings. Four agentic, one bench.~~ **Four evenings from 2026-08-18: B2 · C · D.** B1 and
+A2 are done; item 8 folded into D rather than taking an evening of its own.
+
+---
+
+## The reassignment: item 8/9's firmware lift moves from B1b to D's first act
+
+*Recorded 2026-08-18, at B1's approval.* B1's Part B was written as *rides if there is room;
+otherwise B1b*. It did not ride, and the honest resolution is not a B1b evening but a move.
+
+**Why it is not desk work.** Deleting `kRxWatchdogMs` and rewiring the RX watchdog onto the
+calibrated liveness threshold **changes when the panel greys** — from a 1,000 ms constant to
+`kThresholdMultiple ×` the observed liveness median, which at Anvil settles near 2,000 ms. The
+behaviour it replaces was established over M3's 23.6-hour soak. The desk can compile it (PlatformIO
+builds clean) and cannot show it correct; the only instrument that can is a bench run.
+
+**Why a partial lift is worse than none.** The point of item 8 is deletion: host and target
+currently compute the book's age by different code, and that divergence *cannot be closed by
+testing*. Moving `age_estimator.hpp` and `liveness_clock.hpp` into `engine/` while `firmware/src/`
+still includes `staleness.hpp` produces a **third** copy of the thing the deletion exists to
+remove. It is all or nothing, and "all" needs the bench.
+
+**Why D and not a new evening.** D is already the bench stage, and its acceptance run is the same
+soak the lift needs. Splitting them would mean two bench sessions to answer one question. So item 8
+becomes **D's first act — before any panel rendering is judged**, because a panel judged against a
+watchdog that is about to change is a panel judged twice.
+
+**The tripwire.** If anything before D proposes flashing a Kraken build, this closes first. See
+`DESIGN.html` §08, strain 22.
 
 ## What M4's DoD becomes
 

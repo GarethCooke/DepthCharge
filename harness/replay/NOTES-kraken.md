@@ -937,3 +937,107 @@ so a 15 ms grid would have reported a distribution largely composed of its own
 quantisation. `capture_anvil.py` deliberately keeps `monotonic_ns`, so its
 traces stay comparable with the four committed Anvil captures; switching it is a
 one-line change and a decision for whoever next re-captures that venue.
+
+---
+
+## M4 stage B1 (2026-08-18) — what the adapter measured on the way in
+
+Three findings, all taken *before* the adapter was written because each one
+decides its shape, and one defect found at review that the five committed slices
+could not catch.
+
+### 1. Every number on the book channel carries EXACTLY its declared precision
+
+Counted from the verbatim frame text — not through a JSON parse, which is the
+substitution Headline 3 shows is fatal here:
+
+| slice | price fractional digits | qty fractional digits | exponent tokens |
+| --- | --- | --- | ---: |
+| BTC/USD d10 | `{1: 1276}` | `{8: 1276}` | 0 |
+| BTC/USD d25 | `{1: 2458}` | `{8: 2458}` | 0 |
+| BTC/USD d100 | `{1: 4249}` | `{8: 4249}` | 0 |
+| MINA/GBP d25 (16th) | `{4: 107}` | `{8: 107}` | 0 |
+| MINA/GBP d25 (17th) | `{4: 82}` | `{8: 82}` | 0 |
+
+**8,172 level entries, one spelling each, no exceptions.** `price_precision` and
+`qty_precision` from the `instrument` channel are not approximations of what
+arrives — they are what arrives, every time.
+
+### 2. Therefore the CRC32 reproduces from INTEGER TICKS ALONE
+
+The checksum token is "decimal text, point removed, leading zeros stripped". At
+exactly the declared precision that string *is* the decimal spelling of the
+scaled integer: `0.00005100` at 8 decimals is 5,100 steps and tokenises to
+`5100` by either route. Verified end to end, book held as integers, truncated to
+the subscribed depth, no wire text retained anywhere:
+
+| slice | checksums reproduced from integers |
+| --- | ---: |
+| BTC/USD d10 | **839 / 839** |
+| BTC/USD d25 | **1,537 / 1,537** |
+| BTC/USD d100 | **2,472 / 2,472** |
+| MINA/GBP d25 (16th) | **30 / 30** |
+| MINA/GBP d25 (17th) | **0 / 49** |
+| | **4,878 / 4,878** on the four with a snapshot |
+
+**The fifth is not a failure, it is the mid-stream slice answering correctly.**
+It begins with no snapshot, so the book being checksummed was assembled from
+amendments to nothing — a different book that merely looks plausible. That is
+the measurement behind the adapter's *no baseline, no deltas* rule, and it also
+means **this slice can never be a CRC golden**.
+
+What this buys B2: the checksum path is a *check*, not a parse. Nothing has to
+retain wire text, so invariant #7 is satisfied structurally rather than by
+budget. The residual assumption is finding 1 — a venue that started sending
+`0.5` where it now sends `0.50000000` would break the reconstruction and *not*
+the parse, so B2's first CRC mismatch means this section before it means a lost
+message.
+
+### 3. The adapter's eviction counts reproduce stage 0's, independently
+
+`levels_evicted` is the count of levels **Kraken never sent a removal for** and
+the client had to drop itself. The C++ adapter and `kraken_frame_economics.py`
+were written months apart for different purposes and neither was tuned to the
+other:
+
+| slice | stage 0 (Python) | B1 adapter (C++) |
+| --- | ---: | ---: |
+| BTC/USD d10 | 275 | **275** |
+| BTC/USD d25 | 585 | **585** |
+| BTC/USD d100 | 1,156 | **1,156** |
+| MINA/GBP d25 | 19 | **19** |
+
+Two implementations, two languages, no shared parent — which is the independence
+test ARCHITECTURE §9's close-out row of 2026-08-17 says to apply before calling
+agreement corroboration. This one passes it.
+
+### 4. The defect the five slices could not catch
+
+`adopt_snapshot` truncated nothing: it seeded every level the frame carried,
+capped only at the 256-level staging buffer rather than at the subscribed depth.
+**All five slices were green.** Kraken serves exactly the depth requested
+(10/10, 25/25, 100/100 — measured at stage 0), so the frame never carried more
+than the subscription and the two caps coincided on every committed file.
+
+It reproduces in one synthetic frame: a 5-level snapshot against a subscribed
+depth of 2 left the ladder holding 5. The consequence is Headline 2's defect
+exactly — a non-truncating book, wrong in 1,077 of 1,537 messages at depth 25.
+
+Two live routes reach it, so it was not hypothetical: a capture whose metadata
+records no `depth` falls back to the firmware constant while the file may be a
+depth-100 slice, and `ack_depth_mismatch` exists precisely because a venue may
+serve a depth other than the one asked for — **Anvil already rounds depth UP**,
+and the depth section above requires this adapter to assume neither behaviour.
+
+Recorded here rather than only in the fix, because the general form is this
+milestone's own: *a corpus in which the interesting input never occurs produces a
+green that is a statement about the corpus.* See ARCHITECTURE §9, 2026-08-18.
+
+### Also worth having: the deep tiers do not fit
+
+`kMaxSnapshotLevels` is 256 and this venue offers 500 and 1000. A subscription at
+either would be clamped and the book would be short — **and the CRC32 would not
+catch it, because it covers only the top 10 levels.** Nothing subscribes that
+deep (the firmware constant is 25, and 500/1000 remain untested per the known
+unknowns above), but the limit is now a `static_assert` on the compile-time
+constant rather than a discovery.
