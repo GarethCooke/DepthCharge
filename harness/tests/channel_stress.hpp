@@ -55,7 +55,7 @@ inline void stamp(depthcharge::DisplaySnapshot& out, std::uint32_t version) noex
     out.version = version;
     out.symbol.id = mix(version, 1);
     out.symbol.price_decimals = static_cast<std::int32_t>(mix(version, 2) % 9u);
-    out.symbol.qty_step = static_cast<Qty>(1 + mix(version, 3) % 1000u);
+    out.symbol.qty_decimals = static_cast<std::int32_t>(mix(version, 3) % 9u);
     out.seq = mix64(version, 4);
 
     // Both enums stay inside their declared ranges: a value outside them would
@@ -96,7 +96,7 @@ inline const char* torn_field(const depthcharge::DisplaySnapshot& snap) noexcept
     if (snap.symbol.price_decimals != want.symbol.price_decimals) {
         return "symbol.price_decimals";
     }
-    if (snap.symbol.qty_step != want.symbol.qty_step) { return "symbol.qty_step"; }
+    if (snap.symbol.qty_decimals != want.symbol.qty_decimals) { return "symbol.qty_decimals"; }
     if (snap.seq != want.seq) { return "seq"; }
     if (snap.status != want.status) { return "status"; }
     if (snap.stale_reason != want.stale_reason) { return "stale_reason"; }

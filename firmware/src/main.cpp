@@ -95,10 +95,10 @@ void setup() {
     esp_log_level_set("*", ESP_LOG_INFO);
 
     ESP_LOGI(kTag, "DepthCharge M3 stage C — feed task, no panel yet");
-    ESP_LOGI(kTag, "engine: ticker %u, price scale 10^-%d, qty step %lld",
+    ESP_LOGI(kTag, "engine: ticker %u, price scale 10^-%d, qty scale 10^-%d",
         static_cast<unsigned>(anvil::kAnvilTicker101.id),
         static_cast<int>(anvil::kAnvilTicker101.price_decimals),
-        static_cast<long long>(anvil::kAnvilTicker101.qty_step));
+        static_cast<int>(anvil::kAnvilTicker101.qty_decimals));
 
     const HeapSample boot = sample_heap();
     ESP_LOGI(kTag, "heap at boot: free=%u largest=%u (internal)",

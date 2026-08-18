@@ -19,7 +19,14 @@
 namespace dc::testing {
 
 // Ticker 101 at Anvil's declared scale — the subject of every committed trace.
-inline constexpr depthcharge::SymbolSpec kSpec{101, 4, 1};
+//
+// The third field was `qty_step = 1` (a divisor, identity) until M4 stage B1 and
+// is now `qty_decimals = 0` (a scale, also identity). Spelled with designators
+// because the two mean different things and the literal `1` would have kept
+// compiling while quietly asserting one decimal place — the exact silent
+// re-interpretation the change was made to avoid at the venue level.
+inline constexpr depthcharge::SymbolSpec kSpec{
+    /*id=*/101, /*price_decimals=*/4, /*qty_decimals=*/0};
 
 // --- FeedEvent builders -------------------------------------------------------
 //

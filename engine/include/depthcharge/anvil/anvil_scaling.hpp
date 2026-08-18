@@ -72,23 +72,36 @@ inline bool price_text_to_ticks(std::string_view text, const SymbolSpec& spec,
     return true;
 }
 
-// Wire quantities are whole units; SymbolSpec::qty_step says how many wire units
-// make one Qty step (Anvil: 1, so this is an identity with an exactness check).
+// Anvil quotes quantities as whole units in a bare JSON integer, so this scales
+// that integer up to the declared step: `out = raw x 10^qty_decimals`, which is
+// the identity at Anvil's declared 0 and is what makes the field mean the same
+// thing at both venues (symbol.hpp).
+//
 // A negative resting size or fill size is not a quantity: the adapter is the
 // quarantine boundary (invariant #2), so it is rejected here rather than allowed
 // to reach the book and be drawn. The spec is validated once per frame by the
 // caller, not once per level (~250 of those at Anvil's live depth).
+//
+// THE OVERFLOW GUARD IS NOT DEFENSIVE PADDING. The predecessor of this function
+// DIVIDED by an integer step, so it could not overflow and did not check; this
+// one multiplies, and at a hypothetical qty_decimals of 8 an Anvil qty of 10^11
+// would wrap int64 silently and draw a negative bar. Rejecting is the same
+// answer this file gives every other wire value the declared scale cannot hold.
 inline bool wire_qty_to_steps(std::int64_t raw, const SymbolSpec& spec, Qty& out,
                               ParseStatus& status) noexcept {
     if (raw < 0) {
         status = ParseStatus::BadShape;
         return false;
     }
-    if (raw % spec.qty_step != 0) {
-        status = ParseStatus::BadShape;
-        return false;
+    std::int64_t scaled = raw;
+    for (std::int32_t k = 0; k < spec.qty_decimals; ++k) {
+        if (scaled > INT64_MAX / 10) {
+            status = ParseStatus::BadShape;
+            return false;
+        }
+        scaled *= 10;
     }
-    out = raw / spec.qty_step;
+    out = scaled;
     return true;
 }
 

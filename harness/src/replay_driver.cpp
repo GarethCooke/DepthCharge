@@ -265,7 +265,7 @@ depthcharge::SymbolSpec symbol_for(const TraceMeta& meta) {
     return depthcharge::SymbolSpec{
         meta.ticker >= 0 ? static_cast<std::uint32_t>(meta.ticker) : declared.id,
         declared.price_decimals,
-        declared.qty_step};
+        declared.qty_decimals};
 }
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,

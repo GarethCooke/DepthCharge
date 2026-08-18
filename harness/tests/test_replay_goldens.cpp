@@ -758,7 +758,7 @@ TEST_CASE("symbol_for is the single rule both the ladder and the goldens use") {
     meta.ticker = 101;
     CHECK(dc::harness::symbol_for(meta).id == kAnvilTicker101.id);
     CHECK(dc::harness::symbol_for(meta).price_decimals == kAnvilTicker101.price_decimals);
-    CHECK(dc::harness::symbol_for(meta).qty_step == kAnvilTicker101.qty_step);
+    CHECK(dc::harness::symbol_for(meta).qty_decimals == kAnvilTicker101.qty_decimals);
 
     // A trace for another ticker takes its id from the metadata but keeps the
     // declared scale — Anvil publishes no tick metadata, so the scale is

@@ -136,7 +136,7 @@ DisplaySnapshot make_book(int n, FeedStatus status = FeedStatus::Live,
     s.version = 42;
     s.symbol.id = 101;
     s.symbol.price_decimals = 4;
-    s.symbol.qty_step = 1;
+    s.symbol.qty_decimals = 0;
     s.status = status;
     s.stale_reason = reason;
     s.bid_count = static_cast<std::uint8_t>(n);
@@ -736,7 +736,7 @@ TEST_CASE("property: 3,000 random books all render inside the frame and never li
     DisplaySnapshot s{};
     s.symbol.id = 101;
     s.symbol.price_decimals = 4;
-    s.symbol.qty_step = 1;
+    s.symbol.qty_decimals = 0;
 
     for (int step = 0; step < 3000; ++step) {
         s.version = static_cast<std::uint32_t>(step + 1);

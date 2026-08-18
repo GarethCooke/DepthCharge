@@ -43,7 +43,8 @@ namespace depthcharge::anvil {
 // <= 4 decimals — and the adapter rejects anything finer rather than rounding
 // it, so a server that started quoting 5 decimals would fail loudly on the
 // first frame instead of drawing a subtly wrong ladder.
-inline constexpr SymbolSpec kAnvilTicker101{/*id=*/101, /*price_decimals=*/4, /*qty_step=*/1};
+inline constexpr SymbolSpec kAnvilTicker101{/*id=*/101, /*price_decimals=*/4,
+                                           /*qty_decimals=*/0};
 static_assert(kAnvilTicker101.valid(), "a declared SymbolSpec must be decodable");
 
 class AnvilAdapter {
