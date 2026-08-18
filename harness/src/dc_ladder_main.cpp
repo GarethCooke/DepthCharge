@@ -24,6 +24,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -152,15 +153,14 @@ bool parse_args(int argc, char** argv, Args& args) {
 // per call, an idiom that must not get anywhere near engine/ or firmware/.
 constexpr unsigned long long ull(std::uint64_t v) noexcept { return v; }
 
-void print_report(const Args& args, const ReplayResult& r) {
+// The adapter block, per venue. THE REPORT HAD TO GROW A SECOND HALF THE MOMENT
+// THE DRIVER GREW A SECOND ADAPTER, and printing Anvil's counters for a Kraken
+// run would not have failed — it would have printed a page of zeros for a replay
+// that worked perfectly, which is the same class of quiet wrongness as a golden
+// produced by the wrong parser. `r.decoder` is printed at the top so a reader
+// never has to infer which of the two blocks they are looking at.
+void print_anvil_adapter(const ReplayResult& r) {
     const auto& a = r.adapter;
-    std::printf("dc_ladder — DepthCharge M1 replay\n\n");
-    std::printf("trace     : %s\n", args.path.c_str());
-    std::printf("metadata  : ticker=%lld  mode=%s  captured_at=%s\n",
-                static_cast<long long>(r.meta.ticker),
-                r.meta.capture_mode.empty() ? "-" : r.meta.capture_mode.c_str(),
-                r.meta.captured_at.c_str());
-    std::printf("frames    : %zu over %.1f s\n", r.frames, r.span_seconds());
     std::printf("adapter   : events=%llu  snapshot=%llu book=%llu trade=%llu  "
                 "summary_ignored=%llu\n",
                 ull(a.events_out),
@@ -178,6 +178,62 @@ void print_report(const Args& args, const ReplayResult& r) {
     std::printf("            wire seq went backwards %llu times "
                 "(diagnostic only — Seq is synthesised)\n",
                 ull(a.wire_seq_backward));
+}
+
+void print_kraken_adapter(const ReplayResult& r) {
+    const auto& k = r.kraken;
+    std::printf("adapter   : events=%llu  snapshot=%llu update=%llu heartbeat=%llu "
+                "status=%llu ack=%llu\n",
+                ull(k.events_out),
+                ull(k.snapshot_frames),
+                ull(k.update_frames),
+                ull(k.heartbeats),
+                ull(k.status_frames),
+                ull(k.acks));
+    std::printf("            parse_errors=%llu price_errors=%llu qty_errors=%llu "
+                "other_symbol=%llu unknown_kind=%llu\n",
+                ull(k.parse_errors),
+                ull(k.price_errors),
+                ull(k.qty_errors),
+                ull(k.other_symbol),
+                ull(k.unknown_kind));
+    // The truncation line. `evicted` counts levels Kraken never sent a removal
+    // for and the client had to drop itself — stage 0 measured a non-truncating
+    // client wrong in 1,077 of 1,537 messages at depth 25, so a zero here on a
+    // busy BTC/USD slice means the rule is not running.
+    std::printf("            levels applied=%llu removed=%llu evicted_by_truncation=%llu "
+                "outside_depth=%llu unchanged=%llu\n",
+                ull(k.levels_applied),
+                ull(k.levels_removed),
+                ull(k.levels_evicted),
+                ull(k.levels_outside_depth),
+                ull(k.levels_unchanged));
+    std::printf("            checksums seen=%llu (CARRIED, NOT VERIFIED — that is B2); "
+                "deltas dropped before baseline=%llu\n",
+                ull(k.checksums_seen),
+                ull(k.deltas_before_baseline));
+}
+
+void print_report(const Args& args, const ReplayResult& r) {
+    std::printf("dc_ladder — DepthCharge replay\n\n");
+    std::printf("trace     : %s\n", args.path.c_str());
+    std::printf("decoder   : %s\n", r.decoder.c_str());
+    if (r.meta.venue == dc::harness::Venue::Kraken) {
+        std::printf("metadata  : symbol=%s  depth=%lld  captured_at=%s\n",
+                    r.meta.symbol.c_str(), static_cast<long long>(r.meta.depth),
+                    r.meta.captured_at.c_str());
+    } else {
+        std::printf("metadata  : ticker=%lld  mode=%s  captured_at=%s\n",
+                    static_cast<long long>(r.meta.ticker),
+                    r.meta.capture_mode.empty() ? "-" : r.meta.capture_mode.c_str(),
+                    r.meta.captured_at.c_str());
+    }
+    std::printf("frames    : %zu over %.1f s\n", r.frames, r.span_seconds());
+    if (r.meta.venue == dc::harness::Venue::Kraken) {
+        print_kraken_adapter(r);
+    } else {
+        print_anvil_adapter(r);
+    }
     std::printf("book      : snapshots_adopted=%llu trades=%llu gaps=%llu  "
                 "deltas applied=%llu removed=%llu absent=%llu\n",
                 ull(r.book.snapshots_adopted),
@@ -237,6 +293,18 @@ int main(int argc, char** argv) {
     try {
         dc::harness::TraceReader reader(args.path);
         const depthcharge::SymbolSpec symbol = dc::harness::symbol_for(reader.meta());
+
+        // The header names the venue the trace declares, not a compiled-in
+        // guess. Uppercased here rather than in venue.hpp because that table's
+        // `name` is the METADATA TAG — the string a capture file is matched on —
+        // and a table whose key is also a display string is one edit away from a
+        // trace that no longer parses.
+        std::string venue_label(dc::harness::venue_traits(reader.venue()).name);
+        for (char& ch : venue_label) {
+            ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        }
+        args.style.venue = venue_label;
+        args.style.symbol = reader.meta().symbol;  // empty at Anvil => the ticker id
 
         dc::harness::ReplayObserver observer;
         std::int64_t last_rx = 0;

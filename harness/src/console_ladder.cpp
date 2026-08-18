@@ -46,8 +46,15 @@ constexpr std::string_view kTape = "\x1b[97m";
 // The fixed text of the two rows whose width depends on their content. Named
 // rather than inlined so the width calculation below and the drawing code
 // cannot disagree about how long they are.
+//
+// `kVenue` USED TO BE THE LITERAL " ANVIL " AND IS NOW THE CALLER'S. It was
+// correct for three milestones and wrong from the moment `run_replay` stopped
+// refusing a second venue — a Kraken BTC/USD ladder headed ANVIL is not a
+// cosmetic defect, it is the ladder lying about where its numbers came from,
+// which is the same failure as a golden produced by the wrong parser one rung
+// down. See LadderStyle::venue for why the name is a style field and not a
+// DisplaySnapshot one.
 constexpr std::string_view kTitle = " DEPTHCHARGE ";
-constexpr std::string_view kVenue = " ANVIL ";
 constexpr std::string_view kSeqLabel = " seq ";
 // The age meter (M4 stage A2). It sits in the header beside `seq` — a NUMBER,
 // never a colour — because the 2026-08-17 ruling took book silence away from the
@@ -141,11 +148,27 @@ struct Ctx {
     std::size_t inner;    // box interior width, in columns
     std::size_t bar_w;
     std::int32_t dp;      // price decimals
+    std::int32_t qd;      // qty decimals
     Qty max_qty;
 };
 
-std::string qty_text(Qty q) {
-    return std::to_string(static_cast<long long>(q));
+// A quantity, at the venue's declared step.
+//
+// THIS PRINTED THE RAW STEP COUNT UNTIL M4 STAGE B1, and it was correct only
+// because every venue consumed so far had a qty step of 1. Anvil quotes whole
+// units, so the integer in the book WAS the human number. Kraken's step is
+// 1e-08: a resting size of 0.65540712 BTC is 65,540,712 steps, and the old
+// function drew that number in the size column beside a price of 62,818.8 — off
+// by eight orders of magnitude, perfectly legible, and wrong in a way no test
+// asserted because no test had a venue with a step to get wrong.
+//
+// Integer-only, via the engine's own formatter, exactly as the price column is:
+// the ladder must not be able to disagree with the book (invariant #3).
+std::string qty_text(Qty q, std::int32_t decimals) {
+    char buf[depthcharge::kMaxFormattedChars] = {};
+    const std::size_t n = depthcharge::format_scaled(q, decimals, buf, sizeof buf);
+    if (n == 0) { return "?"; }
+    return std::string(buf, n);
 }
 
 // Right-align within a fixed field.
@@ -229,7 +252,7 @@ void level_row(Row& r, const Ctx& ctx, const BookLevel& lvl, bool best, bool is_
     draw_bar(r, ctx, lvl.qty);
     // Quantities right-align against the frame, so the column reads as one
     // number no matter how wide the box is.
-    put_right_at(r, qty_text(lvl.qty), ctx.inner - 1);
+    put_right_at(r, qty_text(lvl.qty, ctx.qd), ctx.inner - 1);
     close_row(r, ctx, ctx.g.v);
 }
 
@@ -256,8 +279,16 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
     const std::size_t levels = std::min(style.levels, depthcharge::kDisplayLevels);
     const std::size_t bar_w = std::max<std::size_t>(style.bar_width, 4);
     const std::int32_t dp = snap.symbol.price_decimals;
+    const std::int32_t qd = snap.symbol.qty_decimals;
 
-    const std::string id_text = std::to_string(snap.symbol.id);
+    // The venue field, and the instrument. Both are the caller's to supply; an
+    // absent venue draws nothing rather than a default that has not been
+    // checked, and an absent symbol falls back to the integer id.
+    const std::string venue_text =
+        style.venue.empty() ? std::string{} : " " + std::string(style.venue) + " ";
+    const std::string id_text = style.symbol.empty()
+                                    ? std::to_string(snap.symbol.id)
+                                    : std::string(style.symbol);
     const std::string seq_text = std::to_string(static_cast<unsigned long long>(snap.seq));
     // "-" until the estimator has a window: "no reading yet" and "the book is
     // current" are different statements, and printing 0.0s for the first is the
@@ -277,7 +308,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
     // Both are computed here from the same string_views the drawing code uses,
     // so they cannot drift apart. tl + h + title + sep + venue + id + ' ' + sep
     // + seq label + seq + ' ', then ' ' + dot + ' ' + status.
-    const std::size_t header_cols = 2 + kTitle.size() + 1 + kVenue.size() + id_text.size() +
+    const std::size_t header_cols = 2 + kTitle.size() + 1 + venue_text.size() + id_text.size() +
                                     1 + 1 + kSeqLabel.size() + seq_text.size() + 1 +
                                     1 + kAgeLabel.size() + age_text.size() + 1 +
                                     kStatusLead + status.size();
@@ -287,7 +318,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
     const std::size_t inner =
         std::max({23 + bar_w, std::size_t{56}, header_cols, banner_cols});
 
-    const Ctx ctx{g, c, stale, inner, bar_w, dp, window_max_qty(snap, levels)};
+    const Ctx ctx{g, c, stale, inner, bar_w, dp, qd, window_max_qty(snap, levels)};
 
     std::string out;
     const auto line = [&out](const Row& r) {
@@ -304,7 +335,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
         r.put(kTitle);
         r.esc(ansi::kReset);
         r.glyph(g.sep);
-        r.put(kVenue);
+        r.put(venue_text);
         r.put(id_text);
         r.put(" ");
         r.glyph(g.sep);
@@ -403,7 +434,7 @@ std::string render_ladder(const DisplaySnapshot& snap, const LadderStyle& style)
         for (std::size_t i = 0; i < snap.trade_count; ++i) {
             const auto& t = snap.trades[i];
             const std::string px = format_px(t.px, dp);
-            const std::string qty = qty_text(t.qty);
+            const std::string qty = qty_text(t.qty, ctx.qd);
             // Aggressor direction, spelled twice over (arrow + letter) so the
             // tape survives an ASCII terminal.
             const bool buy = t.aggressor == Side::Bid;
