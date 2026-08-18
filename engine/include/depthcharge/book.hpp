@@ -3,8 +3,20 @@
 // ARCHITECTURE §5, "Phase 1 degenerate form (Anvil-only, M1–M3): snapshots-only
 // venues need no book maintenance at all — 'adopt latest snapshot' *is* the
 // engine, plus a trade ring. Build that first; do not gold-plate ahead of the
-// first delta venue." That is the whole of this file. The tick-indexed dense
-// window lands at M4 with Kraken, behind this same apply()/publish() face.
+// first delta venue."
+//
+// M4 STAGE B1 ADDS THE ONE THING THAT WAS MISSING, AND IT IS NOT THE DENSE
+// WINDOW. Kraken sends deltas, so `apply(Delta)` had to stop being a refusal —
+// but the tick-indexed dense window is stage C, and this is deliberately not it.
+// A Delta lands in the SAME sorted arrays a Snapshot already fills, by ordered
+// insert / amend / erase: O(depth) per level, over a ladder whose depth is 25
+// and whose measured traffic is 1.55 levels per message. That is the phase-1
+// shape doing one more thing, not a new engine.
+//
+// What stage C changes, so the boundary is legible from here: the dense window
+// replaces the STORAGE (a contiguous array of Qty addressed by px - anchor, plus
+// a cold tail) and leaves this apply()/publish() face alone. Nothing below
+// anticipates it, and nothing below should be reshaped in order to.
 //
 // Invariants this file is answerable for:
 //   #3  Integer ticks only — there is not a float in the type.
@@ -21,6 +33,7 @@
 
 #include "depthcharge/display_snapshot.hpp"
 #include "depthcharge/feed_event.hpp"
+#include "depthcharge/ladder.hpp"
 #include "depthcharge/symbol.hpp"
 
 namespace depthcharge {
@@ -38,7 +51,10 @@ public:
         std::uint64_t snapshots_adopted = 0;
         std::uint64_t trades_applied = 0;
         std::uint64_t gaps = 0;
-        std::uint64_t deltas_rejected = 0;   // phase-1 cannot apply a Delta
+        std::uint64_t deltas_applied = 0;    // amended or inserted a level
+        std::uint64_t deltas_removed = 0;    // of which qty == 0 removals
+        std::uint64_t deltas_absent = 0;     // removal for a level not held
+        std::uint64_t deltas_overflowed = 0; // a side already at kBookCapacity
         std::uint64_t publishes = 0;
     };
 
@@ -59,7 +75,7 @@ public:
             case FeedEvent::Kind::Snapshot: adopt(ev); break;
             case FeedEvent::Kind::Trade:    record_trade(ev); break;
             case FeedEvent::Kind::Gap:      mark_stale(ev.reason); break;
-            case FeedEvent::Kind::Delta:    reject_delta(); break;
+            case FeedEvent::Kind::Delta:    amend(ev); break;
         }
     }
 
@@ -130,13 +146,72 @@ private:
         ++stats_.gaps;
     }
 
-    // A phase-1 book has no way to amend a level. Silently ignoring a Delta
-    // would leave a stale ladder looking live — the one unacceptable output — so
-    // the book goes stale until the next Snapshot re-baselines it. Delta support
-    // arrives with the dense window at M4.
-    void reject_delta() noexcept {
-        ++stats_.deltas_rejected;
-        mark_stale(GapReason::Resync);
+    // One level, absolute quantity, `qty == 0` removes (ARCHITECTURE §4).
+    //
+    // A DELTA DOES NOT CLEAR STALE, AND THAT IS THE INVARIANT-5 HALF OF THIS
+    // FUNCTION. Only a Snapshot re-baselines the book. A book that is stale is
+    // one whose contents are UNKNOWN, and amending an unknown book produces
+    // another unknown book — so deltas keep arriving and being applied (the
+    // adapter is the one that decides whether they are worth applying at all),
+    // and the panel stays grey until something replaces the whole thing.
+    //
+    // The venue's adapter is responsible for not sending nonsense here: Kraken's
+    // drops updates that arrive before its first snapshot, because deltas onto
+    // an empty ladder reproduce 0 of 49 of the venue's checksums. This function
+    // is the mechanical half and makes no such judgement.
+    void amend(const FeedEvent& ev) noexcept {
+        if (ev.side == Side::Bid) {
+            amend_side(bids_, bid_count_, ev.px, ev.qty, Side::Bid);
+        } else {
+            amend_side(asks_, ask_count_, ev.px, ev.qty, Side::Ask);
+        }
+    }
+
+    // Ordered insert / amend / erase over the same sorted array a Snapshot
+    // fills. The ordering and the array shifting are `depthcharge::ladder`'s —
+    // SHARED WITH THE ADAPTER'S LADDER, because the engine's book is a mirror
+    // built entirely from what the adapter emits, and two private definitions of
+    // "better" that disagreed would draw a book the adapter never held.
+    void amend_side(BookLevel* side, std::uint32_t& count, PriceTicks px, Qty qty,
+                    Side s) noexcept {
+        const std::uint32_t at = ladder::rank_of(side, count, px, s);
+        const bool found = ladder::holds(side, count, at, px);
+
+        if (qty == 0) {
+            if (!found) {
+                // A removal for a level this book does not hold. Counted, not
+                // treated as a gap: at a truncating venue the level legitimately
+                // fell out of the subscribed depth before we ever saw it, and
+                // greying for that would be a lie about a book that is right.
+                ++stats_.deltas_absent;
+                return;
+            }
+            ladder::erase_at(side, count, at);
+            ++stats_.deltas_applied;
+            ++stats_.deltas_removed;
+            return;
+        }
+
+        if (found) {
+            side[at].qty = qty;
+            ++stats_.deltas_applied;
+            return;
+        }
+
+        if (at >= kBookCapacity) {
+            ++stats_.deltas_overflowed;
+            return;
+        }
+        BookLevel displaced{};
+        if (ladder::insert_at(side, count, at, BookLevel{px, qty}, kBookCapacity,
+                              displaced)) {
+            // Cannot happen through an adapter that truncates to a subscribed
+            // depth at or below this capacity, and counted rather than asserted
+            // for exactly that reason: if it ever fires, the number says so
+            // instead of the book silently dropping its worst level per message.
+            ++stats_.deltas_overflowed;
+        }
+        ++stats_.deltas_applied;
     }
 
     // Copy at most Cap levels; when ZeroFill, blank the rest of the destination

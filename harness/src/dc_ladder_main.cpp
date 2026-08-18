@@ -178,12 +178,14 @@ void print_report(const Args& args, const ReplayResult& r) {
     std::printf("            wire seq went backwards %llu times "
                 "(diagnostic only — Seq is synthesised)\n",
                 ull(a.wire_seq_backward));
-    std::printf("book      : snapshots_adopted=%llu trades=%llu gaps=%llu "
-                "deltas_rejected=%llu\n",
+    std::printf("book      : snapshots_adopted=%llu trades=%llu gaps=%llu  "
+                "deltas applied=%llu removed=%llu absent=%llu\n",
                 ull(r.book.snapshots_adopted),
                 ull(r.book.trades_applied),
                 ull(r.book.gaps),
-                ull(r.book.deltas_rejected));
+                ull(r.book.deltas_applied),
+                ull(r.book.deltas_removed),
+                ull(r.book.deltas_absent));
     std::printf("watchdog  : %.0f ms  ->  %zu stale episode(s)\n",
                 args.replay.disconnect_gap_ms > 0.0 ? args.replay.disconnect_gap_ms
                                                     : r.threshold_ms,

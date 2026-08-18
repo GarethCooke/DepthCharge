@@ -111,7 +111,13 @@ TEST_CASE("baseline trace: every frame is consumed and nothing is malformed") {
     CHECK(r.book.snapshots_adopted == 1089);
     CHECK(r.book.trades_applied == 136);
     CHECK(r.book.gaps == 0);
-    CHECK(r.book.deltas_rejected == 0);
+    // Anvil emits no Deltas at all -- `book` and `snapshot` are both full
+    // replaces on this wire. Kept as a zero rather than deleted with the old
+    // `deltas_rejected` counter: it is the assertion that the venue whose
+    // adapter did NOT change still produces no deltas after the book learned to
+    // apply them, which is the property this commit could most easily break.
+    CHECK(r.book.deltas_applied == 0);
+    CHECK(r.book.deltas_absent == 0);
 }
 
 TEST_CASE("baseline trace: the wire seq misbehaves and the synthesised Seq does not") {

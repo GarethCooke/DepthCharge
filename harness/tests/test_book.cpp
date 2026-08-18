@@ -23,6 +23,9 @@ using depthcharge::DisplaySnapshot;
 using depthcharge::FeedEvent;
 using depthcharge::FeedStatus;
 using depthcharge::GapReason;
+using depthcharge::PriceTicks;
+using depthcharge::Qty;
+using depthcharge::Seq;
 using depthcharge::Side;
 using depthcharge::SnapshotChannel;
 using dc::testing::gap_event;
@@ -166,27 +169,109 @@ TEST_CASE("every GapReason greys the panel; none of them is a soft warning") {
     }
 }
 
-TEST_CASE("a Delta the phase-1 book cannot apply goes stale rather than lying") {
+namespace {
+
+// A Delta, spelled once. The four cases below differ only in px/qty/side, and
+// building the event inline four times is how a test ends up asserting against
+// a field it forgot to set.
+FeedEvent delta_event(Seq seq, PriceTicks px, Qty qty, Side side) {
+    FeedEvent ev{};
+    ev.kind = FeedEvent::Kind::Delta;
+    ev.seq = seq;
+    ev.px = px;
+    ev.qty = qty;
+    ev.side = side;
+    return ev;
+}
+
+}  // namespace
+
+TEST_CASE("a Delta amends the book: insert, amend, remove, in price order") {
+    Book book(kSpec);
+    const std::vector<BookLevel> b{{99972, 9}, {99970, 5}}, a{{99979, 44}, {99981, 12}};
+    book.apply(snapshot_event(1, b, a));
+
+    SUBCASE("a level that exists is amended in place") {
+        book.apply(delta_event(2, 99972, 25, Side::Bid));
+        DisplaySnapshot snap{};
+        book.publish(snap);
+        CHECK(snap.bid_count == 2);
+        CHECK(snap.bids[0].px == 99972);
+        CHECK(snap.bids[0].qty == 25);
+        CHECK(book.stats().deltas_applied == 1);
+        CHECK(book.stats().deltas_removed == 0);
+    }
+
+    SUBCASE("qty of zero removes the level and closes the gap") {
+        book.apply(delta_event(2, 99972, 0, Side::Bid));
+        DisplaySnapshot snap{};
+        book.publish(snap);
+        CHECK(snap.bid_count == 1);
+        CHECK(snap.bids[0].px == 99970);   // the next-best bid moved up
+        CHECK(snap.bids[1].qty == 0);      // and the vacated row was blanked
+        CHECK(book.stats().deltas_removed == 1);
+    }
+
+    SUBCASE("a new level lands in rank order, not at the end") {
+        // 99971 belongs BETWEEN the two resting bids. Appending it would leave
+        // the ladder unsorted, which publish() copies out verbatim — so the
+        // panel would draw a bid below a worse bid and best_bid() would still
+        // read row 0. That is a wrong ladder that no count would catch.
+        book.apply(delta_event(2, 99971, 7, Side::Bid));
+        book.apply(delta_event(3, 99980, 3, Side::Ask));
+        DisplaySnapshot snap{};
+        book.publish(snap);
+        CHECK(snap.bid_count == 3);
+        CHECK(snap.bids[0].px == 99972);
+        CHECK(snap.bids[1].px == 99971);
+        CHECK(snap.bids[2].px == 99970);
+        CHECK(snap.ask_count == 3);
+        CHECK(snap.asks[0].px == 99979);
+        CHECK(snap.asks[1].px == 99980);
+        CHECK(snap.asks[2].px == 99981);
+    }
+
+    SUBCASE("a new best level takes the top of book") {
+        book.apply(delta_event(2, 99975, 11, Side::Bid));
+        DisplaySnapshot snap{};
+        book.publish(snap);
+        CHECK(snap.best_bid() == 99975);
+        CHECK(snap.spread_ticks() == 99979 - 99975);
+    }
+
+    SUBCASE("a removal for a level the book does not hold is counted, not applied") {
+        // At a truncating venue this is normal traffic: the level fell out of
+        // the subscribed depth before it was ever sent to us. Greying for it
+        // would be a lie about a book that is right.
+        book.apply(delta_event(2, 12345, 0, Side::Bid));
+        DisplaySnapshot snap{};
+        book.publish(snap);
+        CHECK(snap.bid_count == 2);
+        CHECK(book.stats().deltas_absent == 1);
+        CHECK(book.stats().deltas_applied == 0);
+        CHECK(snap.live());
+    }
+}
+
+TEST_CASE("a Delta never clears stale — only a Snapshot re-baselines the book") {
     Book book(kSpec);
     const std::vector<BookLevel> b{{99972, 9}}, a{{99979, 44}};
     book.apply(snapshot_event(1, b, a));
+    book.apply(gap_event(2, GapReason::Disconnect));
 
-    FeedEvent delta{};
-    delta.kind = FeedEvent::Kind::Delta;
-    delta.seq = 2;
-    delta.px = 99972;
-    delta.qty = 0;
-    delta.side = Side::Bid;
-    book.apply(delta);
-
+    // Deltas keep being applied across the gap — the book is UNKNOWN, and
+    // amending an unknown book leaves it unknown, which is the honest state.
+    // What must not happen is the panel going green again on an amendment.
+    book.apply(delta_event(3, 99972, 30, Side::Bid));
     DisplaySnapshot snap{};
     book.publish(snap);
-
-    // Silently ignoring it would leave a level on the panel that the venue has
-    // just removed — a stale ladder that looks live (invariant #5). Delta
-    // support arrives with the dense window at M4.
     CHECK_FALSE(snap.live());
-    CHECK(book.stats().deltas_rejected == 1);
+    CHECK(snap.stale_reason == GapReason::Disconnect);
+    CHECK(book.stats().deltas_applied == 1);
+
+    book.apply(snapshot_event(4, b, a));
+    book.publish(snap);
+    CHECK(snap.live());
 }
 
 TEST_CASE("the feed path allocates nothing after construction (invariant #7)") {
