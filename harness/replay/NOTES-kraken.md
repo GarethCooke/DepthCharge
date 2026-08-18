@@ -898,6 +898,13 @@ or added:
 
 ## Known unknowns still open
 
+**Three of these were closed on 2026-08-18 (M4 stage B2) and the list below is
+left standing unedited, because the statement of what was NOT known is the part
+worth keeping.** The checksum-failure path, the resubscribe question and the
+queue-vs-shed question are all answered in
+[the B2 section](#m4-stage-b2-2026-08-18--the-healing-path-and-four-things-the-wire-said)
+at the end of this file, which also restates what remains open.
+
 - **Depths 500 and 1000 were never subscribed.** No reason to; recorded so the
   tier table is not read as fully tested.
 - **`data` never held more than one entry.** A multi-symbol connection was
@@ -1041,3 +1048,227 @@ catch it, because it covers only the top 10 levels.** Nothing subscribes that
 deep (the firmware constant is 25, and 500/1000 remain untested per the known
 unknowns above), but the limit is now a `static_assert` on the compile-time
 constant rather than a discovery.
+
+---
+
+## M4 stage B2 (2026-08-18) — the healing path, and four things the wire said
+
+The checksum stops being a number the adapter carries and becomes a comparison it
+makes. Everything below was measured on the evening of 2026-08-18; the first two
+sections are about the check, the last three are about what building it exposed.
+
+### 1. The CRC32 verifies in the SHIPPING adapter, and reproduces B1's figure
+
+B1's 4,878 / 4,878 was a desk measurement in Python over stored decimal *text*,
+used to derive goldens. The C++ adapter now makes the same comparison on the same
+files, from scaled *integers*, with no wire text retained anywhere:
+
+| slice | checksums | matched | failed | unverifiable |
+| --- | ---: | ---: | ---: | ---: |
+| BTC/USD d10 | 839 | **839** | 0 | 0 |
+| BTC/USD d25 | 1,537 | **1,537** | 0 | 0 |
+| BTC/USD d100 | 2,472 | **2,472** | 0 | 0 |
+| MINA/GBP d25 (16th) | 30 | **30** | 0 | 0 |
+| MINA/GBP d25 (17th) | 49 | 0 | **0** | **49** |
+| | | **4,878 / 4,878** | | |
+
+Two languages and two representations agreeing on the same 4,878 numbers, neither
+derived from the other. That is a sharper independence than the eviction counts of
+B1, because the two routes to the checksum token are different arithmetic rather
+than the same arithmetic written twice.
+
+**The fifth slice reads 49 UNVERIFIABLE, not 49 failures, and the distinction is
+the whole reason it is in `NOT_A_CHECKSUM_GOLDEN`.** It has no opening snapshot,
+so there is no book to compare against; an adapter that compared anyway would
+report 49 mismatches, grey the panel, and blame the wire for a fact about the
+file. The three outcomes are counted separately and their sum is asserted to equal
+the number of checksums seen, so a fourth outcome cannot appear quietly.
+
+**Also measured, and it is a wire fact rather than an assumption:
+`book_msgs_unchecksummed` is 0 on all five slices.** Every `book/snapshot` and
+every `book/update` this venue sends carries a checksum. That counter exists
+because the failure it guards is silent — an adapter fed messages without
+checksums verifies nothing while every other counter looks healthy.
+
+### 2. WHAT THE CHECKSUM CANNOT SEE — measured directly, not inherited
+
+Stage 0 confirmed "top 10 regardless of subscribed depth" by reproducing 8,677
+captured checksums with a top-10 rule. That is strong evidence of the *rule* and
+no evidence at all about the *blind spot*, because every captured message agrees
+with both readings — the venue never sends a message whose only effect is
+invisible to its own checksum, having no reason to.
+
+So B2 measured the blind spot directly, with the input no capture contains: **a
+book edited BELOW level 10 does not move the checksum, and the same edit at level
+10 does.** Both are synthetic and both are mandatory (ARCHITECTURE §9,
+2026-08-18: where an adapter's assumption and a venue's behaviour could coincide,
+the synthetic case is the instrument and the golden is decoration).
+
+**At the shipped depth of 25 the CRC validates the top 10 levels a side — 20 of
+the 50 levels the ladder holds.** So the panel's 27 rows a side draw 10 validated
+levels, 15 that are rendered and never reached by the check, and 2 that are empty
+by construction. Stated plainly, with the arithmetic spelled out, because
+shipping it unstated would be the defect:
+
+- It is **not** a reason to distrust levels 11–25. A delta stream that checksums
+  clean at the top has provably lost no message, so an error down there would have
+  to be an error in DepthCharge rather than a wire loss.
+- It **is** the reason a defect confined below level 10 is undetectable by this
+  check — and stage 0 measured one of exactly that shape, the non-truncating book,
+  which is 100% correct on a top-10 CRC at depth 100 over 90 seconds.
+- It is why `kKrakenSubscribeDepth` is 25 rather than 100, and why the 500/1000
+  tiers carry a `static_assert` rather than a comment.
+
+The mutation that proves this is graded rather than decorative: widening
+`kChecksumLevels` from 10 to 25 turns **6 test cases and 28 assertions red**,
+including the four slices' 4,878. So the corpus discriminates the venue's rule,
+not merely our implementation of it.
+
+### 3. A CLIENT-INITIATED RESUBSCRIBE PRODUCES A SNAPSHOT INDISTINGUISHABLE FROM THE ON-CONNECT ONE
+
+The open question this stage inherited, and the answer is the strong form of
+"no difference". Captured 2026-08-18 with `capture_kraken.py --resubscribe-after`,
+one connection, one deliberate unsubscribe/re-subscribe pair:
+
+| | on-connect snapshot | mid-stream snapshot |
+| --- | --- | --- |
+| top-level keys | `channel`, `data`, `type` | `channel`, `data`, `type` |
+| `channel` / `type` | `book` / `snapshot` | `book` / `snapshot` |
+| `data[0]` keys | `asks`, `bids`, `checksum`, `symbol`, `timestamp` | identical |
+
+**There is no marker of any kind.** A resync is therefore detectable ONLY by
+position in the stream, which is exactly what the venue-free predicate uses — *a
+snapshot is a resync when a book event preceded it* — and a Kraken-specific branch
+would have had nothing to branch on. The predicate is not merely sufficient here;
+it is the only thing that could work.
+
+The committed artefact is
+[`kraken_minagbp_d25_resync_20260818.ndjson`](kraken_minagbp_d25_resync_20260818.ndjson)
+— 99 records, 14 KiB, `snapshots=2 resyncs=1`, taxonomy pinned, and the first
+committed trace at any venue in which **this client speaks twice** (`tx=3`). The
+quiet pair deliberately: a resync slice needs a wall-clock window long enough for
+both subscriptions to calibrate their heartbeat clocks, and only a slow pair fits
+72 s of that into 14 KiB. The busy equivalent — BTC/USD depth 25, 2,661 frames in
+46 s — was captured the same evening, ran the same path, and is 636 KiB; it stays
+in `_local/`.
+
+**Two things it also settles.** Measured on that BTC/USD capture: between the
+unsubscribe ack and the re-subscription's snapshot there is a **3,548 ms hole in
+book events**, and the 1 Hz heartbeat runs straight through it unbroken. So no
+watchdog fires and nothing on the connection looks wrong — which means a book left
+baselined across that window renders live while standing still, invariant #5's one
+forbidden output produced by our own resubscribe. The adapter therefore drops the
+book on the unsubscribe ack and raises `Gap{Resync}`; on the committed slice that
+is a **1,047 ms grey window that no watchdog produced**, and it is the first
+committed trace anywhere in this project whose stale episode was opened by a
+frame's CONTENT rather than by silence.
+
+### 4. THE UNSUBSCRIBE ACK IS SHAPED EXACTLY LIKE A SUBSCRIBE ACK, AND THE PARSER DID NOT LOOK
+
+Found by taking the capture above, not by reading the parser.
+
+```
+{"method":"subscribe",  "result":{...},"success":true}
+{"method":"unsubscribe","result":{...},"success":true}
+```
+
+No `channel`, no `type`, `method` + `result` + `success` in both. The parser's
+classification was `if (have_method) return SubscribeAck;` — it never read the
+method NAME. Benign while the venue says `success:true`; one refused unsubscribe
+from `on_ack` latching `Refused`, **which the firmware turns into `die()`**.
+
+**No capture could have caught it, and that is the point rather than the excuse.**
+The healing path is the first thing this project has ever built that SENDS an
+unsubscribe, so before 2026-08-18 no trace at any venue contained one. It is B1's
+truncation defect exactly: the discriminating input did not exist, so the code and
+every committed file agreed. The general rule is already on record (ARCHITECTURE
+§9, 2026-08-18) and this is its second instance in two evenings — worth noting
+that the rule's cheap operational form, *write the case where the client and the
+venue disagree*, would not have found this one either. What found it was
+**capturing a frame the corpus had never contained**, which is a third thing:
+neither a golden nor a synthetic case, but a deliberate widening of the corpus.
+
+`ack:unsubscribe` now appears in the taxonomy, `FrameKind::UnsubscribeAck` in the
+parser, and an unrecognised method (`ping`/`pong`, which M6 owns) falls to
+`Unknown` — tolerated, counted, ignored — rather than to the nearest familiar
+thing, since that fallback is how this happened.
+
+### 5. KRAKEN QUEUES. `age_ms` STANDS AT THIS VENUE
+
+The measurement B1 pinned as an open assumption with B2 named as its owner, and
+the one result tonight that changes a number already on the panel.
+`tools/kraken_backpressure_probe.py`, 2026-08-18, BTC/USD depth 25, **one
+connection, 80 s, three phases**, throttled by sleeping 120 ms after every message
+— the same lever `_local/drain-120ms.ndjson` uses at Anvil:
+
+| phase | delay | msgs | rate | checksums | lag p50 | lag worst | slope |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | 0 ms | 389 | 19.47/s | **367 / 367** | −1.456 s | −1.315 s | −0.000 s/s |
+| throttled | 120 ms | 343 | 8.63/s | **331 / 331** | 16.373 s | **26.017 s** | **+0.690 s/s** |
+| release | 0 ms | 1,255 | **64.20/s** | **1,207 / 1,207** | 6.498 s | 26.117 s | −1.411 s/s |
+
+**Three independent signals, all pointing the same way.**
+
+1. **Not one checksum failed** — 331/331 through the throttle, 1,905/1,905 across
+   all three phases. A shed update leaves a level wrong and the venue's own CRC32
+   says so within a message or two. **Nothing was lost.**
+2. **Lag grew +0.690 s per second**, to 26.0 s, read off the venue's own
+   microsecond `timestamp` on every book message. **Everything was late.**
+3. **On release the backlog drained at 64.2 msg/s against a 19.5 msg/s baseline**
+   — 3.3× — and the lag decayed at −1.411 s/s back to where it started. A server
+   that had shed would have had nothing to catch up with.
+
+Nothing lost + everything late + a backlog to deliver **is** a queue. So the
+deficit `age_estimator.hpp` computes is a queuing lag at Kraken as it is at Anvil,
+and **`age_ms` stands**. Row one of the brief's three-outcome table; rows two
+(sheds → stop and raise) and three (server disconnects us) did not occur, and the
+socket survived a 26 s backlog without closing.
+
+**The arithmetic closes on itself, which is what makes it more than three
+plausible columns.** A slope of 0.690 means we drained at 31% of the venue's rate,
+so the venue was producing 8.63 / 0.31 ≈ **27.8 msg/s** during the throttle. The
+release phase implies the same figure independently: it cleared ~27.5 s of backlog
+plus 19.5 s of live traffic — about 47 s of venue output — in 19.5 s at 64.2/s,
+so ≈ **27 msg/s**. Two routes to the venue's true rate, neither derived from the
+other, agreeing to within 3%.
+
+**Three caveats, stated rather than discovered.**
+
+- **The lever is TCP backpressure**, not an application-level slow consumer, so
+  what was measured is the whole path's behaviour and not a statement about
+  Kraken's internal send queue. That is the right question for `age_ms` — the
+  panel experiences the path — but unlike Anvil's, whose `CrowWsSubscriber::
+  deliver()` is readable source, it is an observation and not a contract. It could
+  change without notice, and the probe is one command to re-run.
+- **The absolute lag is meaningless; only the slope is.** The baseline reads
+  −1.456 s, i.e. this desk's clock sits about 1.5 s off Kraken's. That constant
+  offset cancels in every comparison made above and would not in any comparison
+  someone made against a fixed threshold.
+- **The `drop` figure of 56% understates the throttle.** It is computed against the
+  baseline rate, and the market sped up during the run — the true drain fraction
+  was 31%, from the slope. Read the slope, not the rate.
+
+### Known unknowns — what B2 closed, and what it did not
+
+**Closed.** *"No checksum failure was ever observed, so the `Gap{ChecksumFail}`
+path has no captured example"* — still true of captures, and the path now has
+synthetic coverage driving it end to end, which per ARCHITECTURE §9 (2026-08-18)
+is the instrument for this class rather than a substitute for one. *"Whether a
+client-initiated resubscribe produces a snapshot distinguishable on the wire"* —
+answered above: it does not. *Kraken's queue-vs-shed behaviour* — answered above:
+it queues.
+
+**Still open, and unchanged.** Depths 500 and 1000 remain unsubscribed. `data`
+has still never held more than one entry in a captured file. **No `error` frame
+has ever been seen mid-stream** — and B2 adds a reason to care, because the resync
+path now sends unsubscribes and a refused one has never been observed either; the
+adapter's handling of it is synthetic and correct-by-construction rather than
+measured. **Nothing is known about a long connection**: the longest capture here
+is 90 s, and a resubscribe cadence under repeated CRC failures is the kind of
+thing only a soak would show.
+
+**New, and owed.** The 3,548 ms book-event hole across a resubscribe is measured
+on one capture at one pair. The adapter is honest about it by construction — the
+book drops on the ack, so the window is grey whatever its length — but the LENGTH
+is what a firmware resubscribe cadence would have to be sized against, and D's
+bench work is where that gets a second measurement.

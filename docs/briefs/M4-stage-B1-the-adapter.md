@@ -196,7 +196,7 @@ detect** a book silently truncated to 256. Nothing subscribes that deep — the 
       `symbol_for()` and `console_ladder` fixed** — the guard half is DONE (it had to be, those two
       broke the moment the guard came off). The firmware lift is **reassigned to D's first act**,
       not a B1b evening: it needs the bench, and D's acceptance run is the same soak (owner,
-      2026-08-18; reasoning in `M4-triage-of-the-twelve.md` and DESIGN §08 strain 22).
+      2026-08-18; reasoning in `M4-triage-of-the-twelve.md` and DESIGN §08 strain 23).
 - [x] Stale worktree deleted. Code review run. Split proposed. Nothing committed.
 
 ## Out of scope
@@ -318,7 +318,7 @@ acceptance run is the same soak, so a separate evening would mean two bench sess
 question. It goes before any panel rendering is judged, because a panel judged against a watchdog
 that is about to change is a panel judged twice. M4's remaining evenings drop from five to four:
 **B2 · C · D**. Recorded in `ROADMAP.md`, `M4-triage-of-the-twelve.md`, and `DESIGN.html` §08
-strain 22, which carries the owner, the expiry and the tripwire.
+strain 23, which carries the owner, the expiry and the tripwire.
 
 **What the lift is, when D runs it.** Move `sample_window.hpp`, `liveness_clock.hpp` and
 `age_estimator.hpp` into `engine/include/depthcharge/` (namespace `depthcharge`; all three already
@@ -352,7 +352,7 @@ intended one. Four records written before committing:
    behaviour could coincide, the synthetic case is mandatory and the golden is decoration.**
 2. **Item 8 reassigned to D's first act**, above.
 3. **The host/target age divergence gets an owner, an expiry and a tripwire** — DESIGN §08
-   strain 22. It is latent rather than active: nothing on the target reads Kraken until D.
+   strain 23. It is latent rather than active: nothing on the target reads Kraken until D.
 4. **The commit-verification contradiction resolved as standing practice** — per-commit
    verification runs as part of *executing* an approved split, not before it. Recorded in
    `CLAUDE.md`.

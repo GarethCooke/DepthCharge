@@ -107,7 +107,7 @@ becomes **D's first act — before any panel rendering is judged**, because a pa
 watchdog that is about to change is a panel judged twice.
 
 **The tripwire.** If anything before D proposes flashing a Kraken build, this closes first. See
-`DESIGN.html` §08, strain 22.
+`DESIGN.html` §08, strain 23.
 
 ## What M4's DoD becomes
 
