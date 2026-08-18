@@ -671,9 +671,12 @@ TEST_CASE("absence of a subscribe is not failure of a subscribe") {
           depthcharge::kraken::KrakenAdapter::SubscribeState::Unknown);
     CHECK_FALSE(decoder.adapter().refused());
 
+    // No checksum: this case is about the subscribe state, and from B2 a frame
+    // that carries one is making a claim the adapter now checks. See the rule
+    // at test_kraken_adapter.cpp's truncation case.
     decoder.adapter().on_frame(
         R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
-        R"("bids":[{"price":62807.0,"qty":0.65540712}],"asks":[],"checksum":1}]})",
+        R"("bids":[{"price":62807.0,"qty":0.65540712}],"asks":[]}]})",
         sink);
 
     CHECK(events == 1);                                   // accepted, unsubscribed

@@ -16,9 +16,9 @@
 //   * Seq is SYNTHESISED from emission order. This wire carries no sequence, no
 //     offset and no message count — confirmed by inspection of every frame kind
 //     — so there is nothing to gap-test on. ARCHITECTURE §4 already said so.
-//   * The CHECKSUM is parsed and carried, NOT verified (B1 scope). Verification,
-//     and the Gap{ChecksumFail} it raises, are B2. Carrying it now is what makes
-//     B2 add a check rather than a parse.
+//   * The CHECKSUM is verified after every applied book message, against this
+//     adapter's own ladder (kraken_checksum.hpp), and a disagreement becomes
+//     Gap{ChecksumFail}. See THE HEALING PATH.
 //   * Gap{Disconnect} comes from the transport, not the wire — with one wire
 //     exception this venue introduces, the refused subscribe. See THE ACK.
 //
@@ -110,12 +110,56 @@
 // so the trace remains exactly as usable for the staleness ruling as it was.
 // This is the difference between an honest grey and a confident wrong ladder,
 // and it is the same choice invariant #5 makes everywhere else.
+//
+// ============================================================================
+// THE HEALING PATH (M4 stage B2)
+// ============================================================================
+//
+// After every book message that reaches the ladder, the ladder's own CRC32 is
+// compared against the one the venue sent. A disagreement means the book we hold
+// is not the book the venue holds — and there is no partial recovery from that,
+// because a delta stream carries no way to ask what was missed.
+//
+// So the mismatch path is: **raise Gap{ChecksumFail}, throw the ladder away, and
+// ask the transport to resubscribe.** Three points on it are decisions rather
+// than mechanics.
+//
+// **NO NEW VOCABULARY, AND THIS IS THE FOURTH ASKING.** §4 is frozen and lists
+// `ChecksumFail` already — it has done since M0, put there for exactly this
+// venue ("Kraken has no seq — its adapter synthesises one and converts a CRC
+// failure into Gap{ChecksumFail}"). Nothing here needed a new `GapReason` and
+// nothing here needed a new `FeedEvent::Kind`: the vocabulary that was written
+// down before any of this code existed turned out to fit the case it was written
+// for. A second Gap{Resync} on the way out is likewise not emitted — the book is
+// already unknown, and §4's rule is that it stays unknown until the next
+// Snapshot, not until the next Gap.
+//
+// **THE RESUBSCRIBE IS REQUESTED HERE AND PERFORMED ELSEWHERE.** This is
+// `engine/`; it has no socket (invariant #1). It does the portable half —
+// dropping the book and saying so — and latches `resync_wanted()`, which the
+// firmware's feed task turns into an unsubscribe/subscribe pair and clears.
+// Same shape as `refused()` above and for the same reason: the honesty is not
+// optional and is therefore here, the policy is the caller's.
+//
+// **AND A TRANSPORT GAP DOES NOT SET IT.** A disconnect is already followed by a
+// reconnect and a fresh subscribe, so the supervisor will produce a snapshot
+// without being asked. A CRC failure is the opposite and is the only case that
+// needs the flag at all: the socket is perfectly healthy, the heartbeat keeps
+// arriving at 1 Hz, and **Kraken will never re-snapshot on its own**. Without
+// somebody asking, a client that detected corruption would sit grey over a live
+// chattering socket for ever — which is invariant #5's forbidden output wearing
+// the other face, honest but permanent.
+//
+// What the check cannot see is stated where it is computed: the CRC covers the
+// top 10 levels a side, so at the shipped depth of 25 it validates 20 of the 50
+// levels the ladder holds (kraken_checksum.hpp, and NOTES-kraken.md).
 #pragma once
 
 #include <cstdint>
 #include <string_view>
 
 #include "depthcharge/feed_event.hpp"
+#include "depthcharge/kraken/kraken_checksum.hpp"
 #include "depthcharge/kraken/kraken_frame.hpp"
 #include "depthcharge/ladder.hpp"
 #include "depthcharge/symbol.hpp"
@@ -244,7 +288,29 @@ public:
         // this adapter is required to assume neither behaviour.
         std::uint64_t levels_deeper_than_subscribed = 0;
 
-        std::uint64_t checksums_seen = 0;   // carried, never verified at B1
+        // THE CHECKSUM LEDGER (B2). The three outcomes are disjoint and total:
+        //     checksums_seen == matched + failed + unverifiable
+        // which is asserted in the tests rather than left as arithmetic in a
+        // comment — a fourth outcome quietly appearing is exactly the shape of
+        // defect that makes a green suite say nothing.
+        std::uint64_t checksums_seen = 0;          // carried by a book message
+        std::uint64_t checksums_matched = 0;       // ours == theirs
+        std::uint64_t checksums_failed = 0;        // ours != theirs -> Gap
+        // Carried on a message we could not check, because there was no baseline
+        // to check against. The mid-stream slice is all 49 of these, and they are
+        // NOT failures: a book assembled from amendments to nothing is a
+        // different book, and comparing its checksum would produce 49 mismatches
+        // that say nothing about the wire. Counted separately for that reason.
+        std::uint64_t checksums_unverifiable = 0;
+        // A book message that carried NO checksum at all. Zero on all five
+        // committed slices — this venue checksums every snapshot and every
+        // update — and counted rather than assumed, because the failure it
+        // guards is silent: an adapter fed messages without checksums verifies
+        // nothing, and every other counter in this struct looks healthy while it
+        // does. It is also what makes a synthetic test fixture's deliberate
+        // omission visible instead of indistinguishable from a passing check.
+        std::uint64_t book_msgs_unchecksummed = 0;
+        std::uint64_t resyncs_requested = 0;       // CRC failures that asked for a resubscribe
         std::uint64_t ack_depth_mismatch = 0;
     };
 
@@ -264,11 +330,27 @@ public:
     // Has a snapshot baselined the ladder? Until it has, updates are dropped.
     bool has_baseline() const noexcept { return baselined_; }
 
-    // The last checksum the venue sent, CARRIED AND NOT VERIFIED. B2 turns this
-    // into a comparison against the ladder's own CRC32; B1's job is to make sure
-    // it is already here when B2 arrives.
+    // The two halves of the comparison, kept for a report and a failing test —
+    // "they said X, we computed Y" is the only useful thing to print about a
+    // mismatch, and a bare boolean would throw it away.
     std::uint32_t last_checksum() const noexcept { return last_checksum_; }
     bool has_checksum() const noexcept { return has_checksum_; }
+    std::uint32_t last_computed_checksum() const noexcept { return last_computed_; }
+
+    // The ladder's CRC32 as it stands right now. Public because the ONE
+    // property that distinguishes "the CRC covers the top 10" from "the CRC
+    // covers everything" is that editing level 11 does not move it, and that
+    // is a statement about this function rather than about a frame.
+    std::uint32_t book_checksum() const noexcept {
+        return kraken::book_checksum(asks_, ask_count_, bids_, bid_count_);
+    }
+
+    // A CRC failure dropped the book and nothing else will re-snapshot it: the
+    // transport must unsubscribe/subscribe and then clear this. Latched, and
+    // deliberately NOT set by `on_transport_gap` — a reconnect subscribes on its
+    // own, a healthy socket over a corrupt book does not. See THE HEALING PATH.
+    bool resync_wanted() const noexcept { return resync_wanted_; }
+    void clear_resync_wanted() noexcept { resync_wanted_ = false; }
 
     ParseStatus last_status() const noexcept { return last_status_; }
 
@@ -303,8 +385,23 @@ public:
             case FrameKind::Heartbeat:    ++stats_.heartbeats; break;
             case FrameKind::Status:       ++stats_.status_frames; break;
             case FrameKind::SubscribeAck: on_ack(sink); break;
-            case FrameKind::BookSnapshot: ++stats_.snapshot_frames; adopt_snapshot(sink); break;
-            case FrameKind::BookUpdate:   ++stats_.update_frames; apply_update(sink); break;
+            // The verification runs AFTER the events are emitted, not instead of
+            // them, and the order is the honest one: the deltas we applied did
+            // happen, and the Gap that follows says the result cannot be trusted.
+            // Withholding them until the CRC agreed would mean holding a frame's
+            // worth of state outside the ladder to replay it from, which is the
+            // allocation invariant #7 forbids and buys nothing — the engine's
+            // book is discarded by the Gap either way.
+            case FrameKind::BookSnapshot:
+                ++stats_.snapshot_frames;
+                adopt_snapshot(sink);
+                verify_checksum(sink);
+                break;
+            case FrameKind::BookUpdate:
+                ++stats_.update_frames;
+                apply_update(sink);
+                verify_checksum(sink);
+                break;
             case FrameKind::Unknown:      ++stats_.unknown_kind; break;
         }
     }
@@ -321,14 +418,13 @@ public:
     template <typename Sink>
     void on_transport_gap(GapReason reason, Sink&& sink) {
         ++stats_.transport_gaps;
-        bid_count_ = 0;
-        ask_count_ = 0;
-        baselined_ = false;
+        // The carried checksum belonged to a connection that no longer exists.
+        // The CRC-failure path deliberately does NOT clear this: there the two
+        // operands of the comparison that failed are the only evidence of what
+        // went wrong, and throwing them away with the book would leave a counter
+        // saying a mismatch happened and nothing saying what it was.
         has_checksum_ = false;
-        FeedEvent ev{};
-        ev.kind = FeedEvent::Kind::Gap;
-        ev.reason = reason;
-        emit(ev, sink);
+        drop_book(reason, sink);
     }
 
 private:
@@ -348,6 +444,60 @@ private:
         ev.seq = take_seq();
         ++stats_.events_out;
         sink(ev);
+    }
+
+    // The book is unknown from here until the next Snapshot (§4). One place, so
+    // that a transport gap and a checksum failure cannot drift into leaving the
+    // ladder in two different states — the reason they must not is that the
+    // difference would be invisible: both grey the panel, and only one of them
+    // would then rebuild from nothing.
+    template <typename Sink>
+    void drop_book(GapReason reason, Sink& sink) {
+        bid_count_ = 0;
+        ask_count_ = 0;
+        baselined_ = false;
+        FeedEvent ev{};
+        ev.kind = FeedEvent::Kind::Gap;
+        ev.reason = reason;
+        emit(ev, sink);
+    }
+
+    // OURS AGAINST THEIRS, after the message has been applied.
+    //
+    // Three outcomes and they are the Stats ledger: no baseline means the
+    // comparison is meaningless and is not made; agreement is the overwhelming
+    // common case; disagreement is the healing path.
+    template <typename Sink>
+    void verify_checksum(Sink& sink) {
+        if (!frame_.has_checksum) {
+            ++stats_.book_msgs_unchecksummed;
+            return;
+        }
+        if (!baselined_) {
+            // Amendments to nothing. Measured on the mid-stream slice: comparing
+            // anyway produces 49 mismatches, none of which is about the wire.
+            ++stats_.checksums_unverifiable;
+            return;
+        }
+        last_computed_ = book_checksum();
+        if (last_computed_ == frame_.checksum) {
+            ++stats_.checksums_matched;
+            return;
+        }
+        ++stats_.checksums_failed;
+
+        // ASK FOR A RESUBSCRIBE, AND DO NOT PACE IT HERE. The adapter has no
+        // clock — the same reason `Book::publish` has none (§5) — and a cadence
+        // that begins with a teardown is a floor set by the operation it
+        // interrupts, not a latency knob (ARCHITECTURE §9, 2026-08-16 pm). So
+        // this is an idempotent latch and the transport owns how often it acts
+        // on one. `resyncs_requested` is the counter a soak would read to see a
+        // storm; note that a storm cannot come from the deltas that follow,
+        // because dropping the baseline makes every one of them unverifiable
+        // rather than failing.
+        ++stats_.resyncs_requested;
+        resync_wanted_ = true;
+        drop_book(GapReason::ChecksumFail, sink);
     }
 
     template <typename Sink>
@@ -548,7 +698,9 @@ private:
     Seq next_seq_ = 1;         // 0 is left free to mean "no event yet"
     SubscribeState sub_ = SubscribeState::Unknown;  // absence is not failure
     bool baselined_ = false;
+    bool resync_wanted_ = false;   // a CRC failure asked the transport to resubscribe
     std::uint32_t last_checksum_ = 0;
+    std::uint32_t last_computed_ = 0;
     bool has_checksum_ = false;
     ParseStatus last_status_ = ParseStatus::Ok;
     Stats stats_{};

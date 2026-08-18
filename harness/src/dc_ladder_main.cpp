@@ -208,9 +208,27 @@ void print_kraken_adapter(const ReplayResult& r) {
                 ull(k.levels_evicted),
                 ull(k.levels_outside_depth),
                 ull(k.levels_unchanged));
-    std::printf("            checksums seen=%llu (CARRIED, NOT VERIFIED — that is B2); "
-                "deltas dropped before baseline=%llu\n",
+    // THE CHECKSUM LEDGER (B2). The three outcomes are printed together and
+    // always, including the zeros, because "0 failed" and "the line is absent"
+    // are the same picture otherwise — and `unverifiable` is the one that must
+    // never be read as a pass: it means there was no baseline to compare
+    // against, which is the whole of the mid-stream slice.
+    //
+    // The coverage note rides on the same line rather than in a footnote nobody
+    // reads. At the shipped depth of 25 this number validates the top 10 levels
+    // a side and says nothing about the other 15.
+    std::printf("checksum  : seen=%llu  matched=%llu  FAILED=%llu  unverifiable=%llu "
+                "(no baseline)  resyncs_requested=%llu\n",
                 ull(k.checksums_seen),
+                ull(k.checksums_matched),
+                ull(k.checksums_failed),
+                ull(k.checksums_unverifiable),
+                ull(k.resyncs_requested));
+    std::printf("            covers the top %u levels a side only — levels %u+ are "
+                "rendered and NOT validated by it\n",
+                depthcharge::kraken::kChecksumLevels,
+                depthcharge::kraken::kChecksumLevels + 1);
+    std::printf("            deltas dropped before baseline=%llu\n",
                 ull(k.deltas_before_baseline));
 }
 

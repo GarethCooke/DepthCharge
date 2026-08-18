@@ -1,4 +1,4 @@
-// test_kraken_adapter.cpp — the second adapter, end to end (M4 stage B1).
+// test_kraken_adapter.cpp — the second adapter, end to end (M4 stages B1, B2).
 //
 // Invariant #6 says new adapter behaviour ships with a trace and a golden. This
 // file is that, over all five committed Kraken slices, plus the four properties
@@ -27,14 +27,31 @@
 // before calling agreement corroboration. These two do not share a parent.
 //
 // ============================================================================
-// WHAT IS DELIBERATELY NOT HERE
+// B2: THE MEASUREMENT ABOVE IS NOW ALSO A CODE PATH, AND THE TWO AGREE
 // ============================================================================
 //
-// CRC VERIFICATION. B1 parses and carries the checksum; B2 verifies it. The
-// measurement above is evidence used to DERIVE goldens on the desk, not a code
-// path that ships — `KrakenAdapter` computes no CRC32 and this file asserts none.
-// The distinction matters because B2's deliverable is a check, and a check that
-// was quietly already running would be nothing to add.
+// At B1 the 4,878 figure was desk evidence used to DERIVE the goldens below and
+// nothing more — `KrakenAdapter` computed no CRC32 and this file asserted none.
+// B2 makes the same comparison inside the shipping adapter, and it reproduces
+// the same number: **839 + 1,537 + 2,472 + 30 = 4,878 / 4,878 matched, 0
+// failed**, from integer ticks, with no wire text retained anywhere.
+//
+// That is a second independent implementation agreeing with the first — Python
+// over stored decimal TEXT versus C++ over scaled INTEGERS, two languages and
+// two representations, which is a sharper independence than the eviction counts
+// above because the two routes to the token are different arithmetic rather
+// than the same arithmetic written twice.
+//
+// The fifth slice reads **49 unverifiable, 0 failed**, which is the answer that
+// distinguishes an honest adapter from a loud one: it has no opening snapshot,
+// so there is no book to compare, and comparing anyway would produce 49
+// mismatches that are facts about the file rather than about the wire.
+//
+// WHAT IS STILL DELIBERATELY NOT HERE: a golden for a CRC MISMATCH. No capture
+// contains one and none can be provoked from outside, so the coverage for that
+// path is synthetic by necessity — see the healing-path case at the end of this
+// file, and ARCHITECTURE §9 (2026-08-18) on why a synthetic case is mandatory
+// rather than second-best where an assumption and a venue's behaviour coincide.
 #include <doctest/doctest.h>
 
 #include <cstdint>
@@ -118,6 +135,9 @@ TEST_CASE("every committed Kraken slice replays through the adapter") {
         CHECK(r.kraken.levels_removed == 265);
         CHECK(r.kraken.checksums_seen == 839);
         CHECK(r.kraken.deltas_before_baseline == 0);
+        // B2: THE VENUE'S OWN VERDICT ON OUR BOOK, on every message.
+        CHECK(r.kraken.checksums_matched == 839);
+        CHECK(r.kraken.checksums_failed == 0);
     }
     SUBCASE("BTC/USD depth 25") {
         const ReplayResult r = replay(kD25);
@@ -131,6 +151,8 @@ TEST_CASE("every committed Kraken slice replays through the adapter") {
         CHECK(r.kraken.checksums_seen == 1537);
         CHECK(r.kraken.price_errors == 0);
         CHECK(r.kraken.qty_errors == 0);
+        CHECK(r.kraken.checksums_matched == 1537);
+        CHECK(r.kraken.checksums_failed == 0);
     }
     SUBCASE("BTC/USD depth 100") {
         const ReplayResult r = replay(kD100);
@@ -140,6 +162,8 @@ TEST_CASE("every committed Kraken slice replays through the adapter") {
         CHECK(r.kraken.levels_evicted == 1156);  // stage 0's figure
         CHECK(r.kraken.levels_removed == 1047);
         CHECK(r.kraken.checksums_seen == 2472);
+        CHECK(r.kraken.checksums_matched == 2472);
+        CHECK(r.kraken.checksums_failed == 0);
     }
     SUBCASE("MINA/GBP depth 25 — the quiet pair") {
         const ReplayResult r = replay(kQuiet);
@@ -149,6 +173,8 @@ TEST_CASE("every committed Kraken slice replays through the adapter") {
         CHECK(r.kraken.heartbeats == 60);
         CHECK(r.kraken.levels_evicted == 19);    // stage 0's figure
         CHECK(r.kraken.price_errors == 0);       // 10^-4, a different scale
+        CHECK(r.kraken.checksums_matched == 30);
+        CHECK(r.kraken.checksums_failed == 0);
     }
     SUBCASE("MINA/GBP depth 25 — the extreme slice, mid-stream") {
         const ReplayResult r = replay(kExtreme);
@@ -160,6 +186,17 @@ TEST_CASE("every committed Kraken slice replays through the adapter") {
         CHECK(r.kraken.acks == 0);
         CHECK(r.kraken.status_frames == 0);
         CHECK(r.kraken.snapshot_frames == 0);
+        // AND ITS 49 CHECKSUMS ARE UNVERIFIABLE, NOT FAILED. The distinction is
+        // the whole reason this slice is in `NOT_A_CHECKSUM_GOLDEN`: with no
+        // opening snapshot there is no book to compare, and an adapter that
+        // compared anyway would report 49 mismatches, grey the panel, and blame
+        // the wire for a fact about the file. 0/49 is the right answer and it is
+        // spelled as three counters rather than as one ratio.
+        CHECK(r.kraken.checksums_seen == 49);
+        CHECK(r.kraken.checksums_unverifiable == 49);
+        CHECK(r.kraken.checksums_matched == 0);
+        CHECK(r.kraken.checksums_failed == 0);
+        CHECK(r.kraken.resyncs_requested == 0);
     }
 }
 
@@ -313,8 +350,15 @@ TEST_CASE("the extreme slice enters a stream already subscribed") {
 
 TEST_CASE("a snapshot after a mid-stream start baselines the book and deltas flow") {
     // The other half of the absence case: entering unsubscribed must not be a
-    // permanent state. This is the resync shape B2 builds on, exercised here
-    // with the transport doing nothing at all.
+    // permanent state. This is the resync shape, exercised with the transport
+    // doing nothing at all.
+    //
+    // B2 gave the two post-baseline frames their REAL checksums — 298657013 and
+    // 1051150574, computed by zlib.crc32 outside this build — so the case now
+    // runs the whole path rather than the ladder half of it. The first frame
+    // keeps an arbitrary one on purpose: it arrives with no baseline, so it is
+    // the `checksums_unverifiable` case, and a value that would fail if it were
+    // ever compared is the right value to leave there.
     KrakenAdapter adapter(kKrakenBtcUsd, 25);
     std::vector<FeedEvent> events;
     auto sink = [&events](const FeedEvent& ev) { events.push_back(ev); };
@@ -326,25 +370,31 @@ TEST_CASE("a snapshot after a mid-stream start baselines the book and deltas flo
     CHECK(events.empty());
     CHECK(adapter.stats().deltas_before_baseline == 1);
     CHECK_FALSE(adapter.has_baseline());
+    CHECK(adapter.stats().checksums_unverifiable == 1);
+    CHECK(adapter.stats().checksums_failed == 0);
 
     adapter.on_frame(
         R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
         R"("bids":[{"price":62791.0,"qty":2.00000000}],)"
-        R"("asks":[{"price":62792.0,"qty":3.00000000}],"checksum":8}]})",
+        R"("asks":[{"price":62792.0,"qty":3.00000000}],"checksum":298657013}]})",
         sink);
     REQUIRE(events.size() == 1);
     CHECK(events[0].kind == FeedEvent::Kind::Snapshot);
     CHECK(adapter.has_baseline());
+    CHECK(adapter.stats().checksums_matched == 1);
 
     adapter.on_frame(
         R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-        R"("bids":[{"price":62790.0,"qty":1.00000000}],"asks":[],"checksum":9}]})",
+        R"("bids":[{"price":62790.0,"qty":1.00000000}],"asks":[],"checksum":1051150574}]})",
         sink);
     REQUIRE(events.size() == 2);
     CHECK(events[1].kind == FeedEvent::Kind::Delta);
     CHECK(events[1].px == 627900);
     CHECK(events[1].qty == 100000000);
     CHECK(events[1].side == Side::Bid);
+    CHECK(adapter.stats().checksums_matched == 2);
+    CHECK(adapter.stats().checksums_failed == 0);
+    CHECK_FALSE(adapter.resync_wanted());
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +572,27 @@ TEST_CASE("truncation: a level worse than the worst held is refused, not stored"
     // this case it would be an unexercised counter presented as coverage — the
     // condition ARCHITECTURE §9 (2026-08-18) forbids. Provoked synthetically for
     // the same reason and in the same shape as the FrameReassembler tests.
+    //
+    // ========================================================================
+    // NO CHECKSUM ON THESE FRAMES, AND IT IS NOT LAZINESS (B2).
+    // ========================================================================
+    //
+    // A synthetic frame that carries a checksum is making a claim about the
+    // book, and from B2 the adapter checks that claim. There are two ways to
+    // satisfy it and only one is available here.
+    //
+    // The subscription below is DEPTH 2, which is not a depth Kraken offers —
+    // it is a synthetic depth chosen because it is the only way to reach the
+    // truncation edge in a few lines. Kraken's CRC32 covers its own top TEN
+    // levels, so against a depth-2 book there is no checksum the venue could
+    // have sent that our two levels would reproduce: the correct value for this
+    // fixture does not exist rather than being tedious to compute. Leaving a
+    // placeholder would make every frame here a deliberate corruption and turn
+    // a truncation test into a healing-path test.
+    //
+    // So they carry none, `book_msgs_unchecksummed` counts that fact, and the
+    // slice goldens pin it at zero — which is what stops "no checksum" from
+    // becoming a silent way to opt out of the check.
     KrakenAdapter adapter(kKrakenBtcUsd, 2);   // depth 2, so the edge is reachable
     std::vector<FeedEvent> events;
     auto sink = [&events](const FeedEvent& ev) { events.push_back(ev); };
@@ -529,15 +600,16 @@ TEST_CASE("truncation: a level worse than the worst held is refused, not stored"
     adapter.on_frame(
         R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
         R"("bids":[{"price":100.0,"qty":1.00000000},{"price":99.0,"qty":1.00000000}],)"
-        R"("asks":[],"checksum":1}]})",
+        R"("asks":[]}]})",
         sink);
     REQUIRE(events.size() == 1);
     CHECK(adapter.bid_count() == 2);
+    CHECK(adapter.stats().book_msgs_unchecksummed == 1);
 
     SUBCASE("a level outside the window is dropped and emits nothing") {
         adapter.on_frame(
             R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-            R"("bids":[{"price":98.0,"qty":5.00000000}],"asks":[],"checksum":2}]})",
+            R"("bids":[{"price":98.0,"qty":5.00000000}],"asks":[]}]})",
             sink);
         CHECK(events.size() == 1);                       // nothing new
         CHECK(adapter.stats().levels_outside_depth == 1);
@@ -547,7 +619,7 @@ TEST_CASE("truncation: a level worse than the worst held is refused, not stored"
     SUBCASE("a level INSIDE the window inserts and evicts the worst, in that order") {
         adapter.on_frame(
             R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-            R"("bids":[{"price":99.5,"qty":5.00000000}],"asks":[],"checksum":2}]})",
+            R"("bids":[{"price":99.5,"qty":5.00000000}],"asks":[]}]})",
             sink);
         REQUIRE(events.size() == 3);
         CHECK(events[1].kind == FeedEvent::Kind::Delta);
@@ -566,7 +638,7 @@ TEST_CASE("truncation: a level worse than the worst held is refused, not stored"
     SUBCASE("a removal for a level never held is counted, not emitted") {
         adapter.on_frame(
             R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-            R"("bids":[{"price":50.0,"qty":0.00000000}],"asks":[],"checksum":2}]})",
+            R"("bids":[{"price":50.0,"qty":0.00000000}],"asks":[]}]})",
             sink);
         CHECK(events.size() == 1);
         CHECK(adapter.stats().levels_outside_depth == 1);
@@ -575,7 +647,7 @@ TEST_CASE("truncation: a level worse than the worst held is refused, not stored"
     SUBCASE("a level re-sent at the quantity we hold emits nothing") {
         adapter.on_frame(
             R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-            R"("bids":[{"price":100.0,"qty":1.00000000}],"asks":[],"checksum":2}]})",
+            R"("bids":[{"price":100.0,"qty":1.00000000}],"asks":[]}]})",
             sink);
         CHECK(events.size() == 1);
         CHECK(adapter.stats().levels_unchanged == 1);
@@ -632,17 +704,47 @@ TEST_CASE("a price or size the declared scale cannot hold is reported, never rou
         // every message holds exactly one entry. A subscribe may name several
         // symbols on one socket (six measured at stage 0), and the entry that is
         // ours would then not be first.
+        // The two entries carry DIFFERENT checksums, and only the second one is
+        // ours. 3483870407 is the real CRC32 of a book holding just our level;
+        // 1 is not the CRC of anything. So an adapter that took the checksum
+        // from data[0] would not merely pick the wrong number — it would fail
+        // the comparison and grey the panel, which is what the last two
+        // assertions here are checking did not happen.
         adapter.on_frame(
             R"({"channel":"book","type":"snapshot","data":[)"
             R"({"symbol":"ETH/USD","bids":[{"price":3000.0,"qty":1.00000000}],)"
             R"("asks":[],"checksum":1},)"
             R"({"symbol":"BTC/USD","bids":[{"price":62807.0,"qty":1.00000000}],)"
-            R"("asks":[],"checksum":2}]})",
+            R"("asks":[],"checksum":3483870407}]})",
             sink);
         CHECK(adapter.last_status() == ParseStatus::Ok);
         CHECK(events == 1);
         CHECK(adapter.bid_count() == 1);
-        CHECK(adapter.last_checksum() == 2);
+        CHECK(adapter.last_checksum() == 3483870407u);
+        CHECK(adapter.stats().checksums_matched == 1);
+        CHECK_FALSE(adapter.resync_wanted());
+    }
+    SUBCASE("`data` is iterated, and OUR entry is not the last one either") {
+        // The mirror image of the case above, and it is not symmetry for its own
+        // sake. B2 made the checksum's PROVENANCE load-bearing — a value taken
+        // from the wrong entry now greys the panel rather than merely being an
+        // unread number — and a parser that latched the LAST entry's checksum
+        // instead of the matched one would pass the case above and fail here.
+        // Both orderings are one `if` apart and only one of them was tested.
+        adapter.on_frame(
+            R"({"channel":"book","type":"snapshot","data":[)"
+            R"({"symbol":"BTC/USD","bids":[{"price":62807.0,"qty":1.00000000}],)"
+            R"("asks":[],"checksum":3483870407},)"
+            R"({"symbol":"ETH/USD","bids":[{"price":3000.0,"qty":1.00000000}],)"
+            R"("asks":[],"checksum":1}]})",
+            sink);
+        CHECK(adapter.last_status() == ParseStatus::Ok);
+        CHECK(events == 1);
+        CHECK(adapter.bid_count() == 1);
+        CHECK(adapter.last_checksum() == 3483870407u);
+        CHECK(adapter.stats().checksums_matched == 1);
+        CHECK(adapter.stats().checksums_failed == 0);
+        CHECK_FALSE(adapter.resync_wanted());
     }
 }
 
@@ -696,13 +798,15 @@ TEST_CASE("the status frame's connection_id is never parsed as a number") {
 }
 
 TEST_CASE("a transport gap drops the baseline as well as greying the panel") {
+    // Checksums omitted: this case is about the gap, and the frames are not
+    // making a claim about the book. See the truncation case above for the rule.
     KrakenAdapter adapter(kKrakenBtcUsd, 25);
     std::vector<FeedEvent> events;
     auto sink = [&events](const FeedEvent& ev) { events.push_back(ev); };
 
     adapter.on_frame(
         R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
-        R"("bids":[{"price":100.0,"qty":1.00000000}],"asks":[],"checksum":1}]})",
+        R"("bids":[{"price":100.0,"qty":1.00000000}],"asks":[]}]})",
         sink);
     REQUIRE(adapter.has_baseline());
 
@@ -714,9 +818,17 @@ TEST_CASE("a transport gap drops the baseline as well as greying the panel") {
     CHECK_FALSE(adapter.has_baseline());
     CHECK(adapter.bid_count() == 0);
 
+    // AND IT DOES NOT ASK FOR A RESUBSCRIBE (B2). A reconnect subscribes on its
+    // own, so the flag would be a duplicate request; the CRC path is the only
+    // one that needs it, because there the socket never blinks. Asserted here
+    // rather than only in the CRC test, because the two paths share `drop_book`
+    // and the difference between them is exactly this line.
+    CHECK_FALSE(adapter.resync_wanted());
+    CHECK(adapter.stats().resyncs_requested == 0);
+
     adapter.on_frame(
         R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-        R"("bids":[{"price":100.0,"qty":2.00000000}],"asks":[],"checksum":2}]})",
+        R"("bids":[{"price":100.0,"qty":2.00000000}],"asks":[]}]})",
         sink);
     CHECK(events.size() == 2);
     CHECK(adapter.stats().deltas_before_baseline == 1);
@@ -944,7 +1056,7 @@ TEST_CASE("a snapshot DEEPER than the subscription is truncated, not stored whol
         R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[)"
         R"({"price":100.0,"qty":1.00000000},{"price":99.0,"qty":1.00000000},)"
         R"({"price":98.0,"qty":1.00000000},{"price":97.0,"qty":1.00000000},)"
-        R"({"price":96.0,"qty":1.00000000}],"asks":[],"checksum":1}]})",
+        R"({"price":96.0,"qty":1.00000000}],"asks":[]}]})",
         sink);
 
     CHECK(adapter.bid_count() == 2);
@@ -961,7 +1073,7 @@ TEST_CASE("a snapshot DEEPER than the subscription is truncated, not stored whol
     // leaving `count` past the real data, both give bid_count() == 2.
     adapter.on_frame(
         R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
-        R"("bids":[{"price":99.5,"qty":9.00000000}],"asks":[],"checksum":2}]})",
+        R"("bids":[{"price":99.5,"qty":9.00000000}],"asks":[]}]})",
         sink);
     REQUIRE(events.size() == 3);
     CHECK(events[1].px == 995);            // inserted
@@ -1008,4 +1120,236 @@ TEST_CASE("a depth deeper than the staging buffer is clamped, and says so") {
     // disable truncation.
     KrakenAdapter none(kKrakenBtcUsd, 0);
     CHECK(none.depth() == depthcharge::kraken::kKrakenSubscribeDepth);
+}
+
+// ---------------------------------------------------------------------------
+// M4 STAGE B2 — THE HEALING PATH
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The healing-path fixture, spelled as a book rather than as opaque JSON so the
+// checksums beside it are readable. Prices are BTC/USD's 10^-1 scale and sizes
+// 10^-8, and every expected CRC32 below was computed by `zlib.crc32` OUTSIDE
+// this build — the same route every figure in NOTES-kraken.md took. A golden
+// derived by asking the code under test what it thought would be a pin on
+// nothing (ARCHITECTURE §9, 2026-08-18).
+//
+//   snapshot / recovery : asks 62791.3@0.16701217, 62794.2@2.0
+//                         bids 62791.2@1.38258808, 62791.0@0.5     -> 477240181
+//   after update 1      : bid  62791.0 becomes 0.75                -> 208614319
+//   after update 2      : ask  62791.3 becomes 0.2                 ->  30466471
+//
+constexpr const char* kHealSnapshot =
+    R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
+    R"("bids":[{"price":62791.2,"qty":1.38258808},{"price":62791.0,"qty":0.50000000}],)"
+    R"("asks":[{"price":62791.3,"qty":0.16701217},{"price":62794.2,"qty":2.00000000}],)"
+    R"("checksum":477240181}]})";
+
+constexpr const char* kHealUpdate1 =
+    R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
+    R"("bids":[{"price":62791.0,"qty":0.75000000}],"asks":[],"checksum":208614319}]})";
+
+// The same message update 2 would really be, carrying a checksum ONE away from
+// the truth. One away is the point: a wildly wrong value would also be caught by
+// comparing against almost anything, and this one is caught only by actually
+// computing the book's CRC32.
+constexpr const char* kHealUpdate2Corrupt =
+    R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
+    R"("bids":[],"asks":[{"price":62791.3,"qty":0.20000000}],"checksum":30466472}]})";
+
+constexpr const char* kHealUpdate2Honest =
+    R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD",)"
+    R"("bids":[],"asks":[{"price":62791.3,"qty":0.20000000}],"checksum":30466471}]})";
+
+}  // namespace
+
+TEST_CASE("a wrong checksum greys the book, drops it, and asks for a resubscribe") {
+    // ========================================================================
+    // SYNTHETIC BY NECESSITY, WHICH MAKES IT MANDATORY RATHER THAN SECOND BEST.
+    // ========================================================================
+    //
+    // A genuine venue-side corruption cannot be provoked from outside and was
+    // never once observed across 9,932 captured frames (NOTES-kraken.md, known
+    // unknowns). So there is no capture of it and there will not be one on
+    // demand — a captured trace records a venue BEHAVING, which is no evidence
+    // at all about what this client does when the venue does something else
+    // (ARCHITECTURE §9, 2026-08-18). The synthetic frame is the instrument here,
+    // not a stand-in for one, and it is the same reasoning the FrameReassembler
+    // tests are built on.
+    //
+    // The honest twin `kHealUpdate2Honest` exists for one reason: it is the
+    // control. Without it a "mismatch detected" assertion would pass just as
+    // well against an adapter that raised Gap on EVERY update, and no captured
+    // slice could tell the difference because every real message is honest.
+    KrakenAdapter adapter(kKrakenBtcUsd, 25);
+    Book book(kKrakenBtcUsd.spec);
+    DisplaySnapshot panel{};
+    std::vector<FeedEvent> events;
+    auto sink = [&](const FeedEvent& ev) {
+        events.push_back(ev);
+        book.apply(ev);
+        book.publish(panel);
+    };
+
+    adapter.on_frame(kHealSnapshot, sink);
+    adapter.on_frame(kHealUpdate1, sink);
+    REQUIRE(adapter.has_baseline());
+    REQUIRE(adapter.stats().checksums_matched == 2);
+    REQUIRE(panel.live());
+    const std::size_t before = events.size();
+
+    SUBCASE("the honest twin passes — so the check is not simply always failing") {
+        adapter.on_frame(kHealUpdate2Honest, sink);
+        CHECK(adapter.stats().checksums_matched == 3);
+        CHECK(adapter.stats().checksums_failed == 0);
+        CHECK(adapter.has_baseline());
+        CHECK_FALSE(adapter.resync_wanted());
+        CHECK(panel.live());
+        // One Delta, and no Gap behind it.
+        CHECK(events.size() == before + 1);
+        CHECK(events.back().kind == FeedEvent::Kind::Delta);
+    }
+
+    SUBCASE("one wrong checksum drives the whole path") {
+        adapter.on_frame(kHealUpdate2Corrupt, sink);
+
+        // 1. THE COMPARISON. Both operands survive, because "they said X, we
+        //    computed Y" is the only useful thing to print about a mismatch.
+        CHECK(adapter.stats().checksums_failed == 1);
+        CHECK(adapter.stats().checksums_matched == 2);
+        CHECK(adapter.last_checksum() == 30466472u);
+        CHECK(adapter.last_computed_checksum() == 30466471u);
+
+        // 2. THE EVENT, IN THE EXISTING VOCABULARY. §4 is frozen and named this
+        //    reason before any of this code existed; nothing here needed a new
+        //    GapReason and nothing here needed a new FeedEvent::Kind.
+        REQUIRE(events.size() == before + 2);
+        CHECK(events[before].kind == FeedEvent::Kind::Delta);      // it did happen
+        CHECK(events.back().kind == FeedEvent::Kind::Gap);
+        CHECK(events.back().reason == GapReason::ChecksumFail);
+        // Seq stays dense across the Gap — the adapter's one door, unchanged.
+        CHECK(events.back().seq == events[before].seq + 1);
+
+        // 3. THE PANEL GREYS, and it says why. Invariant #5 reached through a
+        //    route that did not exist before tonight.
+        CHECK_FALSE(panel.live());
+        CHECK(panel.stale_reason == GapReason::ChecksumFail);
+        CHECK(book.status() == depthcharge::FeedStatus::Stale);
+
+        // 4. THE BOOK IS GONE, not merely marked. A ladder kept across a
+        //    mismatch is the "different book that looks plausible" B1's
+        //    no-baseline-no-deltas rule refuses one level down.
+        CHECK_FALSE(adapter.has_baseline());
+        CHECK(adapter.bid_count() == 0);
+        CHECK(adapter.ask_count() == 0);
+
+        // 5. AND SOMEBODY HAS TO ASK FOR THE SNAPSHOT. Kraken never re-snapshots
+        //    on its own and the socket here is perfectly healthy, so without
+        //    this latch the panel would stay grey over a live 1 Hz heartbeat for
+        //    ever — honest, and permanently wrong.
+        CHECK(adapter.resync_wanted());
+        CHECK(adapter.stats().resyncs_requested == 1);
+    }
+
+    SUBCASE("the updates that follow are unverifiable, not a storm of failures") {
+        adapter.on_frame(kHealUpdate2Corrupt, sink);
+        const std::size_t at_gap = events.size();
+
+        adapter.on_frame(kHealUpdate1, sink);
+        adapter.on_frame(kHealUpdate2Honest, sink);
+
+        // Nothing is emitted and nothing else fails: dropping the baseline makes
+        // every following message unverifiable rather than wrong, which is what
+        // stops one corruption becoming a resubscribe cadence. The pacing of a
+        // retry belongs to the transport anyway (ARCHITECTURE §9, 2026-08-16 pm
+        // — a cadence that begins with a teardown is not a latency knob).
+        CHECK(events.size() == at_gap);
+        CHECK(adapter.stats().checksums_failed == 1);
+        CHECK(adapter.stats().resyncs_requested == 1);
+        CHECK(adapter.stats().checksums_unverifiable == 2);
+        CHECK(adapter.stats().deltas_before_baseline == 2);
+    }
+
+    SUBCASE("a fresh snapshot heals it, and the caller clears the request") {
+        adapter.on_frame(kHealUpdate2Corrupt, sink);
+        REQUIRE_FALSE(panel.live());
+
+        // What the transport would do: unsubscribe, resubscribe, and the venue
+        // serves a snapshot. Modelled here as the snapshot alone, because the
+        // resubscribe is the caller's half and this file is the adapter's.
+        adapter.clear_resync_wanted();
+        adapter.on_frame(kHealSnapshot, sink);
+
+        CHECK(adapter.has_baseline());
+        CHECK(adapter.stats().checksums_matched == 3);
+        CHECK(events.back().kind == FeedEvent::Kind::Snapshot);
+        CHECK(panel.live());
+        CHECK(panel.bid_count == 2);
+        CHECK(panel.ask_count == 2);
+        CHECK(panel.best_bid() == 627912);
+        CHECK(panel.best_ask() == 627913);
+        CHECK_FALSE(adapter.resync_wanted());
+    }
+
+    SUBCASE("a snapshot whose OWN checksum is wrong does not baseline the book") {
+        // The recovery frame can be corrupt too, and trusting it is the worse
+        // failure: a book that believes it has re-baselined will happily amend
+        // from there for ever.
+        KrakenAdapter fresh(kKrakenBtcUsd, 25);
+        std::vector<FeedEvent> got;
+        auto tap = [&got](const FeedEvent& ev) { got.push_back(ev); };
+
+        fresh.on_frame(
+            R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
+            R"("bids":[{"price":62791.2,"qty":1.38258808},{"price":62791.0,"qty":0.50000000}],)"
+            R"("asks":[{"price":62791.3,"qty":0.16701217},{"price":62794.2,"qty":2.00000000}],)"
+            R"("checksum":477240182}]})",
+            tap);
+
+        REQUIRE(got.size() == 2);
+        CHECK(got[0].kind == FeedEvent::Kind::Snapshot);
+        CHECK(got[1].kind == FeedEvent::Kind::Gap);
+        CHECK(got[1].reason == GapReason::ChecksumFail);
+        CHECK_FALSE(fresh.has_baseline());
+        CHECK(fresh.resync_wanted());
+    }
+}
+
+TEST_CASE("the checksum ledger is total: seen == matched + failed + unverifiable") {
+    // The three outcomes are disjoint and exhaustive BY CONSTRUCTION, and this
+    // is the case that stops a fourth quietly appearing — a message that took
+    // none of the three paths would leave the identity short, and nothing else
+    // in the suite would notice.
+    //
+    // Run over all five committed slices plus the synthetic corruption, so it
+    // holds for a stream that never fails, one that can never be checked, and
+    // one that fails once.
+    for (const char* name : {kD10, kD25, kD100, kQuiet, kExtreme}) {
+        CAPTURE(name);
+        const ReplayResult r = replay(name);
+        const auto& k = r.kraken;
+        CHECK(k.checksums_seen ==
+              k.checksums_matched + k.checksums_failed + k.checksums_unverifiable);
+        // And every book message carried one. Zero here is a WIRE FACT — this
+        // venue checksums every snapshot and every update — and it is also what
+        // stops "carry no checksum" becoming a silent way for a future fixture,
+        // or a future wire change, to opt out of the check entirely.
+        CHECK(k.book_msgs_unchecksummed == 0);
+        CHECK(k.checksums_seen == k.snapshot_frames + k.update_frames);
+    }
+
+    KrakenAdapter adapter(kKrakenBtcUsd, 25);
+    auto sink = [](const FeedEvent&) {};
+    adapter.on_frame(kHealSnapshot, sink);
+    adapter.on_frame(kHealUpdate2Corrupt, sink);
+    adapter.on_frame(kHealUpdate1, sink);
+    const auto& k = adapter.stats();
+    CHECK(k.checksums_seen == 3);
+    CHECK(k.checksums_matched == 1);
+    CHECK(k.checksums_failed == 1);
+    CHECK(k.checksums_unverifiable == 1);
+    CHECK(k.book_msgs_unchecksummed == 0);
+    CHECK(k.checksums_seen ==
+          k.checksums_matched + k.checksums_failed + k.checksums_unverifiable);
 }
