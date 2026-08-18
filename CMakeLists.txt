@@ -83,7 +83,8 @@ endif()
 # absent: it is host-only by design (it allocates, invariant #7) and vendored
 # nlohmann does not compile under -fno-exceptions anyway.
 set(DC_ENGINE_TARGET_SOURCES
-  ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/anvil/anvil_frame_streaming.cpp)
+  ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/anvil/anvil_frame_streaming.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/kraken/kraken_frame_streaming.cpp)
 
 if(EXISTS ${DC_XTENSA_GXX})
   # -std=c++2a, not c++20: GCC 8.4 does not recognise the latter spelling, and
@@ -136,6 +137,23 @@ target_link_libraries(dc_engine_anvil
 
 add_library(dc_engine_anvil_streaming STATIC engine/src/anvil/anvil_frame_streaming.cpp)
 target_link_libraries(dc_engine_anvil_streaming
+  PUBLIC dc_engine
+  PRIVATE dc_warnings)
+
+# --- Kraken's parser: ONE implementation, and it is the target-bound one -------
+# Unlike Anvil there is no reference/streaming pair here, and kraken_frame.hpp
+# says why: the pair exists at Anvil because M1 shipped an allocating reference
+# that M3 then had to prove a rewrite equivalent to. Kraken has no such reference,
+# and writing an allocating parser purely to have something to agree with would
+# be inventing the obligation. So this library is what the harness AND the
+# firmware link, it never sees dc_vendor, and it is in DC_ENGINE_TARGET_SOURCES
+# above so the xtensa compiler builds it on every host configure.
+#
+# Nothing links it yet -- the replay driver picks it up in the next commit. It is
+# defined here because it is the adapter's build rule, and a library defined
+# beside its sources is easier to read than one that appears with its first user.
+add_library(dc_engine_kraken STATIC engine/src/kraken/kraken_frame_streaming.cpp)
+target_link_libraries(dc_engine_kraken
   PUBLIC dc_engine
   PRIVATE dc_warnings)
 
