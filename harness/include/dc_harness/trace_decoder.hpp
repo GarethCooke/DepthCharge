@@ -14,11 +14,21 @@
 //                         invariant #2 guards, and the one a second adapter has
 //                         to fit.
 //
-// **Kraken's decoder this evening is a classifier, not an adapter.** It reads
-// every record, names its kind, counts it, and emits NO FeedEvents — deliberately
-// and assertably (see `events_emitted()`). `FeedEvent` does not move at stage A
-// and no Kraken adapter is written. What stage B drops in is the body of one
-// `decode()`; the shape it must fit is stated below and checked by the compiler.
+// **Kraken's decoder was a classifier at stage A and is an ADAPTER from B1.**
+// The shape stage A froze is the shape B1 filled: `decode()` kept its sink
+// parameter while emitting nothing, precisely so that dropping the adapter in
+// would not reshape the seam. It did not — the signature below is unchanged and
+// the body is now `adapter_.on_frame(...)`, which is the same line Anvil's
+// decoder has had since M1.
+//
+// CLASSIFY AND DECODE STAY SEPARATE, AND B1 IS WHERE THAT EARNS ITS KEEP.
+// `classify()` is a trace-reading concern (what kind of record is this, does it
+// stamp the liveness clock) and runs in tools that hold no adapter at all;
+// `decode()` is the invariant-#2 seam. They now disagree about one thing on
+// purpose: classify calls a `book/update` a book event because it IS one on the
+// wire, while decode may emit nothing for it — an update before the first
+// snapshot is dropped by the adapter (kraken_adapter.hpp). A single combined
+// entry point could not express that without lying to one of its two callers.
 //
 // WHY static_assertS AND NOT A `concept`: ARCHITECTURE §9, 2026-08-16 (stage 0),
 // strain 3 → option (ii). The C++20 concept *syntax* compiles on the xtensa GCC
@@ -37,6 +47,7 @@
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/feed_event.hpp>
+#include <depthcharge/kraken/kraken_adapter.hpp>
 #include <depthcharge/symbol.hpp>
 
 #include "dc_harness/trace.hpp"
@@ -138,7 +149,8 @@ template <typename Decoder>
 struct DecoderContract {
     static_assert(std::is_same_v<std::remove_cv_t<decltype(Decoder::kVenue)>, Venue>,
                   "a venue decoder must declare `static constexpr Venue kVenue` — "
-                  "the tag it is dispatched on");
+                  "the tag it is dispatched on, and, since B1, the identity that "
+                  "travels with everything it produces (see `name()`)");
     static_assert(dc_classifies<Decoder>::value,
                   "a venue decoder must provide RecordKind classify(const TraceFrame&)");
     static_assert(dc_decodes_into_sink<Decoder>::value,
@@ -196,6 +208,14 @@ public:
     depthcharge::anvil::AnvilAdapter& adapter() noexcept { return adapter_; }
     const depthcharge::anvil::AnvilAdapter& adapter() const noexcept { return adapter_; }
 
+    // WHICH DECODER PRODUCED THIS. Derived from kVenue rather than spelled as a
+    // second literal, so it cannot drift from the tag it is dispatched on —
+    // swapping the dispatch changes this string, which is the whole point of it
+    // existing (M4 triage item 1).
+    static constexpr std::string_view name() noexcept {
+        return venue_traits(kVenue).name;
+    }
+
     RecordKind classify(const TraceFrame& f) const noexcept { return anvil_classify(f); }
 
     template <typename Sink>
@@ -215,10 +235,23 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// KRAKEN — a classifier, not an adapter
+// KRAKEN — the adapter (M4 stage B1)
 // ---------------------------------------------------------------------------
 
-// Reads every record, names its kind, counts it, emits nothing.
+// Naming a Kraken record's kind. A FREE FUNCTION, exactly as anvil_classify is,
+// and for the same reason: two callers need it — the decoder below and
+// RecordClassifier at the foot of this file — and a second copy of a rule is how
+// two adapters drift (DESIGN strain 3).
+//
+// It was a member of the decoder until B1. It could not stay one: the decoder
+// now owns a KrakenAdapter, which needs a symbol and a depth, and `dc_taxonomy`
+// counts records in files whose symbol this build may have no scale for. A tool
+// that only counts records must not have to construct an 8 KiB staging buffer
+// and declare a SymbolSpec it has no use for.
+//
+// `scratch` backs the returned `name` until the caller's next call — the same
+// lifetime rule TraceFrame::frame_json already has, for the same reason (no
+// allocation per record on a 2,500-record trace).
 //
 // The kind names are the SAME STRINGS tools/kraken_frame_economics.py's
 // frame_kind() produces — `book/update`, `heartbeat`, `ack:subscribe`,
@@ -230,51 +263,65 @@ private:
 // `ack:subscribe REFUSED` is not cosmetic. A failed subscribe carries `method`
 // and `success:false`, so filing it as an ordinary ack hides the exact trap
 // stage 0 found: a live socket, 1 Hz heartbeats, and a permanently empty book.
+RecordKind kraken_classify(const TraceFrame& f, std::string& scratch);
+
+// Kraken frames -> FeedEvents, through the real adapter.
+//
+// The adapter needs two things the trace metadata carries and the Anvil path has
+// no equivalent of: the WIRE SYMBOL (a string pair, not an integer ticker) and
+// the SUBSCRIBED DEPTH (the ladder truncates at it, and the committed slices run
+// at 10, 25 and 100 in one binary).
+//
+// `wire_symbol` IS BORROWED, AND IT MUST OUTLIVE THIS OBJECT. In practice it is
+// always a view into the venue table's `inline constexpr` literals
+// (kraken_adapter.hpp), which have static storage duration and cannot dangle.
+//
+// **The first draft of this class owned the string instead, and that was a
+// use-after-move rather than a style preference.** A `std::string symbol_` member
+// with the adapter's SymbolConfig viewing it looks self-contained and is not:
+// `Replay` takes its decoder by value, so the decoder gets MOVED, and a moved
+// std::string short enough for SSO copies its bytes into the new object's inline
+// storage — leaving the view pointing into the moved-from husk. It compiled, it
+// passed the test that constructed a decoder directly, and it failed only
+// through `run_replay`, which is the one path that moves. Borrowing a static
+// literal removes the hazard rather than documenting it.
 class KrakenTraceDecoder {
 public:
     static constexpr Venue kVenue = Venue::Kraken;
 
-    // Not const only because it owns the scratch string `name` borrows from;
-    // the classification itself carries no state, which is what lets the same
-    // record be classified twice and give the same answer.
-    RecordKind classify(const TraceFrame& f);
+    KrakenTraceDecoder(const depthcharge::SymbolSpec& spec, std::string_view wire_symbol,
+                       std::int32_t depth)
+        : adapter_(depthcharge::kraken::SymbolConfig{spec, wire_symbol}, depth) {}
 
-    // Stage A: counts and emits nothing. The sink is taken, and its contract
-    // asserted, because the signature is what stage B's adapter fills in — a
-    // decoder written now with no sink parameter is a decoder stage B has to
-    // reshape, and reshaping the seam is how a second adapter drifts from the
-    // first.
+    depthcharge::kraken::KrakenAdapter& adapter() noexcept { return adapter_; }
+    const depthcharge::kraken::KrakenAdapter& adapter() const noexcept { return adapter_; }
+
+    // See AnvilTraceDecoder::name(). Derived from kVenue, never a second literal.
+    static constexpr std::string_view name() noexcept {
+        return venue_traits(kVenue).name;
+    }
+
+    RecordKind classify(const TraceFrame& f) { return kraken_classify(f, kind_); }
+
     template <typename Sink>
     void decode(const TraceFrame& f, Sink&& sink) {
         static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
-        (void)sink;  // no FeedEvent is emitted at stage A, by design
-        ++records_;
-        const RecordKind k = classify(f);
-        if (k.is_book_event) { ++book_events_; }
+        // A record this side SENT is not the venue speaking. Feeding our own
+        // subscribe to the adapter would file it as an Unknown frame and put a
+        // record in a counter that is supposed to describe the venue.
+        if (f.is_tx) { return; }
+        adapter_.on_frame(f.frame_json, sink);
     }
 
     template <typename Sink>
     void on_transport_gap(depthcharge::GapReason reason, Sink&& sink) {
         static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
-        (void)reason;
-        (void)sink;
-        ++transport_gaps_;
+        adapter_.on_transport_gap(reason, sink);
     }
 
-    std::size_t records() const noexcept { return records_; }
-    std::size_t book_events() const noexcept { return book_events_; }
-    std::size_t transport_gaps() const noexcept { return transport_gaps_; }
-
-    // Always zero at stage A, and asserted rather than asserted-in-prose: the
-    // brief's line is "emits no FeedEvents", and a counter is the difference
-    // between a claim and a test.
-    std::size_t events_emitted() const noexcept { return 0; }
-
 private:
-    std::string kind_;  // backs RecordKind::name until the next classify()
-    std::size_t records_ = 0;
-    std::size_t book_events_ = 0;
-    std::size_t transport_gaps_ = 0;
+    depthcharge::kraken::KrakenAdapter adapter_;
+    std::string kind_;    // backs RecordKind::name until the next classify()
 };
 
 static_assert(DecoderContract<AnvilTraceDecoder>::ok);
@@ -300,16 +347,19 @@ public:
     RecordKind classify(const TraceFrame& f) {
         switch (venue_) {
             case Venue::Anvil:  return anvil_classify(f);
-            case Venue::Kraken: return kraken_.classify(f);
+            case Venue::Kraken: return kraken_classify(f, kind_);
         }
         return {};  // unreachable: venue_from_name rejects anything else
     }
 
 private:
     Venue venue_;
-    // Anvil's half is the free function above and holds no state; Kraken's does
-    // (it has to remember whether this connection's snapshot has arrived).
-    KrakenTraceDecoder kraken_;
+    // Both halves are free functions and hold no state; all this object owns is
+    // the scratch Kraken's kind name is built in. It deliberately does NOT hold
+    // a decoder: classification is the half that costs nothing, and a tool that
+    // only counts records should not be constructing an adapter — nor requiring
+    // a symbol whose scale this build may not declare.
+    std::string kind_;
 };
 
 }  // namespace dc::harness

@@ -4,8 +4,15 @@
 // the *only* place the harness wires the engine together, so the goldens and the
 // console ladder can never disagree about what a trace means.
 //
-//     TraceReader ──► AnvilAdapter ──► FeedEvent ──► Book ──► SnapshotChannel
-//                       (parse)                     (adopt)     (publish)
+//     TraceReader ──► <venue adapter> ──► FeedEvent ──► Book ──► SnapshotChannel
+//                        (parse)                        (apply)     (publish)
+//
+// M4 STAGE B1: THERE ARE NOW TWO ADAPTERS AND THE DRIVER PICKS ONE. Until
+// tonight it named AnvilAdapter and refused every other venue loudly, which was
+// the right holding position while Kraken's decoder was a classifier. The
+// refusal is gone; `run_replay` switches on the trace's venue tag and
+// instantiates that venue's decoder. See DECODER IDENTITY on ReplayResult for
+// what keeps a pinned output honest about which of the two produced it.
 //
 // The one rule that is not mechanical is how a *transport* gap is recognised in
 // a file that has no disconnect marker — see DISCONNECT DETECTION below.
@@ -20,6 +27,7 @@
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/book.hpp>
+#include <depthcharge/kraken/kraken_adapter.hpp>
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/snapshot_channel.hpp>
 #include <depthcharge/symbol.hpp>
@@ -154,9 +162,36 @@ struct ReplayStep {
 
 struct ReplayResult {
     TraceMeta meta;
+
+    // ---- DECODER IDENTITY (M4 triage item 1) ------------------------------
+    // WHICH ADAPTER PRODUCED EVERYTHING BELOW. Empty only for a result nobody
+    // ran.
+    //
+    // The hole this closes opened the moment a second adapter linked: two
+    // decoders, one reader, and a pinned output that named neither. A golden
+    // full of Kraken numbers would still be a golden full of numbers if the
+    // dispatch sent that trace to the Anvil parser — it would simply pin a
+    // different set, and the first person to look would be reading a report of
+    // what the WRONG decoder did to the right file.
+    //
+    // Taken from `Decoder::name()`, which is derived from the decoder's own
+    // `kVenue` (trace_decoder.hpp) rather than spelled as a literal, so it
+    // cannot be right while the dispatch is wrong. The mutation that proves it
+    // is `test_kraken_goldens.cpp`'s "the dispatch is pinned by identity" —
+    // swap the two decoder cases in run_replay and that case goes red, which is
+    // the standing condition of ARCHITECTURE §9, 2026-08-18.
+    std::string decoder;
+
     std::size_t frames = 0;
     std::size_t events = 0;
+
+    // Per-venue adapter statistics. TWO FIELDS RATHER THAN A VARIANT, and the
+    // reason is the goldens: Anvil's numbers have been pinned since M1 and a
+    // sum type would have moved every one of those call sites to prove nothing.
+    // Exactly one of the two is populated, and `decoder` says which.
     depthcharge::anvil::AnvilAdapter::Stats adapter;
+    depthcharge::kraken::KrakenAdapter::Stats kraken;
+
     depthcharge::Book::Stats book;
     std::vector<StaleEpisode> episodes;
 
@@ -218,6 +253,20 @@ using ReplayObserver = std::function<bool(const ReplayStep&, const depthcharge::
 // (ARCHITECTURE §4) — a trace for another ticker is decoded at the declared
 // scale and fails loudly on the first price that will not fit, which is the
 // intended behaviour and not a silent re-interpretation.
+//
+// M4 STAGE B1: IT IS NOW VENUE-AWARE, AND IT WAS A LATENT WRONG ANSWER UNTIL IT
+// WAS. The function returned Anvil's declared scale for EVERY trace, and
+// `run_replay`'s refusal was the only thing keeping that from being reached: with
+// the guard off, a Kraken trace decoded at Anvil's 10^-4 price scale and 10^0 qty
+// scale would put BTC/USD's `0.65540712` through a scale that cannot hold it —
+// a loud BadQty on every level, which is the good case — and MINA/GBP's 4-decimal
+// prices through a scale that CAN, which is the bad one: a ladder that parses
+// clean and is wrong by a factor of 10^8 in size. That is the shape of failure
+// invariant #5 exists to forbid, and it was one deleted `throw` away.
+//
+// A venue whose symbol this build declares no scale for throws rather than
+// guessing. There is no defensible default: a wrong scale does not fail, it
+// draws.
 depthcharge::SymbolSpec symbol_for(const TraceMeta& meta);
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,

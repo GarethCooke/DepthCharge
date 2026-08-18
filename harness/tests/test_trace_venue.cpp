@@ -523,15 +523,51 @@ TEST_CASE("the M1 rule invents disconnects on a venue that publishes on change")
     CHECK(s.liveness_threshold_ms == doctest::Approx(kUncalibratedThresholdMs));
 }
 
-TEST_CASE("the replay driver refuses a venue it has no adapter for") {
-    // Stage A ships Kraken's decoder as a classifier. Feeding Kraken's JSON to
-    // the Anvil parser would produce a dead ladder over a 100% parse-error
-    // count, which is the shape of failure invariant #5 exists to forbid.
+TEST_CASE("the replay driver dispatches to the venue's own adapter") {
+    // THIS CASE ASSERTED THE OPPOSITE UNTIL M4 STAGE B1, and the inversion is
+    // the deliverable. Stage A shipped Kraken's decoder as a classifier, so the
+    // driver refused the venue loudly rather than feeding Kraken's JSON to the
+    // Anvil parser — a dead ladder over a 100% parse-error count, which is the
+    // shape of failure invariant #5 exists to forbid. B1 supplies the adapter,
+    // so the refusal is not relaxed, it is unnecessary.
+    //
+    // What replaces the guard is not trust: it is `decoder`, pinned here and in
+    // every Kraken golden, so a dispatch that sent this trace the other way
+    // would be visible in the output rather than merely absent from the code.
     TraceReader reader(kKrakenTrace, in_memory, "kraken-synthetic");
     CHECK(reader.venue() == Venue::Kraken);
-    CHECK_THROWS_AS(run_replay(reader, depthcharge::anvil::kAnvilTicker101,
-                               ReplayOptions{}),
-                    TraceError);
+    const ReplayResult r =
+        run_replay(reader, depthcharge::kraken::kKrakenBtcUsd.spec, ReplayOptions{});
+    CHECK(r.decoder == "kraken");
+    CHECK(r.kraken.snapshot_frames == 1);
+    CHECK(r.kraken.heartbeats == 1);
+    CHECK(r.adapter.frames_in == 0);   // Anvil's counters stay untouched
+}
+
+TEST_CASE("a Kraken symbol this build declares no scale for is refused, not guessed") {
+    // A wrong scale does not fail — it draws. So there is no default here, and
+    // the loud refusal is the feature: `symbol_for` returned Anvil's scale for
+    // every venue until B1, and the driver's guard was the only thing keeping
+    // that from reaching a Kraken trace.
+    const std::string t =
+        std::string(
+            R"({"captured_at":"t","url":"u","venue":"kraken","symbol":"DOGE/XBT",)"
+            R"("tool_version":"v"})") +
+        "\n";
+    TraceReader reader(t, in_memory, "unknown-symbol");
+    TraceMeta meta = reader.meta();
+    CHECK(meta.symbol == "DOGE/XBT");
+    CHECK_THROWS_AS(symbol_for(meta), TraceError);
+
+    // ...and the two it does declare resolve to the scales the `instrument`
+    // channel publishes, which is what makes every price on this wire exactly
+    // representable (kraken_adapter.hpp).
+    meta.symbol = "BTC/USD";
+    CHECK(symbol_for(meta).price_decimals == 1);
+    CHECK(symbol_for(meta).qty_decimals == 8);
+    meta.symbol = "MINA/GBP";
+    CHECK(symbol_for(meta).price_decimals == 4);
+    CHECK(symbol_for(meta).qty_decimals == 8);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,23 +613,95 @@ static_assert(dc_reports_transport_gap<KrakenTraceDecoder>::value);
 
 }  // namespace
 
-TEST_CASE("kraken's decoder emits no FeedEvents, and that is checked not claimed") {
-    KrakenTraceDecoder decoder;
-    std::size_t events = 0;
-    auto sink = [&events](const depthcharge::FeedEvent&) { ++events; };
+TEST_CASE("kraken's decoder is an ADAPTER now, and the seam did not move") {
+    // The stage-A version of this case asserted `events == 0` and called that
+    // coverage. It was a true statement about a decoder that emitted nothing by
+    // design, and its real job was to hold the SHAPE — decode() taking a sink it
+    // did not use — so that B1 could fill the body without reshaping the seam.
+    // This is the same trace through the same call, asserting the opposite.
+    KrakenTraceDecoder decoder(depthcharge::kraken::kKrakenBtcUsd.spec, "BTC/USD", 25);
+    std::vector<depthcharge::FeedEvent> events;
+    auto sink = [&events](const depthcharge::FeedEvent& ev) { events.push_back(ev); };
 
     TraceReader reader(kKrakenTrace, in_memory, "kraken-synthetic");
     TraceFrame frame;
     while (reader.next(frame)) { decoder.decode(frame, sink); }
 
-    CHECK(decoder.records() == 6);
-    CHECK(decoder.book_events() == 2);  // the snapshot and the update
-    CHECK(events == 0);
-    CHECK(decoder.events_emitted() == 0);
+    const auto& st = decoder.adapter().stats();
+    CHECK(st.status_frames == 1);
+    CHECK(st.acks == 1);
+    CHECK(st.heartbeats == 1);
+    CHECK(st.snapshot_frames == 1);
+    CHECK(st.update_frames == 1);
+    // The subscribe THIS SIDE SENT is not the venue speaking, and the decoder
+    // drops it before the adapter sees it — otherwise it lands in unknown_kind
+    // and a counter describing the venue would be describing us.
+    CHECK(st.unknown_kind == 0);
+    CHECK(decoder.adapter().subscribe_state() ==
+          depthcharge::kraken::KrakenAdapter::SubscribeState::Subscribed);
+
+    // One event: the snapshot. This fixture's book messages carry no levels at
+    // all, so the snapshot is an empty full-replace and the update amends
+    // nothing — which is exactly the assertion worth having here, because it
+    // separates "the frame was decoded" from "levels were found".
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].kind == depthcharge::FeedEvent::Kind::Snapshot);
+    CHECK(events[0].seq == 1);
+    CHECK(events[0].bids.size == 0);
 
     decoder.on_transport_gap(depthcharge::GapReason::Disconnect, sink);
-    CHECK(decoder.transport_gaps() == 1);
-    CHECK(events == 0);  // stage A synthesises no Gap either — there is no book
+    REQUIRE(events.size() == 2);
+    CHECK(events[1].kind == depthcharge::FeedEvent::Kind::Gap);
+    CHECK(events[1].reason == depthcharge::GapReason::Disconnect);
+    // The gap dropped the baseline: a resync must start from a snapshot, not
+    // from a book whose provenance is a hole.
+    CHECK_FALSE(decoder.adapter().has_baseline());
+}
+
+TEST_CASE("absence of a subscribe is not failure of a subscribe") {
+    // The extreme quiet-pair slice begins MID-STREAM: no status, no subscribe,
+    // no ack anywhere in the file. An adapter that required an ack before
+    // accepting data would emit nothing for the one trace carrying the 25,843 ms
+    // healthy book silence the whole staleness ruling rests on.
+    KrakenTraceDecoder decoder(depthcharge::kraken::kKrakenBtcUsd.spec, "BTC/USD", 25);
+    std::size_t events = 0;
+    auto sink = [&events](const depthcharge::FeedEvent&) { ++events; };
+
+    CHECK(decoder.adapter().subscribe_state() ==
+          depthcharge::kraken::KrakenAdapter::SubscribeState::Unknown);
+    CHECK_FALSE(decoder.adapter().refused());
+
+    decoder.adapter().on_frame(
+        R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",)"
+        R"("bids":[{"price":62807.0,"qty":0.65540712}],"asks":[],"checksum":1}]})",
+        sink);
+
+    CHECK(events == 1);                                   // accepted, unsubscribed
+    CHECK(decoder.adapter().stats().snapshot_frames == 1);
+    CHECK(decoder.adapter().subscribe_state() ==
+          depthcharge::kraken::KrakenAdapter::SubscribeState::Unknown);
+}
+
+TEST_CASE("a REFUSED subscribe is fatal, and it greys the panel immediately") {
+    // The trap stage 0 measured: after `success:false` the socket stays UP,
+    // `status` has already arrived, and heartbeats keep coming at 1 Hz. Nothing
+    // else on this connection will ever say anything is wrong.
+    KrakenTraceDecoder decoder(depthcharge::kraken::kKrakenBtcUsd.spec, "BTC/USD", 25);
+    std::vector<depthcharge::FeedEvent> events;
+    auto sink = [&events](const depthcharge::FeedEvent& ev) { events.push_back(ev); };
+
+    decoder.adapter().on_frame(
+        R"({"error":"Subscription depth not supported","method":"subscribe",)"
+        R"("success":false,"time_in":"t","time_out":"t"})",
+        sink);
+
+    CHECK(decoder.adapter().refused());
+    REQUIRE(events.size() == 1);
+    // Not a new GapReason — the question has been asked three times and answered
+    // no twice (ARCHITECTURE §9, 2026-08-17). It is a fatal transport error, and
+    // Disconnect is what the panel already knows how to draw.
+    CHECK(events[0].kind == depthcharge::FeedEvent::Kind::Gap);
+    CHECK(events[0].reason == depthcharge::GapReason::Disconnect);
 }
 
 TEST_CASE("the venue tag round-trips through the name lookup") {

@@ -19,7 +19,7 @@
 
 namespace dc::harness {
 
-RecordKind KrakenTraceDecoder::classify(const TraceFrame& f) {
+RecordKind kraken_classify(const TraceFrame& f, std::string& kind_) {
     using nlohmann::json;
 
     RecordKind k;

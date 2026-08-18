@@ -2,6 +2,7 @@
 #include "dc_harness/replay_driver.hpp"
 
 #include <algorithm>
+#include <utility>
 
 #include <depthcharge/feed_event.hpp>
 
@@ -22,11 +23,20 @@ using depthcharge::SnapshotChannel;
 // Holds the wiring for one replay. The engine pieces are members, in the same
 // arrangement the firmware feed task will own them (invariant #8: this object
 // is the single writer).
+//
+// A TEMPLATE FROM M4 STAGE B1, over the venue's decoder. The alternative was a
+// virtual decoder interface, and it was refused for the reason ARCHITECTURE §4
+// gives for the sink being a template: this object is the host stand-in for the
+// firmware feed task, and a virtual call plus a heap-allocated decoder on that
+// path is exactly what invariant #7 forbids on the board. One venue per build
+// means the firmware instantiates one of these; the harness instantiates both,
+// which costs a little code size on the desk and nothing where it matters.
+template <typename Decoder>
 class Replay {
 public:
-    Replay(const depthcharge::SymbolSpec& symbol, const ReplayOptions& opts,
-           const ReplayObserver& observer)
-        : opts_(opts), observer_(observer), decoder_(symbol), book_(symbol) {}
+    Replay(Decoder decoder, const depthcharge::SymbolSpec& symbol,
+           const ReplayOptions& opts, const ReplayObserver& observer)
+        : opts_(opts), observer_(observer), decoder_(std::move(decoder)), book_(symbol) {}
 
     // The threshold in force right now: the caller's override if it gave one,
     // otherwise whatever this venue's own liveness signal has calibrated to.
@@ -100,6 +110,7 @@ public:
 
         result.frames = frames_;
         result.events = events_;
+        result.decoder = std::string(Decoder::name());
         result.threshold_ms = threshold_ms();
         result.worst_age_ms = age_.worst_ms();
         result.age_baseline_ms = age_.baseline_ms();
@@ -107,7 +118,14 @@ public:
         // The TOTAL, not the clock's 32-sample window: a report that says "32 x
         // summary" over a two-minute trace looks like a thin feed.
         result.liveness_arrivals = liveness_arrivals_;
-        result.adapter = decoder_.adapter().stats();
+        // `if constexpr` rather than an overload set: the two Stats types share
+        // no base and never will, and the whole point of ReplayResult carrying
+        // both is that exactly one is populated per run.
+        if constexpr (Decoder::kVenue == Venue::Anvil) {
+            result.adapter = decoder_.adapter().stats();
+        } else {
+            result.kraken = decoder_.adapter().stats();
+        }
         result.book = book_.stats();
         result.episodes = episodes_;
         result.final_snapshot = latest_;
@@ -234,11 +252,10 @@ private:
     const ReplayObserver& observer_;
 
     // The venue's decoder, not the adapter directly (M4 stage A, deliverable 2).
-    // A pure forwarding wrapper today — that is the point: the driver now names
-    // a seam a second venue can fill rather than naming Anvil, and the change
-    // is provably behaviour-free because every committed trace was diffed
-    // through the readers before and after it.
-    AnvilTraceDecoder decoder_;
+    // Stage A shipped this as a seam with one filling; B1 is the stage that
+    // proves a seam was the right shape, by filling it a second time without
+    // moving it.
+    Decoder decoder_;
     LivenessClock liveness_;
     AgeEstimator age_;
     Book book_;
@@ -261,30 +278,83 @@ private:
 }  // namespace
 
 depthcharge::SymbolSpec symbol_for(const TraceMeta& meta) {
-    const auto& declared = depthcharge::anvil::kAnvilTicker101;
-    return depthcharge::SymbolSpec{
-        meta.ticker >= 0 ? static_cast<std::uint32_t>(meta.ticker) : declared.id,
-        declared.price_decimals,
-        declared.qty_decimals};
+    switch (meta.venue) {
+        case Venue::Anvil: {
+            const auto& declared = depthcharge::anvil::kAnvilTicker101;
+            return depthcharge::SymbolSpec{
+                meta.ticker >= 0 ? static_cast<std::uint32_t>(meta.ticker) : declared.id,
+                declared.price_decimals,
+                declared.qty_decimals};
+        }
+        case Venue::Kraken: {
+            depthcharge::kraken::SymbolConfig cfg{};
+            if (!depthcharge::kraken::symbol_config_for(meta.symbol, cfg)) {
+                throw TraceError(1, "this build declares no scale for Kraken symbol \"" +
+                                        meta.symbol +
+                                        "\" (engine/include/depthcharge/kraken/"
+                                        "kraken_adapter.hpp). A guessed scale would not "
+                                        "fail, it would draw a wrong ladder.");
+            }
+            return cfg.spec;
+        }
+    }
+    return {};  // unreachable: venue_from_name rejects anything else
 }
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,
                         const ReplayOptions& opts, const ReplayObserver& observer) {
-    // The driver feeds THE VENUE'S OWN ADAPTER (ARCHITECTURE §9, 2026-08-17),
-    // and at stage A there is exactly one. Refusing here rather than feeding
-    // Kraken's JSON to the Anvil parser is the difference between a loud stop
-    // and a dead ladder over a 100% parse-error count — and the second is the
-    // shape of failure invariant #5 exists to forbid, arriving through the test
-    // rig instead of the panel.
-    if (reader.venue() != Venue::Anvil) {
-        throw TraceError(reader.name(), 1,
-                         "replay driver has no adapter for venue \"" +
-                             std::string(venue_traits(reader.venue()).name) +
-                             "\" (M4 stage A ships its decoder as a classifier; the "
-                             "adapter is stage B). Use dc_taxonomy to read this trace.");
+    // THE DRIVER FEEDS THE VENUE'S OWN ADAPTER (ARCHITECTURE §9, 2026-08-17),
+    // and from M4 stage B1 there are two of them.
+    //
+    // The stage-A refusal that used to stand here is GONE, not relaxed: it threw
+    // for any venue but Anvil, which was correct while Kraken's decoder emitted
+    // nothing and is now simply the absence of the feature. What it was
+    // protecting against — feeding Kraken's JSON to the Anvil parser and getting
+    // a dead ladder over a 100% parse-error count — is protected instead by the
+    // dispatch below plus `ReplayResult::decoder`, which makes the mistake
+    // VISIBLE in every pinned output rather than merely impossible today.
+    //
+    // Two things went live the moment it came off, and both are fixed in this
+    // same commit rather than left as loud defects: `symbol_for` returned
+    // Anvil's scale for every venue (above), and the console ladder printed a
+    // hardcoded " ANVIL " and a raw step count for every quantity
+    // (console_ladder.cpp). The triage put them here for exactly this reason —
+    // "that is when they break".
+    switch (reader.venue()) {
+        case Venue::Anvil: {
+            Replay<AnvilTraceDecoder> replay(AnvilTraceDecoder(symbol), symbol, opts,
+                                             observer);
+            return replay.run(reader);
+        }
+        case Venue::Kraken: {
+            const TraceMeta& m = reader.meta();
+            // The subscribed depth is a property of the CAPTURE, not of the
+            // build: the committed slices run at 10, 25 and 100, and a
+            // compile-time depth would mean three of the five goldens could only
+            // be run by rebuilding. A trace that recorded none falls back to the
+            // firmware's constant.
+            const std::int32_t depth =
+                m.depth > 0 ? static_cast<std::int32_t>(m.depth)
+                            : depthcharge::kraken::kKrakenSubscribeDepth;
+            // The wire symbol is taken from the VENUE TABLE, not from the trace's
+            // metadata string, and the difference is lifetime rather than value:
+            // the table's entries are `inline constexpr` literals with static
+            // storage, and `KrakenTraceDecoder` borrows the view (see the note on
+            // its constructor). Resolving it here also means a capture of a
+            // symbol this build declares no scale for is refused at the same
+            // place and with the same message as `symbol_for`.
+            depthcharge::kraken::SymbolConfig cfg{};
+            if (!depthcharge::kraken::symbol_config_for(m.symbol, cfg)) {
+                throw TraceError(reader.name(), 1,
+                                 "this build declares no scale for Kraken symbol \"" +
+                                     m.symbol + "\"");
+            }
+            Replay<KrakenTraceDecoder> replay(
+                KrakenTraceDecoder(symbol, cfg.wire_symbol, depth), symbol, opts, observer);
+            return replay.run(reader);
+        }
     }
-    Replay replay(symbol, opts, observer);
-    return replay.run(reader);
+    throw TraceError(reader.name(), 1, "trace declares a venue this build cannot replay");
 }
 
 ReplayResult run_replay_file(const std::string& path, const depthcharge::SymbolSpec& symbol,
