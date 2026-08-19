@@ -33,12 +33,20 @@
 #include <string>
 #include <vector>
 
+#include <depthcharge/book.hpp>
+#include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/window.hpp>
 
+using depthcharge::Book;
 using depthcharge::BookLevel;
+using depthcharge::DisplaySnapshot;
+using depthcharge::FeedEvent;
+using depthcharge::GapReason;
+using depthcharge::LevelSpan;
 using depthcharge::PriceTicks;
 using depthcharge::Qty;
 using depthcharge::Side;
+using depthcharge::SymbolSpec;
 using depthcharge::window::Policy;
 using depthcharge::window::WindowStats;
 using depthcharge::window::kMaxRows;
@@ -275,4 +283,118 @@ TEST_CASE("a book deeper than the panel makes them different windows") {
     // is the whole of what they are for.
     CHECK(b.tick_span > a.tick_span);
     CHECK(c.tick_span > a.tick_span);
+}
+
+// ---------------------------------------------------------------------------
+// 3. UNINITIALISED IS A STATE, NOT AN EMPTY BOOK
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a book that has received nothing is distinguishable from an empty one") {
+    // Triage item 11's engine half. The two look identical in every count the
+    // snapshot carries — `bid_count == 0`, `ask_count == 0`, `has_book()` false
+    // — and only one of them is a statement the venue made.
+    const SymbolSpec spec{/*id=*/1, /*price_decimals=*/1, /*qty_decimals=*/8};
+    DisplaySnapshot snap{};
+
+    SUBCASE("nothing received") {
+        Book book(spec);
+        CHECK_FALSE(book.initialised());
+        book.publish(snap);
+        CHECK_FALSE(snap.initialised);
+        CHECK_FALSE(snap.live());
+        CHECK_FALSE(snap.has_book());
+        CHECK(snap.stale_reason == GapReason::Resync);
+    }
+
+    SUBCASE("an EMPTY snapshot is knowledge, and says so") {
+        Book book(spec);
+        FeedEvent ev{};
+        ev.kind = FeedEvent::Kind::Snapshot;   // both spans empty
+        book.apply(ev);
+        book.publish(snap);
+        CHECK(book.initialised());
+        CHECK(snap.initialised);
+        CHECK(snap.live());
+        CHECK_FALSE(snap.has_book());          // ...and still no levels
+    }
+
+    SUBCASE("THE CASE THE INFERENCE GETS WRONG: empty, then a gap") {
+        // `!live() && !has_book()` is the cheap way to guess "uninitialised",
+        // and here it guesses wrong: this book HAS been told something. That is
+        // why the flag is published rather than inferred.
+        Book book(spec);
+        FeedEvent snapshot{};
+        snapshot.kind = FeedEvent::Kind::Snapshot;
+        book.apply(snapshot);
+        FeedEvent gap{};
+        gap.kind = FeedEvent::Kind::Gap;
+        gap.reason = GapReason::ChecksumFail;
+        book.apply(gap);
+        book.publish(snap);
+
+        CHECK_FALSE(snap.live());
+        CHECK_FALSE(snap.has_book());
+        CHECK(snap.initialised);               // the inference would say false
+        CHECK(book.initialised());
+    }
+
+    SUBCASE("a gap does not un-initialise a book that holds levels") {
+        // The deliberate asymmetry with the Kraken adapter, which DOES drop its
+        // ladder on a gap: the adapter must not amend a book whose provenance is
+        // a hole, and the panel must not blank a ladder the feed never retracted.
+        Book book(spec);
+        const BookLevel bids[] = {{100, 5}};
+        FeedEvent ev{};
+        ev.kind = FeedEvent::Kind::Snapshot;
+        ev.bids = LevelSpan{bids, 1};
+        book.apply(ev);
+        FeedEvent gap{};
+        gap.kind = FeedEvent::Kind::Gap;
+        gap.reason = GapReason::Disconnect;
+        book.apply(gap);
+        book.publish(snap);
+
+        CHECK(book.initialised());
+        CHECK(snap.initialised);
+        CHECK(snap.has_book());                // levels kept, for the renderer to grey
+        CHECK_FALSE(snap.live());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. THE PUBLISHED WINDOW, AND THE ROWS BEYOND IT
+// ---------------------------------------------------------------------------
+
+TEST_CASE("rows the window did not fill are blanked, not left from the last frame") {
+    // `bid_count` is what says where the knowledge stops (stage 0's decision:
+    // depth beyond N is unknown, not zero). The zero-fill is the second half of
+    // that: without it a deeper frame's tail survives into a shallower one and a
+    // renderer that trusted the array over the count would draw a level the book
+    // no longer holds.
+    const SymbolSpec spec{/*id=*/1, /*price_decimals=*/1, /*qty_decimals=*/8};
+    Book book(spec);
+    DisplaySnapshot snap{};
+
+    Lcg rng{7};
+    const auto deep = make_side(rng, 27, Side::Bid);
+    FeedEvent full{};
+    full.kind = FeedEvent::Kind::Snapshot;
+    full.bids = LevelSpan{deep.data(), 27};
+    book.apply(full);
+    book.publish(snap);
+    REQUIRE(snap.bid_count == 27);
+
+    const BookLevel one[] = {{deep[0].px, deep[0].qty}};
+    FeedEvent shallow{};
+    shallow.kind = FeedEvent::Kind::Snapshot;
+    shallow.bids = LevelSpan{one, 1};
+    book.apply(shallow);
+    book.publish(snap);
+
+    REQUIRE(snap.bid_count == 1);
+    for (std::size_t i = 1; i < depthcharge::kDisplayLevels; ++i) {
+        CAPTURE(i);
+        CHECK(snap.bids[i].px == 0);
+        CHECK(snap.bids[i].qty == 0);
+    }
 }

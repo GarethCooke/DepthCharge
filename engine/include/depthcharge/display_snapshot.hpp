@@ -97,6 +97,27 @@ struct DisplaySnapshot {
     bool       has_last{};
     bool       has_age{};   // see age_ms above; packs into existing padding
 
+    // HAS THIS BOOK EVER BEEN TOLD ANYTHING (M4 stage C).
+    //
+    // Not the same question as `has_book()`, and the difference is knowledge:
+    // a side that has received nothing and a side the venue says is genuinely
+    // empty both read `bid_count == 0`, and only the second is a statement
+    // anybody made. Both are reachable in one run through B2's healing path.
+    //
+    // IT IS PUBLISHED RATHER THAN INFERRED, and the inference it replaces is a
+    // lie in a reachable case: `!live() && !has_book()` reads "uninitialised"
+    // for a book that adopted an empty snapshot and then took a Gap, which is a
+    // book that HAS been told something. The renderer must be able to tell
+    // "nothing yet" from "nothing there"; what it draws for each is stage D's.
+    //
+    // COSTS NOTHING, and that is checked rather than asserted in prose: it lands
+    // in the pad byte this struct already had between `has_age` and `last_px`'s
+    // 8-byte alignment, exactly as `age_ms` and `has_age` landed in padding at
+    // stage A2. The static_assert at the foot of this file is what proves it —
+    // if `sizeof` had moved, the three documents quoting it would have had to
+    // move with it, and that is a decision rather than an edit.
+    bool       initialised{};
+
     PriceTicks last_px{};
 
     BookLevel  bids[kDisplayLevels]{};    // best-first: descending px

@@ -13,10 +13,24 @@
 // and whose measured traffic is 1.55 levels per message. That is the phase-1
 // shape doing one more thing, not a new engine.
 //
-// What stage C changes, so the boundary is legible from here: the dense window
-// replaces the STORAGE (a contiguous array of Qty addressed by px - anchor, plus
-// a cold tail) and leaves this apply()/publish() face alone. Nothing below
-// anticipates it, and nothing below should be reshaped in order to.
+// WHAT STAGE C ACTUALLY CHANGED, AND THE ONE THING IT DID NOT.
+//
+// The paragraph this replaces predicted that stage C would swap the STORAGE for
+// ARCHITECTURE §5's tick-indexed dense window — a contiguous array of Qty
+// addressed by (px - anchor), plus a cold tail — and leave apply()/publish()
+// alone. **That is not what stage C was asked for and it is not what it did.**
+// C's brief is about which levels of a deeper-than-the-panel book earn one of
+// the 27 rendered rows, which is a question about `publish` and not about
+// storage. So `publish` now runs a selectable window policy (window.hpp) and the
+// arrays below are exactly what they were.
+//
+// The storage half is therefore still unbuilt, and it is unbuilt on a
+// measurement rather than by omission: `amend_side` is an ordered insert over a
+// side of 25, at a measured 1.55 changed levels per message and ~26 messages a
+// second — on the order of a thousand 16-byte shifts a second. A tick-indexed
+// store would remove work that has never been shown to cost anything. Recorded
+// in ARCHITECTURE §9 rather than left as a silent divergence from §5, because
+// §5 still promises it and somebody will come looking.
 //
 // Invariants this file is answerable for:
 //   #3  Integer ticks only — there is not a float in the type.
@@ -35,6 +49,7 @@
 #include "depthcharge/feed_event.hpp"
 #include "depthcharge/ladder.hpp"
 #include "depthcharge/symbol.hpp"
+#include "depthcharge/window.hpp"
 
 namespace depthcharge {
 
@@ -58,7 +73,20 @@ public:
         std::uint64_t publishes = 0;
     };
 
-    explicit Book(const SymbolSpec& symbol) noexcept : symbol_(symbol) {}
+    // `policy` defaults to the firmware's compile-time choice, so the board and
+    // every existing call site get the same window without naming it; the
+    // harness passes one explicitly, because a golden for each policy has to be
+    // a test rather than a rebuild.
+    //
+    // `validated_depth` is how many of this venue's BEST levels an external
+    // check confirms — Kraken's CRC32 covers 10, Anvil has none and passes 0.
+    // Caller-supplied configuration exactly as `symbol` is: it never crosses the
+    // adapter boundary as data (invariant #2), and this class does not know what
+    // a checksum is.
+    explicit Book(const SymbolSpec& symbol,
+                  window::Policy policy = window::kWindowPolicy,
+                  std::uint32_t validated_depth = 0) noexcept
+        : symbol_(symbol), policy_(policy), validated_depth_(validated_depth) {}
 
     const SymbolSpec& symbol() const noexcept { return symbol_; }
     const Stats& stats() const noexcept { return stats_; }
@@ -67,6 +95,27 @@ public:
     Seq last_seq() const noexcept { return last_seq_; }
     std::uint32_t bid_count() const noexcept { return bid_count_; }
     std::uint32_t ask_count() const noexcept { return ask_count_; }
+
+    // HAS THIS BOOK EVER BEEN TOLD ANYTHING? (M4 stage C.)
+    //
+    // Distinct from empty, and the distinction is knowledge: a book that has
+    // received nothing and a book whose side is genuinely empty both report
+    // `bid_count() == 0`, and only the second is a statement the venue made.
+    // Monotonic — it becomes true at the first Snapshot and never goes back,
+    // because a Gap makes the book UNKNOWN rather than un-received, and
+    // `mark_stale` deliberately keeps the levels for the renderer to grey.
+    //
+    // Note the deliberate asymmetry with the Kraken adapter, which DOES throw
+    // its ladder away on a gap (kraken_adapter.hpp, THE HEALING PATH): the
+    // adapter must not amend a book whose provenance is a hole, while the panel
+    // must not blank a ladder the feed never retracted. Two different jobs, two
+    // different answers, and B2's healing path is what made both reachable in
+    // one run.
+    bool initialised() const noexcept { return initialised_; }
+
+    window::Policy window_policy() const noexcept { return policy_; }
+    const window::WindowStats& bid_window() const noexcept { return bid_window_; }
+    const window::WindowStats& ask_window() const noexcept { return ask_window_; }
 
     // The feed side. Bounded work, no allocation, no I/O.
     void apply(const FeedEvent& ev) noexcept {
@@ -94,10 +143,22 @@ public:
         out.has_last = has_last_;
         out.last_px = last_px_;
 
-        out.bid_count = static_cast<std::uint8_t>(
-            copy_clamped<kDisplayLevels, true>(bids_, bid_count_, out.bids));
-        out.ask_count = static_cast<std::uint8_t>(
-            copy_clamped<kDisplayLevels, true>(asks_, ask_count_, out.asks));
+        // THE WINDOW, built here rather than read back and patched: one writer,
+        // one pass, into storage the snapshot already owns (invariant #8, and
+        // stage C brief §1).
+        out.initialised = initialised_;
+        bid_window_ = window::select(policy_, bids_, bid_count_, out.bids,
+                                     kDisplayLevels, validated_depth_);
+        ask_window_ = window::select(policy_, asks_, ask_count_, out.asks,
+                                     kDisplayLevels, validated_depth_);
+        out.bid_count = static_cast<std::uint8_t>(bid_window_.rows_filled);
+        out.ask_count = static_cast<std::uint8_t>(ask_window_.rows_filled);
+        // The rows the window did not fill are UNKNOWN, and they are blanked so
+        // a shallower frame cannot leave the previous one's tail behind it —
+        // `bid_count` is what says where the knowledge stops, and the zero-fill
+        // is what stops a stale level being mistaken for a live one.
+        std::fill(out.bids + bid_window_.rows_filled, out.bids + kDisplayLevels, BookLevel{});
+        std::fill(out.asks + ask_window_.rows_filled, out.asks + kDisplayLevels, BookLevel{});
 
         // Ring -> newest-first array. trade_head_ is the *next* write slot, so
         // the newest print sits one behind it, modulo the ring. The walk stays a
@@ -118,9 +179,10 @@ private:
     // occur (the adapter caps at the same constant), but the clamp is kept so a
     // future adapter bug truncates instead of writing off the end.
     void adopt(const FeedEvent& ev) noexcept {
-        bid_count_ = copy_clamped<kBookCapacity, false>(ev.bids.data, ev.bids.size, bids_);
-        ask_count_ = copy_clamped<kBookCapacity, false>(ev.asks.data, ev.asks.size, asks_);
+        bid_count_ = copy_clamped<kBookCapacity>(ev.bids.data, ev.bids.size, bids_);
+        ask_count_ = copy_clamped<kBookCapacity>(ev.asks.data, ev.asks.size, asks_);
         status_ = FeedStatus::Live;
+        initialised_ = true;
         ++stats_.snapshots_adopted;
     }
 
@@ -214,23 +276,25 @@ private:
         ++stats_.deltas_applied;
     }
 
-    // Copy at most Cap levels; when ZeroFill, blank the rest of the destination
-    // so a shallower book cannot leave the previous frame's tail behind it.
+    // Copy at most Cap levels into the book's own store.
     //
-    // Cap and ZeroFill are template parameters, not arguments, on purpose: the
-    // book's own store (256 deep, never filled) and the display window (27 deep,
-    // always filled) are the same operation but must not become the same *code*.
-    // A runtime fill flag would put the decision on adopt()'s path 12 times a
-    // second, and a runtime capacity would cost the compiler the constant it
-    // needs to lower each instantiation separately.
+    // IT USED TO HAVE A SECOND HALF AND STAGE C TOOK THE CALLER AWAY. Until the
+    // window landed this was `copy_clamped<Cap, ZeroFill>`, shared between the
+    // book's store (256 deep, never blanked) and the display window (27 deep,
+    // always blanked), with the parameters templated so neither the fill
+    // decision nor the capacity reached a runtime branch on adopt()'s path. The
+    // display half is now `window::select` plus an explicit fill in publish(),
+    // so `ZeroFill` had exactly no callers left — and a template parameter kept
+    // alive by a comment describing a use that no longer exists is worse than
+    // the duplication it was extracted to remove.
     //
-    // Measured cost of the consolidation on the engine's hot path at -Os
-    // (Book::apply + publish + parse/format + channel, forced out of line):
-    // xtensa GCC 8.4 1494 -> 1541 B, GCC 15.2 1500 -> 1520 B. Both forms lower
-    // to memcpy/memset; neither introduces a library call the old loops did not
-    // already pull in. 47 bytes against 16 MB of flash, for one helper instead
-    // of two near-identical ones.
-    template <std::size_t Cap, bool ZeroFill>
+    // The measurement that justified the consolidation is kept because it is
+    // still the reason `Cap` is a template parameter: at -Os over the engine's
+    // hot path (apply + publish + parse/format + channel, forced out of line)
+    // the shared form cost xtensa GCC 8.4 1494 -> 1541 B and GCC 15.2
+    // 1500 -> 1520 B. Both forms lower to memcpy; neither pulls in a library
+    // call the old loops did not.
+    template <std::size_t Cap>
     static std::uint32_t copy_clamped(const BookLevel* src, std::uint32_t count,
                                       BookLevel* dst) noexcept {
         const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(count, Cap));
@@ -238,11 +302,14 @@ private:
         // pointer may be null — which std::copy_n must not be handed even for a
         // zero count.
         if (n != 0) { std::copy_n(src, n, dst); }
-        if constexpr (ZeroFill) { std::fill(dst + n, dst + Cap, BookLevel{}); }
         return n;
     }
 
     SymbolSpec symbol_{};
+    window::Policy policy_ = window::kWindowPolicy;
+    std::uint32_t validated_depth_ = 0;
+    window::WindowStats bid_window_{};
+    window::WindowStats ask_window_{};
 
     BookLevel bids_[kBookCapacity]{};
     BookLevel asks_[kBookCapacity]{};
@@ -261,6 +328,7 @@ private:
     // Snapshot.
     FeedStatus status_ = FeedStatus::Stale;
     GapReason stale_reason_ = GapReason::Resync;
+    bool initialised_ = false;
 
     Seq last_seq_ = 0;
     std::uint32_t version_ = 0;
