@@ -782,3 +782,110 @@ status, whole length, head, tail, and the offset of any second `{"type":` in the
 committed goldens never can.** The honest coverage in that case is a synthesised trace plus
 a `FrameReassembler` test, not a capture — the same shape as the reassembler's existing
 host tests, and the same reason they exist.
+
+---
+
+## M4 stage C addendum (2026-08-19) — how sparse a real book is, and what that did to the window
+
+Venue-neutral, and it belongs here rather than in `NOTES-kraken.md` because both
+venues answer the same way and the conclusion is about the panel rather than
+about a wire.
+
+### 1. THE MEASUREMENT THAT CHANGED THE STAGE: books are sparse in price, everywhere
+
+Taken over every committed trace before a line of the window was written, by
+maintaining each book and measuring the tick distance between adjacent levels on
+one side:
+
+| book | adjacent-level gap p50 | p90 | max | contiguous (gap = 1 tick) | one side spans | levels held |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Kraken BTC/USD depth 10 | 8 | 29 | 62 | 21.1% | 96 tk | 10 |
+| Kraken BTC/USD depth 25 | **5** | 18 | 62 | **19.5%** | **182 tk** | 25 |
+| Kraken BTC/USD depth 100 | 6 | 20 | 67 | 16.4% | 838 tk | 100 |
+| Kraken MINA/GBP depth 25 | 10 | **350** | **1,990** | 13.3% | **6,613 tk** | 25 |
+| Anvil 101 baseline | 6 | 23 | 186 | 10.0% | 1,079 tk | 101 |
+| Anvil 101 depth 27 | 7 | 22 | 99 | 12.6% | 252 tk | 30 |
+
+**Only one adjacent level pair in five is a single tick from its neighbour, and
+that is the densest book in the repository.** A side of 25 levels occupies 182
+ticks on a liquid pair and 6,613 on a quiet one.
+
+**This retires two of the stage's three proposed policies before they were
+built.** The brief named a fixed tick band — one panel row per tick around the
+mid — and a density-adaptive version of it. Against these numbers a 27-row band
+covers 27 of BTC/USD's 182 ticks, so it renders **about four of twenty-five
+levels** with twenty-three rows blank; on MINA/GBP it covers 27 of 6,613, which
+is **the touch and twenty-six blank rows**. Widening a row to span several ticks
+restores the coverage and destroys the reason for the policy: a row becomes an
+AGGREGATE of levels rather than a level, and its width becomes a constant taken
+from the market's own span — the mistake ARCHITECTURE §9 already has a row about.
+
+So the window's axis is RANK, and the three policies differ in which levels earn
+a row. Every one of them renders levels the book actually holds, which is what
+keeps `DisplaySnapshot`'s contract true and its `sizeof` unmoved.
+
+**A price-axis window is not refuted — it is blocked, and cheaply unblockable.**
+It needs one thing the published snapshot cannot say: *row 7 is not a level*,
+interleaved rather than trailing. `bid_count` can only express trailing unknowns.
+Two 32-bit present-masks would carry it (27 rows fit a `uint32_t` exactly) at a
+cost of **8 bytes on `DisplaySnapshot`, 24 in the three-slot mailbox**, plus
+correcting the three documents that quote the size. That is a decision, and stage
+C's brief says to stop and raise rather than take it.
+
+### 2. The four answers per policy, which is what stage D reads at the panel
+
+`dense` = more levels than rows (Anvil 101, Kraken depth 100). `sparse` = wide
+gaps between levels (MINA/GBP). `one-sided` = one side empty. `under-filled` =
+fewer levels than the 27 rows, which is **every Kraken slice at the shipped
+depth**.
+
+| | **top** (best 27) | **largest** (touch + biggest 26) | **thinned** (best 13, then sampled) |
+| --- | --- | --- | --- |
+| **dense** | The 27 nearest the mid; everything beyond is dropped. Tightest price coverage of the three — worst span **319 tk** at Kraken d100, **414 tk** at Anvil 101. Shows the trading, says nothing about the depth behind it. | Touch plus the 26 largest behind it, in price order. Widest reach — **1,128 tk** / **873 tk**. Shows the walls; the dust between them is invisible, and so is any thin level near the touch. | Best 13 individually, then 14 samples spread evenly across the tail. **1,060 tk** / **1,054 tk**. Detail where the trading is and a sense of the shape behind it, at the cost of a tail whose rows are a sample rather than a neighbourhood. |
+| **sparse** | Unchanged in WHICH levels it picks — rank is not price — so only the span grows. On MINA/GBP one side spans 6,613 tk across 25 rendered rows. | Same selection rule, and the widest spans of the three get wider still. A row's price distance from its neighbour carries no meaning in any of the three. | Same. The stride is over RANKS, so a sparse tail is sampled exactly as a dense one is. |
+| **one-sided** | Renders the side that exists; the other reports 0 rows and 27 unknown. `has_top()` is false, so `best_ask`/`spread_ticks` are not readable — which is the existing contract and not new here. | Identical to top. | Identical to top. |
+| **under-filled** | Renders every level, remaining rows unknown. | **Byte-identical to top.** | **Byte-identical to top.** |
+
+**The bottom-right corner is the finding.** At any depth at or below the panel's
+27 rows the three policies are the same window — not similar, identical — because
+every level gets a row and there is nothing to choose. Asserted as a property
+(`test_window.cpp`, "a book no deeper than the panel makes all three policies the
+same window") rather than left as a note, because it stops being true the moment
+somebody raises the subscribed depth, and that is exactly when it matters.
+
+### 3. What the panel shows that the venue never checked
+
+B2 measured that Kraken's CRC32 covers the top 10 levels a side whatever the
+subscribed depth. So a window's position decides whether the rows on screen were
+ever confirmed, and the number differs sharply by policy once the book is deeper
+than the panel:
+
+| trace | policy | rendered rows | of which the venue checksummed |
+| --- | --- | ---: | ---: |
+| Kraken BTC/USD d25 | all three | 149,694 | 59,880 — **40.0%** (10 of 25 a side) |
+| Kraken BTC/USD d100 | top | 281,124 | 104,120 — **37.0%** (10 of 27) |
+| Kraken BTC/USD d100 | **largest** | 281,124 | **33,433 — 11.9%** |
+| Kraken BTC/USD d100 | thinned | 281,124 | 104,120 — **37.0%** |
+| Anvil 101 baseline | all three | 66,150 | **0 — this venue publishes no checksum at all** |
+
+**`largest` at depth 100 renders a panel of which 88% was never confirmed by
+anyone**, because it reaches for size deep in the book and the checksum does not
+follow it out there. `thinned` matches `top` exactly, and that is arithmetic
+rather than luck: its head is the best 13 ranks, which contains all 10 the CRC
+covers.
+
+The Anvil row is worth as much as the Kraken ones. Its `validated_depth` is 0 —
+there is no checksum anywhere in that protocol — so the honest count is **zero
+confirmed rows**, which is the reading a missing field would have quietly turned
+into "all of them".
+
+**C records this; C does not solve it.** It may well be that a panel showing
+unvalidated levels is fine. Stage D should decide that knowing the number.
+
+### 4. The reproduction
+
+The sparsity table came from a scratch pass over the committed traces; every
+other figure here is produced by the shipped code and pinned in
+`harness/tests/test_window.cpp`, so a regression moves a golden rather than a
+paragraph. `dc_ladder --window top|largest|thinned` prints the same figures for
+any trace, which is the instrument stage D takes to the desk.

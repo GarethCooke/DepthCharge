@@ -373,7 +373,7 @@
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status green">M3 <b>done 2026-08-16 — live Anvil on the panel</b></span>
-    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0) · <b>stage A2 done 2026-08-17</b> — the age meter: <code>age_ms</code> on <code>DisplaySnapshot</code>, a sliding-window deficit against a baseline the connection measures for itself, rendered to minutes, and nothing branches on it (strain 17) · <b>stage B1 done 2026-08-18</b> — the second adapter links: decimal strings to integer ticks with no float in the path, the venue's book held and TRUNCATED in the adapter, evictions emitted as <code>Delta{qty=0}</code>, the phase-1 book taught to apply a delta (not the dense window — that is stage C), <code>run_replay</code>'s venue guard removed and the two defects it was hiding fixed, and decoder identity pinned in every Kraken golden with the dispatch mutation run and red (strain 3, strain 21)</b> · <b>stage B2 done 2026-08-18</b> — the healing path: the venue's CRC32 verified after every applied book message (<b>4,878 / 4,878</b> on the committed slices, from integer ticks, no wire text retained), a mismatch raising <code>Gap{ChecksumFail}</code> and dropping the book with a resubscribe latched for the transport, and the coverage of that check <em>stated</em> rather than inferred — it validates the top 10 levels a side and nothing below them. A resync slice captured deliberately (one connection, one unsubscribe/re-subscribe, a genuine mid-stream snapshot <b>byte-shape identical to the on-connect one</b>, so position is the only signal there is), which found a parser that read every <code>method</code> frame as a subscribe ack. And <b>Kraken QUEUES</b> — measured under a throttled socket, so <code>age_ms</code> at this venue is a lag and stands (strain 17)</span>
+    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0) · <b>stage A2 done 2026-08-17</b> — the age meter: <code>age_ms</code> on <code>DisplaySnapshot</code>, a sliding-window deficit against a baseline the connection measures for itself, rendered to minutes, and nothing branches on it (strain 17) · <b>stage B1 done 2026-08-18</b> — the second adapter links: decimal strings to integer ticks with no float in the path, the venue's book held and TRUNCATED in the adapter, evictions emitted as <code>Delta{qty=0}</code>, the phase-1 book taught to apply a delta (not the dense window — that is stage C), <code>run_replay</code>'s venue guard removed and the two defects it was hiding fixed, and decoder identity pinned in every Kraken golden with the dispatch mutation run and red (strain 3, strain 21)</b> · <b>stage B2 done 2026-08-18</b> — the healing path: the venue's CRC32 verified after every applied book message (<b>4,878 / 4,878</b> on the committed slices, from integer ticks, no wire text retained), a mismatch raising <code>Gap{ChecksumFail}</code> and dropping the book with a resubscribe latched for the transport, and the coverage of that check <em>stated</em> rather than inferred — it validates the top 10 levels a side and nothing below them. A resync slice captured deliberately (one connection, one unsubscribe/re-subscribe, a genuine mid-stream snapshot <b>byte-shape identical to the on-connect one</b>, so position is the only signal there is), which found a parser that read every <code>method</code> frame as a subscribe ack. And <b>Kraken QUEUES</b> — measured under a throttled socket, so <code>age_ms</code> at this venue is a lag and stands (strain 17) · <b>stage C done 2026-08-19</b> — the render window: three row policies behind one interface, compile-time selected on the board and runtime-selectable in the harness, with every §1 invariant property-tested across all three and three mutations run red. <b>The measurement reshaped the stage</b>: real books are sparse in price — one adjacent level pair in five is a single tick from its neighbour, and 25 levels span 182 ticks on BTC/USD and 6,613 on MINA/GBP — so a 27-row panel cannot be a price axis, and the two price-axis candidates were measured out of the set before being built. <b>And at the shipped depth of 25 into 27 rows all three policies are byte-identical</b>, so the choice only exists if the firmware subscribes deeper than it can draw (strain 24)</span>
     <span class="status">first-party C++ <b>~19,600 lines</b></span>
     <span class="status">drawn from source at <b>79c1867</b></span>
   </div>
@@ -3040,6 +3040,54 @@ classDiagram
   </div>
 
   <div class="strain">
+    <h4>24 · The window and the checksum disagree about which levels matter
+        — <em>opened 2026-08-19 at M4 stage C</em></h4>
+    <p>
+      Two mechanisms in this object now select a subset of the book, for different reasons,
+      with no relationship between them. <b>Kraken's CRC32 validates the best 10 levels a
+      side</b> whatever the subscribed depth (B2, measured). <b>The render window picks 27
+      rows by a policy that knows nothing about that</b>, because it must — the window lives
+      in <code>engine/</code> and a checksum rule there would put a venue inside the book
+      (invariant #2).
+    </p>
+    <p>
+      At the shipped depth of 25 the two overlap comfortably and nothing is at stake: 10 of
+      the 25 rendered rows a side are confirmed, the rest are unconfirmed and correct.
+      <b>At depth 100 the policies separate and the number moves a long way.</b> Measured over
+      the committed depth-100 slice, of 281,124 rendered rows the venue had checksummed
+      104,120 under <code>top</code> and <code>thinned</code> (37.0%) and <b>33,433 under
+      <code>largest</code> — 11.9%</b>, because that policy reaches for size deep in the book
+      and the CRC does not follow it out there.
+    </p>
+    <p>
+      <b>The general form is the part worth keeping, and it is now a rule rather than this
+      card.</b> An absent capability and an unread one are indistinguishable downstream unless
+      the absence is REPRESENTED — so a venue's lack of something gets a value and a reason,
+      never a missing field (ARCHITECTURE §9, 2026-08-19). That is the never-observed row
+      generalised past frame kinds, and it is the harder case: a missing frame kind closes the
+      moment somebody captures one, while <em>no future trace will ever contain an Anvil
+      checksum</em>. This card is the specific instance; the row is what M5's Binance inherits.
+    </p>
+    <p>
+      <b>This is not a defect and stage C did not treat it as one.</b> A delta stream that
+      checksums clean at the top has provably lost no message, so a level at rank 40 is
+      unconfirmed rather than suspect. The strain is that <em>nothing in the object relates
+      the two numbers</em>, and the panel is where they meet: an operator looking at 27 rows
+      has no way to know that most of them were never checked, and the honest reading changes
+      with a policy nobody on the bench can see. Anvil makes the same point from the other
+      end — its <code>validated_depth</code> is <b>0</b>, so <em>no</em> rendered row there was
+      ever confirmed by anybody, which is exactly what a missing field would have quietly
+      rendered as "all of them".
+    </p>
+    <p class="verdict">Resolves: <b>not in C, deliberately — C records the number per policy and
+      stage D decides knowing it.</b> The cheapest real resolution is probably that the panel
+      shows unvalidated levels and that is fine, said out loud once rather than assumed; the
+      expensive one is a rendering that distinguishes them, which costs a per-row marker
+      <code>DisplaySnapshot</code> cannot currently express — <b>the same +8 bytes on the struct
+      and +24 in the mailbox the price-axis window needs, priced in full at ROADMAP D6</b>. <b>The tripwire is the subscribed
+      depth</b>: while it stays at or below 27 this card is dormant, because every level is
+      rendered and all three policies coincide.</p>
+
     <h4>22 · One reader, two venues — and the pressure is on the traces, not on the reader</h4>
     <p>
       Opened 2026-08-17 (M4 stage A). <code>TraceReader</code> now validates an envelope and
