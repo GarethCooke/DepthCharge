@@ -218,6 +218,7 @@ add_executable(dc_tests
   harness/tests/test_trace_venue.cpp
   harness/tests/test_ws_frame.cpp
   harness/tests/test_ws_ping.cpp
+  harness/tests/test_window.cpp
   harness/tests/test_ws_supervisor.cpp)
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
