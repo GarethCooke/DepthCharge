@@ -36,7 +36,9 @@ class Replay {
 public:
     Replay(Decoder decoder, const depthcharge::SymbolSpec& symbol,
            const ReplayOptions& opts, const ReplayObserver& observer)
-        : opts_(opts), observer_(observer), decoder_(std::move(decoder)), book_(symbol) {}
+        : opts_(opts), observer_(observer), decoder_(std::move(decoder)),
+          book_(symbol, opts.window_policy,
+                venue_traits(Decoder::kVenue).validated_depth) {}
 
     // The threshold in force right now: the caller's override if it gave one,
     // otherwise whatever this venue's own liveness signal has calibrated to.
@@ -128,6 +130,9 @@ public:
         }
         result.book = book_.stats();
         result.episodes = episodes_;
+        window_.policy = book_.window_policy();
+        window_.validated_depth = venue_traits(Decoder::kVenue).validated_depth;
+        result.window = window_;
         result.final_snapshot = latest_;
         result.first_stale_snapshot = first_stale_;
         result.saw_stale = saw_stale_;
@@ -186,6 +191,24 @@ private:
         // the venue, not of the connection, and the hole enters its median
         // window as a single sample that moves a rank rather than the median.
         age_.on_reconnect(watchdog_ns);
+    }
+
+    // The window's per-frame figures, folded into the run's totals right after
+    // the publish that produced them. Summed rather than sampled, because a
+    // policy that drops levels on one frame in a hundred is exactly the thing a
+    // final-frame reading cannot see.
+    void note_window() noexcept {
+        const auto& b = book_.bid_window();
+        const auto& a = book_.ask_window();
+        auto& w = window_;
+        w.rows_filled += b.rows_filled + a.rows_filled;
+        w.rows_unknown += b.rows_unknown + a.rows_unknown;
+        w.levels_dropped += b.levels_dropped + a.levels_dropped;
+        w.rows_validated += b.rows_validated + a.rows_validated;
+        if (b.levels_dropped + a.levels_dropped > 0) { ++w.frames_with_drops; }
+        w.worst_tick_span = std::max({w.worst_tick_span, b.tick_span, a.tick_span});
+        w.final_bid = b;
+        w.final_ask = a;
     }
 
     // The age, stamped one line after the publish that filled everything else.
@@ -270,6 +293,7 @@ private:
         }
 
         book_.publish(latest_);
+        note_window();
         stamp_age(latest_);
         channel_.publish(latest_);
 
@@ -310,6 +334,7 @@ private:
     DisplaySnapshot first_stale_{};
 
     std::vector<StaleEpisode> episodes_;
+    ReplayResult::WindowReport window_{};
     // True only while raise_watchdog_gap is driving the adapter, so on_event can
     // tell a gap this harness synthesised from one the adapter decided on.
     bool synthesising_watchdog_gap_ = false;

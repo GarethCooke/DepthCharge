@@ -121,6 +121,14 @@ struct ReplayOptions {
     // it stopped listening, so a caller that knows must say.
     double end_of_trace_silence_ms = 0.0;
 
+    // WHICH LEVELS OF THE BOOK GET A RENDERED ROW (M4 stage C).
+    //
+    // A runtime option here and a compile-time constant on the board
+    // (window.hpp): the firmware draws one window and stage D is the stage that
+    // picks it, while the harness has to replay one trace through all three or
+    // the goldens that compare them could only be produced by rebuilding.
+    depthcharge::window::Policy window_policy = depthcharge::window::kWindowPolicy;
+
     // The M1 constant, for a caller that deliberately wants the pre-ruling
     // behaviour — the committed goldens do, so that what they pin is a fixed
     // rule rather than a calibration that could drift with a re-capture.
@@ -223,6 +231,34 @@ struct ReplayResult {
     // moment a single client can measure the venue's clock. On a healthy trace
     // they agree; where they DISAGREE the socket's cadence has moved since it
     // connected, which is the whole signal (age_estimator.hpp).
+    // ---- THE WINDOW (M4 stage C) ------------------------------------------
+    // What the row policy did, per side at the end of the run and summed over
+    // it. Reported here rather than on `DisplaySnapshot`, whose `sizeof` is
+    // pinned and quoted in three documents — and none of this is needed to draw
+    // a ladder, only to judge one.
+    struct WindowReport {
+        depthcharge::window::Policy policy{};
+        // How many of the book's best levels this venue's own checks confirm:
+        // 10 at Kraken, 0 at Anvil (venue.hpp). Carried so a reader never has to
+        // infer which venue's number produced `rows_validated`.
+        std::uint32_t validated_depth = 0;
+
+        depthcharge::window::WindowStats final_bid{};
+        depthcharge::window::WindowStats final_ask{};
+
+        std::uint64_t rows_filled = 0;
+        std::uint64_t rows_unknown = 0;
+        // Levels the book held and the window gave no row to. ZERO ON EVERY
+        // COMMITTED KRAKEN SLICE AT THE SHIPPED DEPTH, because 25 levels fit 27
+        // rows — which is the finding stage C's known-unknown asked for, and the
+        // reason the three policies are indistinguishable there.
+        std::uint64_t levels_dropped = 0;
+        std::uint64_t rows_validated = 0;
+        std::uint64_t frames_with_drops = 0;
+        depthcharge::PriceTicks worst_tick_span = 0;
+    };
+    WindowReport window;
+
     std::uint32_t worst_age_ms = 0;
     double age_baseline_ms = 0.0;
     double liveness_median_ms = 0.0;

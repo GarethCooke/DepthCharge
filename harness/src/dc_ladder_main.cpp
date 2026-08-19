@@ -35,6 +35,7 @@
 #include <type_traits>
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
+#include <depthcharge/window.hpp>
 
 #include "dc_harness/age_estimator.hpp"
 #include "dc_harness/console_ladder.hpp"
@@ -64,6 +65,7 @@ struct Args {
     std::fprintf(stderr,
                  "usage: %s <trace.ndjson> [--follow] [--speed x] [--at N]\n"
                  "          [--levels n] [--gap-ms ms] [--end-silence-ms ms]\n"
+                 "          [--window top|largest|thinned]\n"
                  "          [--no-color] [--ascii] [--quiet]\n",
                  argv0);
     std::exit(1);
@@ -117,6 +119,13 @@ bool parse_args(int argc, char** argv, Args& args) {
         } else if (a == "--at") {
             args.replay.max_frames = parse_arg<std::size_t>(
                 argv[0], value("--at needs a frame"), "--at needs a whole frame number");
+        } else if (a == "--window") {
+            // Refused rather than defaulted on an unknown name: two runs that
+            // differ only in a misspelling must not produce identical output.
+            if (!depthcharge::window::policy_from_name(value("--window needs a policy"),
+                                                       args.replay.window_policy)) {
+                usage_exit(argv[0], "--window must be top, largest or thinned");
+            }
         } else if (a == "--levels") {
             args.style.levels = parse_arg<std::size_t>(
                 argv[0], value("--levels needs a count"), "--levels needs a whole count");
@@ -178,6 +187,45 @@ void print_anvil_adapter(const ReplayResult& r) {
     std::printf("            wire seq went backwards %llu times "
                 "(diagnostic only — Seq is synthesised)\n",
                 ull(a.wire_seq_backward));
+}
+
+// THE WINDOW (M4 stage C). Printed for every venue and every policy, because
+// the question stage D has to answer at the panel — is this window worth looking
+// at — is not answerable from the ladder alone.
+//
+// `dropped` is the number to read first: how many levels the book held and the
+// window gave no row to. It is ZERO on every committed Kraken slice at the
+// shipped depth of 25, because 25 levels fit 27 rows — and where it is zero all
+// three policies are the same window, so no amount of staring at the panel will
+// separate them.
+//
+// `validated` is B2's: how many rendered rows show a level the venue's own CRC32
+// ever confirmed. At Kraken that is the top 10 a side and no more, so a window
+// that reaches below the touch is showing rows nobody checked. Reported, never
+// branched on.
+void print_window(const ReplayResult& r) {
+    const auto& w = r.window;
+    const auto name = depthcharge::window::policy_name(w.policy);
+    std::printf("window    : policy=%.*s  rows filled=%llu unknown=%llu  "
+                "dropped=%llu (in %llu frame(s))\n",
+                static_cast<int>(name.size()), name.data(),
+                ull(w.rows_filled), ull(w.rows_unknown),
+                ull(w.levels_dropped), ull(w.frames_with_drops));
+    std::printf("            final bid rows=%u/%u span=%lld tk   "
+                "final ask rows=%u/%u span=%lld tk   worst span=%lld tk\n",
+                w.final_bid.rows_filled, w.final_bid.levels_offered,
+                static_cast<long long>(w.final_bid.tick_span),
+                w.final_ask.rows_filled, w.final_ask.levels_offered,
+                static_cast<long long>(w.final_ask.tick_span),
+                static_cast<long long>(w.worst_tick_span));
+    if (w.validated_depth == 0) {
+        std::printf("            this venue publishes no checksum, so NO rendered row was "
+                    "ever externally confirmed\n");
+    } else {
+        std::printf("            %llu of %llu rendered rows were within the venue's "
+                    "checksum (top %u a side)\n",
+                    ull(w.rows_validated), ull(w.rows_filled), w.validated_depth);
+    }
 }
 
 void print_kraken_adapter(const ReplayResult& r) {
@@ -291,6 +339,7 @@ void print_report(const Args& args, const ReplayResult& r) {
     const dc::harness::AgeText worst_age(r.worst_age_ms);
     const dc::harness::AgeText final_age(r.final_snapshot.age_ms);
     const std::string_view signal = dc::harness::venue_traits(r.meta.venue).liveness_signal;
+    print_window(r);
     std::printf("age       : worst %s   at end %s   (queuing lag, never a grey signal)\n",
                 worst_age.buf,
                 r.final_snapshot.has_age ? final_age.buf : "no reading yet");

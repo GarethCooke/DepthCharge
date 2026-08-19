@@ -23,6 +23,12 @@
 #include <cstdint>
 #include <string_view>
 
+// For `kChecksumLevels`. The Kraken row below uses the constant rather than
+// restating 10, because two numbers that must agree and are written twice are
+// two numbers that will one day disagree — the same rule `ladder.hpp` was
+// extracted for.
+#include <depthcharge/kraken/kraken_checksum.hpp>
+
 namespace dc::harness {
 
 // The venues this build can read a trace for. Adding one is: a row in
@@ -99,6 +105,24 @@ struct VenueTraits {
     // not move. Read `legacy_note` before quoting it.
     double legacy_book_threshold_ms;
     std::string_view legacy_note;
+
+    // ---- HOW MANY OF THE BOOK'S BEST LEVELS THE VENUE ITSELF CONFIRMS ------
+    // M4 stage C. Kraken's CRC32 is computed over the top 10 levels a side
+    // whatever the subscribed depth (B2, measured); Anvil publishes no checksum
+    // of any kind, so nothing it sends is externally validated and the honest
+    // number is 0 rather than "all of them".
+    //
+    // It is here rather than in `engine/` because it is a venue fact, and the
+    // window that consumes it must stay venue-free (invariant #2). What it buys
+    // is the one number stage D cannot get from the panel: a window's position
+    // decides whether the rows on screen were ever checked, and at depth 100 a
+    // 27-row window can be showing 27 levels of which at most 10 were.
+    //
+    // NOTHING BRANCHES ON IT. It is reported beside the window, in the same
+    // spirit as `age_ms`: a number the operator reads, never a rule the code
+    // applies.
+    std::uint32_t validated_depth;
+    std::string_view validated_note;
 };
 
 // The table. Both rows are measurements, not preferences.
@@ -113,7 +137,12 @@ inline constexpr VenueTraits kVenueTable[] = {
      "started, 241 byte-identical frames in 120 s with seq advancing",
      /*legacy_book_threshold_ms=*/1000.0,
      "WITHDRAWN 2026-08-17. Was the book-silence threshold, derived from Anvil's "
-     "391 ms worst healthy gap at 2.6x margin (ARCHITECTURE §9, 2026-08-09)"},
+     "391 ms worst healthy gap at 2.6x margin (ARCHITECTURE §9, 2026-08-09)",
+     /*validated_depth=*/0,
+     "no checksum anywhere in the protocol -- M0 looked, and the vendored "
+     "PROTOCOL.md has no integrity field of any kind. Every level Anvil sends is "
+     "taken on trust, which is survivable only because its book frames are "
+     "idempotent full replaces: a corrupted one is corrected 80 ms later"},
     {Venue::Kraken, "kraken",
      /*requires_ticker=*/false, /*requires_symbol=*/true,
      /*frames_carry_type=*/false,
@@ -125,7 +154,12 @@ inline constexpr VenueTraits kVenueTable[] = {
      "WITHDRAWN 2026-08-17, and it is the constant the ruling was written to "
      "retire: a second quiet-pair window measured a healthy 25,843 ms book "
      "silence, 1.72x this number, so it would have invented 3 disconnects in 10 "
-     "minutes on a feed that never lost a packet"},
+     "minutes on a feed that never lost a packet",
+     /*validated_depth=*/depthcharge::kraken::kChecksumLevels,
+     "CRC32 over the top 10 levels a side, regardless of the subscribed depth -- "
+     "confirmed at stage 0 across 8,677 checksums at depths 10/25/100, and "
+     "re-confirmed at B2 by the only test that discriminates: a book edited BELOW "
+     "level 10 does not move the checksum"},
 };
 
 constexpr const VenueTraits& venue_traits(Venue v) noexcept {
@@ -139,6 +173,22 @@ static_assert(kVenueTable[static_cast<std::size_t>(Venue::Kraken)].venue == Venu
 static_assert(sizeof(kVenueTable) / sizeof(kVenueTable[0]) ==
                   static_cast<std::size_t>(Venue::Kraken) + 1,
               "every Venue enumerator needs a row in kVenueTable");
+
+// AN ABSENT CAPABILITY MUST BE REPRESENTED, NOT LEFT AS A ZERO (ARCHITECTURE §9,
+// 2026-08-19). `validated_depth` is 0 for Anvil because that protocol has no
+// checksum at all, and 0 is also exactly what an unfilled field looks like — so
+// the note is mandatory and the compiler is what makes it mandatory. A venue
+// added without one would publish "nothing here was ever confirmed" as an
+// accident rather than as a finding.
+constexpr bool every_row_explains_its_validated_depth() noexcept {
+    for (const VenueTraits& v : kVenueTable) {
+        if (v.validated_note.empty()) { return false; }
+    }
+    return true;
+}
+static_assert(every_row_explains_its_validated_depth(),
+              "a venue row must say WHY its validated_depth is what it is -- a bare 0 cannot "
+              "be told apart from a field nobody filled in");
 
 // The metadata tag -> venue rule, in ONE place, in this language. The prose
 // statement both languages share is in harness/replay/NOTES.md; the Python half

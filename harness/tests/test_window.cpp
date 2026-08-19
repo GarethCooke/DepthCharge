@@ -31,11 +31,15 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <depthcharge/book.hpp>
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/window.hpp>
+
+#include "dc_harness/replay_driver.hpp"
+#include "dc_harness/trace.hpp"
 
 using depthcharge::Book;
 using depthcharge::BookLevel;
@@ -396,5 +400,157 @@ TEST_CASE("rows the window did not fill are blanked, not left from the last fram
         CAPTURE(i);
         CHECK(snap.bids[i].px == 0);
         CHECK(snap.bids[i].qty == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 5. THE COMMITTED TRACES, THROUGH EVERY POLICY
+// ---------------------------------------------------------------------------
+
+namespace {
+
+dc::harness::ReplayResult replay_with(std::string_view name, Policy p) {
+    dc::harness::TraceReader reader(std::string(DC_REPLAY_DIR) + "/" + std::string(name) +
+                                    ".ndjson");
+    dc::harness::ReplayOptions opts;
+    opts.window_policy = p;
+    return dc::harness::run_replay(reader, dc::harness::symbol_for(reader.meta()), opts);
+}
+
+// Two identities that make the pinned totals below something other than a
+// transcription of what the code said. Both are properties of the run, derivable
+// without running it:
+//
+//   * every publish offers 27 rows a side, so filled + unknown is exactly
+//     54 x publishes -- a policy that silently rendered a row it was not given,
+//     or lost one, breaks this without moving any single figure much;
+//   * `TopOfBook` renders the book's best levels in order, so the rows within
+//     the venue's checksum reach are exactly min(10, levels held) a side -- 20 a
+//     publish on any book at least ten deep.
+void check_row_arithmetic(const dc::harness::ReplayResult& r) {
+    const auto& w = r.window;
+    CHECK(w.rows_filled + w.rows_unknown ==
+          2ull * depthcharge::kDisplayLevels * r.book.publishes);
+    if (w.policy == Policy::TopOfBook && w.validated_depth > 0) {
+        CHECK(w.rows_validated == 2ull * w.validated_depth * r.book.publishes);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("the shipped Kraken depth makes the policy choice a no-op, and the pins say so") {
+    // ========================================================================
+    // STAGE C'S HEADLINE, AND THE ANSWER TO ITS OWN KNOWN UNKNOWN.
+    // ========================================================================
+    //
+    // The brief asked whether a real Kraken book at depth 25 is sparse enough
+    // for the policies to visibly differ, and said a negative answer would be
+    // worth more than the policies. It is negative, and it is stronger than
+    // "near-identical": at depth 25 into 27 rows **not one level is ever
+    // dropped**, so all three policies render every level the book holds and are
+    // the same window byte for byte. Nothing about the shipped configuration can
+    // distinguish them, at the console or on the panel.
+    //
+    // So the policy choice only becomes a choice if the firmware subscribes
+    // DEEPER than it can draw -- and B2's finding is the other half of that
+    // trade, because the CRC32 covers the top 10 a side whatever the depth.
+    // That is stage D's decision and the numbers for it are the d100 case below.
+    for (const char* name : {"kraken_btcusd_d25_20260816", "kraken_minagbp_d25_20260816",
+                             "kraken_minagbp_d25_resync_20260818"}) {
+        CAPTURE(name);
+        const auto top = replay_with(name, Policy::TopOfBook);
+        const auto largest = replay_with(name, Policy::LargestFirst);
+        const auto thinned = replay_with(name, Policy::ThinnedTail);
+
+        CHECK(top.window.levels_dropped == 0);
+        CHECK(top.window.frames_with_drops == 0);
+        for (const auto* r : {&largest, &thinned}) {
+            CHECK(r->window.rows_filled == top.window.rows_filled);
+            CHECK(r->window.rows_unknown == top.window.rows_unknown);
+            CHECK(r->window.levels_dropped == 0);
+            CHECK(r->window.rows_validated == top.window.rows_validated);
+            CHECK(r->window.worst_tick_span == top.window.worst_tick_span);
+        }
+        check_row_arithmetic(top);
+        check_row_arithmetic(largest);
+        check_row_arithmetic(thinned);
+    }
+}
+
+TEST_CASE("row counts pinned per policy on the committed traces") {
+    // Goldens ADD ROWS; none of the existing ones move, and none did -- the
+    // default policy is `TopOfBook`, which is exactly what `publish` did before
+    // this stage, so every figure pinned since M1 is untouched.
+    SUBCASE("Kraken BTC/USD depth 25 — 25 levels into 27 rows") {
+        const auto r = replay_with("kraken_btcusd_d25_20260816", Policy::TopOfBook);
+        CHECK(r.window.rows_filled == 149694);
+        CHECK(r.window.rows_unknown == 11982);      // the two spare rows a side
+        CHECK(r.window.levels_dropped == 0);
+        CHECK(r.window.rows_validated == 59880);    // 20 a publish: 10 a side
+        CHECK(r.window.worst_tick_span == 308);
+        CHECK(r.window.final_bid.rows_filled == 25);
+        CHECK(r.window.final_bid.levels_offered == 25);
+        CHECK(r.window.validated_depth == 10);
+        check_row_arithmetic(r);
+    }
+
+    SUBCASE("Kraken BTC/USD depth 100 — where the policies finally differ") {
+        // 100 levels into 27 rows, so 73 a side are dropped on every publish and
+        // the three policies choose differently. The column that matters is the
+        // last one: `largest` reaches for size deep in the book, and most of what
+        // it reaches for the venue never checksummed.
+        struct Expect {
+            Policy policy;
+            std::uint64_t validated;
+            depthcharge::PriceTicks worst_span;
+        };
+        const Expect expected[] = {
+            {Policy::TopOfBook,    104120,  319},
+            {Policy::LargestFirst,  33433, 1128},
+            {Policy::ThinnedTail,  104120, 1060},
+        };
+        for (const Expect& e : expected) {
+            CAPTURE(std::string(policy_name(e.policy)));
+            const auto r = replay_with("kraken_btcusd_d100_20260816", e.policy);
+            CHECK(r.window.rows_filled == 281124);     // every row filled, always
+            CHECK(r.window.rows_unknown == 0);
+            CHECK(r.window.levels_dropped == 760185);
+            CHECK(r.window.frames_with_drops == 5206);
+            CHECK(r.window.rows_validated == e.validated);
+            CHECK(r.window.worst_tick_span == e.worst_span);
+            check_row_arithmetic(r);
+        }
+        // Stated as a comparison as well as three numbers, because the RATIO is
+        // the thing stage D reads: at depth 100 the largest-first window shows
+        // roughly a third as many checked rows as the other two.
+        const auto top = replay_with("kraken_btcusd_d100_20260816", Policy::TopOfBook);
+        const auto largest = replay_with("kraken_btcusd_d100_20260816", Policy::LargestFirst);
+        CHECK(largest.window.rows_validated * 3 < top.window.rows_validated);
+        CHECK(largest.window.worst_tick_span > top.window.worst_tick_span * 3);
+    }
+
+    SUBCASE("Anvil depth 101 — the deepest committed book, and no checksum at all") {
+        struct Expect { Policy policy; depthcharge::PriceTicks worst_span; };
+        const Expect expected[] = {
+            {Policy::TopOfBook,     414},
+            {Policy::LargestFirst,  873},
+            {Policy::ThinnedTail,  1054},
+        };
+        for (const Expect& e : expected) {
+            CAPTURE(std::string(policy_name(e.policy)));
+            const auto r = replay_with("anvil_101_baseline", e.policy);
+            CHECK(r.window.rows_filled == 66150);
+            CHECK(r.window.rows_unknown == 0);
+            CHECK(r.window.levels_dropped == 184911);
+            CHECK(r.window.frames_with_drops == 1225);
+            CHECK(r.window.worst_tick_span == e.worst_span);
+            // NOT ONE ROW ON THIS VENUE WAS EVER EXTERNALLY CONFIRMED. Anvil
+            // publishes no checksum of any kind, so `validated_depth` is 0 and
+            // the honest count is zero rather than "all of them" -- which is the
+            // reading a missing field would have invited.
+            CHECK(r.window.validated_depth == 0);
+            CHECK(r.window.rows_validated == 0);
+            check_row_arithmetic(r);
+        }
     }
 }
