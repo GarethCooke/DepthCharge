@@ -7,10 +7,22 @@
             "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge",
             "options": {
                 "cwd": "${workspaceFolder}/firmware",
-                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
             },
-            "group": { "kind": "build", "isDefault": true },
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": []
         },
         {
@@ -19,10 +31,19 @@
             "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge -t upload",
             "options": {
                 "cwd": "${workspaceFolder}/firmware",
-                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
             },
             "group": "build",
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": []
         },
         {
@@ -31,11 +52,85 @@
             "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge -t upload -t monitor",
             "options": {
                 "cwd": "${workspaceFolder}/firmware",
-                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
             },
             "group": "build",
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
             "problemMatcher": []
+        },
+        {
+            "label": "DepthCharge: Build Firmware (Kraken)",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge-kraken",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "DepthCharge: Flash (Kraken, USB)",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge-kraken -t upload",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "DepthCharge: Flash + Monitor (Kraken, USB)",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge-kraken -t upload -t monitor",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build"
         },
         {
             "label": "DepthCharge: Monitor",
@@ -43,9 +138,19 @@
             "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" device monitor",
             "options": {
                 "cwd": "${workspaceFolder}/firmware",
-                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
             },
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
             "problemMatcher": []
         }
     ]

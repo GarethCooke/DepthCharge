@@ -17,7 +17,6 @@
 #include "mbedtls/error.h"
 #include "mbedtls/ssl.h"
 
-#include "anvil_root_ca.hpp"
 
 namespace depthcharge::fw {
 namespace {
@@ -213,7 +212,7 @@ std::int64_t WsTransport::warm_dns() noexcept {
                                 // would time a lookup the socket never makes
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* res = nullptr;
-    const int rc = ::getaddrinfo(kAnvilHost, kAnvilPortText, &hints, &res);
+    const int rc = ::getaddrinfo(venue::kHost, venue::kPortText, &hints, &res);
     const std::int64_t elapsed = esp_timer_get_time() - t0;
     if (res != nullptr) { ::freeaddrinfo(res); }
 
@@ -222,7 +221,7 @@ std::int64_t WsTransport::warm_dns() noexcept {
         // again itself, and a resolver that failed here may succeed a beat
         // later. Logged because a reconnect that fails with `dns=fail` in front
         // of it is a different bug from one that fails after a good lookup.
-        ESP_LOGW(kTag, "dns: %s did not resolve (rc %d) after %d ms", kAnvilHost, rc,
+        ESP_LOGW(kTag, "dns: %s did not resolve (rc %d) after %d ms", venue::kHost, rc,
                  static_cast<int>(elapsed / 1000));
     }
     return elapsed;
@@ -375,9 +374,12 @@ bool WsTransport::start() noexcept {
     supervisor_.note_attempt_begun(esp_timer_get_time());
     connect_requested_.store(true, std::memory_order_relaxed);
     // Composed here rather than stored as a sixth endpoint constant — see the
-    // note above kAnvilHost. This is the only place the `wss://` spelling exists.
+    // note above the endpoint constants. This is the only place the `wss://`
+    // spelling exists, and it now names the build's venue as well, because a
+    // serial log that does not say which venue produced it is a log that gets
+    // read against the wrong expectations.
     ESP_LOGI(kTag, "connecting to wss://%s%s — owned client, RX task on core %d prio %d",
-             kAnvilHost, kAnvilPath, static_cast<int>(kRxTaskCore),
+             venue::kHost, venue::kPath, static_cast<int>(kRxTaskCore),
              static_cast<int>(kRxTaskPriority));
     return true;
 }
@@ -444,12 +446,14 @@ void WsTransport::rx_main() noexcept {
                 continue;
             }
             if (!maybe_ping(at_us)) { continue; }
+            if (!maybe_subscribe(at_us)) { continue; }
         } else if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) {
             // SO_RCVTIMEO expired. NOT a death: Anvil's worst healthy gap is
             // ~600 ms and the 2026-08-13 fade record has measured silences to
             // 3.9 s on a weak association that never dropped a socket. What
-            // greys the panel for silence is the feed task's 1 s RX watchdog,
-            // which is a statement about DATA and belongs there.
+            // greys the panel for silence is the feed task's liveness watchdog,
+            // which is a statement about the venue's own clock and belongs
+            // there — and which is why this timeout must stay well below it.
             budget_.on_wait(at_us - read_began_us);
 
             // THE SILENCE RECYCLE'S PLATFORM HALF, and this is the only branch
@@ -488,6 +492,7 @@ void WsTransport::rx_main() noexcept {
                 continue;
             }
             if (!maybe_ping(at_us)) { continue; }
+            if (!maybe_subscribe(at_us)) { continue; }
         } else {
             // Unless the floor moved: the association can fall inside the
             // blocking read, in which case lwIP aborts the pcb and the error
@@ -532,8 +537,13 @@ bool WsTransport::open_socket() noexcept {
     // in anvil_root_ca.hpp, with the full chain and the reasoning there. The
     // certificate bundle remains unreachable in this framework — that was never
     // the websocket client's doing, so removing it changes nothing here.
-    cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kAnvilRootCaPem);
-    cfg.cacert_bytes = sizeof(kAnvilRootCaPem);   // PEM: the NUL is part of it
+    // The SELECTED VENUE'S anchor — `anvil_root_ca.hpp` (ISRG Root X1) on the
+    // default build, `kraken_root_ca.hpp` (GTS Root R4, ECDSA P-384) under
+    // `-D DC_VENUE=2`. Both arrive through venue_build.hpp; this file names
+    // neither, because a session debugging a handshake failure reads the
+    // comment beside the call and must be sent to the right header.
+    cfg.cacert_buf = reinterpret_cast<const unsigned char*>(venue::kRootCaPem);
+    cfg.cacert_bytes = venue::kRootCaPemBytes;    // PEM: the NUL is part of it
     cfg.timeout_ms = static_cast<int>(kConnectTimeoutMs);
 
     tls_ = esp_tls_init();
@@ -541,7 +551,7 @@ bool WsTransport::open_socket() noexcept {
         autopsy("tls-init", -1, ENOMEM);
         return false;
     }
-    if (esp_tls_conn_new_sync(kAnvilHost, static_cast<int>(std::strlen(kAnvilHost)), kAnvilPort,
+    if (esp_tls_conn_new_sync(venue::kHost, static_cast<int>(std::strlen(venue::kHost)), venue::kPort,
                               &cfg, tls_) != 1) {
         die("connect", -1, errno);
         return false;
@@ -563,6 +573,14 @@ bool WsTransport::open_socket() noexcept {
         return false;
     }
 
+    // The header block's size, once per connect. It is the number that would
+    // have turned A5's first Kraken failure from a desk probe into a glance, and
+    // it is the one that moves when a venue changes CDN. Inside invariant #7's
+    // exemption window — this is the connect, before the first snapshot.
+    ESP_LOGI(kTag, "upgrade ok: %u of %u header bytes",
+             static_cast<unsigned>(upgrade_header_bytes_),
+             static_cast<unsigned>(kUpgradeHeaderBytes));
+
     socket_up_.store(true, std::memory_order_relaxed);
     // A request that arrived WHILE this connect was in flight is spent. The
     // supervisor's budget is 7 s and a cold connect has measured 4.2 s, so a
@@ -570,6 +588,16 @@ bool WsTransport::open_socket() noexcept {
     // without this the stale flag would survive to the next death and reconnect
     // with no backoff and no association gate.
     connect_requested_.store(false, std::memory_order_relaxed);
+    // A NEW SOCKET OWES A SUBSCRIBE, at a venue where the socket is not itself
+    // the subscription. Nothing is sent here: the upgrade has just returned on
+    // this task and the very next pass of the read loop will spend it, which
+    // keeps every write to `tls_` inside the same one place in the loop.
+    subscription_.on_connected(esp_timer_get_time());
+    // A refusal latched against the OLD socket is stale — this is a new
+    // subscription and the venue has not answered it yet. The wanted LEVEL is
+    // deliberately not touched: it is a statement about the book, which is still
+    // unbaselined, and the feed task republishes it on the next frame anyway.
+    (void)signal_.take_refused();
     (void)pipe_.post_status(FeedMessage::Kind::Connected);
     ESP_LOGI(kTag, "socket up: dns %d ms, connect+upgrade %d ms, fd %d, rssi %d dBm",
              static_cast<int>(dns_us / 1000),
@@ -588,13 +616,15 @@ bool WsTransport::http_upgrade() noexcept {
                                 "Sec-WebSocket-Key: %s\r\n"
                                 "Sec-WebSocket-Version: 13\r\n"
                                 "\r\n",
-                                kAnvilPath, kAnvilHost, kWsKey);
-    // No Origin header. ARCHITECTURE §7 closed this: M0 measured the deployed
-    // upgrade accepting a client that sends none. If that ever changes the
-    // server refuses the upgrade loudly, right here, and the one-line fallback
-    // is an `Origin: https://anvil.garethcooke.com\r\n` field above.
+                                venue::kPath, venue::kHost, kWsKey);
+    // No Origin header. ARCHITECTURE §7 closed this for Anvil: M0 measured the
+    // deployed upgrade accepting a client that sends none. Kraken accepts one
+    // too — `tools/capture_kraken.py` has connected without an Origin on every
+    // committed slice, and its stage-0 run probed the question deliberately. If
+    // either ever changes, the server refuses the upgrade loudly, right here,
+    // and the one-line fallback is an `Origin:` field above.
     if (n <= 0 || n >= static_cast<int>(sizeof(req))) {
-        ESP_LOGE(kTag, "upgrade request would not fit — check kAnvilPath");
+        ESP_LOGE(kTag, "upgrade request would not fit — check the venue's path");
         return false;
     }
     if (!write_all(req, static_cast<std::size_t>(n))) {
@@ -608,11 +638,11 @@ bool WsTransport::http_upgrade() noexcept {
     // ahead into a buffer and then discarding the remainder is how a client
     // manufactures the stray leading byte this whole rebuild exists to remove.
     // It costs ~150 single-byte TLS reads, once per connection.
-    char hdr[512];
+    char* const hdr = upgrade_hdr_;
     std::size_t at = 0;
     const std::int64_t deadline = esp_timer_get_time() + kUpgradeBudgetUs;
     bool complete = false;
-    while (at + 1 < sizeof(hdr)) {
+    while (at + 1 < kUpgradeHeaderBytes) {
         const int r = static_cast<int>(esp_tls_conn_read(tls_, hdr + at, 1));
         if (r == 1) {
             ++at;
@@ -634,9 +664,18 @@ bool WsTransport::http_upgrade() noexcept {
     }
     hdr[at] = '\0';
     if (!complete) {
-        ESP_LOGE(kTag, "upgrade headers did not end in %u bytes", static_cast<unsigned>(sizeof(hdr)));
+        // PRINT WHAT AROSE, not just the bound it exceeded. The first version
+        // said only "did not end in 512 bytes", which is true of a Cloudflare
+        // 101, of a redirect, and of a proxy's error page alike — and finding
+        // out which cost a desk probe against the live endpoint. The status line
+        // and the first field name it in one line.
+        ESP_LOGE(kTag, "upgrade headers exceeded %u bytes — raise kUpgradeHeaderBytes",
+                 static_cast<unsigned>(kUpgradeHeaderBytes));
+        ESP_LOGE(kTag, "  it began: %.100s", hdr);
         return false;
     }
+
+    upgrade_header_bytes_ = static_cast<std::uint32_t>(at);
 
     if (std::strstr(hdr, " 101 ") == nullptr) {
         // 120 characters is the status line and the first field or two, which is
@@ -656,6 +695,11 @@ bool WsTransport::http_upgrade() noexcept {
 }
 
 void WsTransport::close_socket() noexcept {
+    // The subscription died with the socket. Stated here rather than left to be
+    // a side effect of the next `on_connected()`: review found the machine
+    // surviving its socket's death, which meant a half-finished heal could in
+    // principle be resumed against a connection that never had it.
+    subscription_.on_disconnected();
     // Ours, and it returns at once. This single call is what deleted the spare
     // handle, the 5 s sleeper, the auto-reconnect flag and the retired-handle
     // guard: `esp_websocket_client_stop()` blocked for up to 5 s on a task that
@@ -718,6 +762,98 @@ bool WsTransport::write_all(const void* data, std::size_t len) noexcept {
         return false;
     }
     return true;
+}
+
+// THE SUBSCRIPTION'S PLATFORM HALF (M4 stage D, A2 and A3).
+//
+// `ResyncPolicy` decides WHAT and WHEN, on the desk, where it is host-tested.
+// This does the two things it cannot: read a clock and write to a socket. Every
+// write to `tls_` in this firmware happens on this task, and every one of them
+// happens in the read loop rather than inside a callback — the pong is the one
+// deliberate exception, and its header comment says why.
+//
+// It returns false only when a write failed, in which case `die()` has already
+// run and the caller must not touch the socket. A single `step()` per call is
+// enough: the read loop comes round at least every kReadTimeoutMs, and the one
+// wait in the machine (kResyncGapUs, 1 s) is the same order.
+bool WsTransport::maybe_subscribe(std::int64_t now) noexcept {
+#if DC_VENUE_HAS_SUBSCRIPTION
+    // THE VENUE REFUSED THE SUBSCRIPTION. Terminal for this socket: the adapter
+    // has latched `Refused` and will accept nothing further, so the only
+    // recovery this firmware owns is to drop the connection and let the
+    // supervisor's backoff retry. Doing nothing — which is what the first draft
+    // did — leaves a live heartbeating socket over an empty book for ever.
+    if (signal_.take_refused()) {
+        die("subscribe-refused", 0, 0);
+        return false;
+    }
+
+    // The feed task's LEVEL, polled — up OR down, so `owed` can stop being true.
+    // Refusing costs nothing because the level is still there on the next pass,
+    // which is the property that makes the floor safe; see resync.hpp for the
+    // four ways an edge got lost.
+    subscription_.on_poll(signal_.wanted(), now);
+
+    switch (subscription_.step(now)) {
+        case ResyncPolicy::Action::SendSubscribe:
+            // UNDER 64 CHARACTERS, DELIBERATELY. This runs on the RX task on a
+            // live socket, and Arduino routes ESP_LOGx to log_printfv, which
+            // mallocs for any line past 64 and takes the UART bus mutex — the
+            // coupling feed_task.cpp had all its logging removed for. The frame
+            // text itself is printed once per boot in start(), where the socket
+            // does not exist yet.
+            // `subscribes()` and not `+ 1`: `step()` above has already counted
+            // this one, and the first Kraken run duly announced itself as "#2".
+            ESP_LOGI(kTag, "subscribe sent (#%u)",
+                     static_cast<unsigned>(subscription_.subscribes()));
+            if (!send_text(venue::kSubscribeText)) {
+                die("subscribe-write", -1, errno);
+                return false;
+            }
+            return true;
+        case ResyncPolicy::Action::SendUnsubscribe:
+            // The first half of a heal. WARN because it only ever happens after
+            // a checksum failure, which is a finding.
+            ESP_LOGW(kTag, "heal: unsubscribe (#%u)",
+                     static_cast<unsigned>(subscription_.heals() + 1));   // this heal's ordinal
+            if (!send_text(venue::kUnsubscribeText)) {
+                die("unsubscribe-write", -1, errno);
+                return false;
+            }
+            return true;
+        case ResyncPolicy::Action::None:
+            break;
+    }
+    return true;
+#else
+    // A venue whose SOCKET IS ITS SUBSCRIPTION has nothing to send and nothing
+    // to heal. `#if` rather than a runtime branch so the Anvil image carries no
+    // send-text path at all — it is the build that M3's soak was run on, and a
+    // flash figure that moved for a code path that can never execute is a flash
+    // figure nobody can compare.
+    (void)now;
+    return true;
+#endif
+}
+
+// One masked client text frame. The six bytes of framing are built by
+// `build_masked_text` in ws_frame.hpp, which `test_ws_frame.cpp` round-trips
+// through this file's own parser — so the opcode, the mask bit and the length
+// field are checked on the desk rather than by a socket Kraken closes without
+// saying why. What is left here is the write and its failure path.
+bool WsTransport::send_text(const char* text) noexcept {
+    std::uint8_t frame[masked_frame_bytes(kMaxShortPayload)];
+    const std::size_t n = build_masked_text(frame, sizeof frame, text, std::strlen(text));
+    if (n == 0) {
+        // Unreachable: every payload this sends is a compile-time constant whose
+        // length is static_asserted against kMaxShortPayload where it is
+        // declared. It is here because a silent truncation would produce a frame
+        // the venue answers with an error nobody would connect to this line.
+        ESP_LOGE(kTag, "client text frame of %u bytes will not fit the short-header form",
+                 static_cast<unsigned>(std::strlen(text)));
+        return false;
+    }
+    return write_all(frame, n);
 }
 
 bool WsTransport::maybe_ping(std::int64_t now) noexcept {

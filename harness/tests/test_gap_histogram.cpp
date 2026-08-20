@@ -53,10 +53,19 @@ TEST_CASE("an edge is the inclusive lower bound of the bucket above it") {
     check_edges_land_upward<LatencyHistogram, LatencyScale>();
 }
 
-TEST_CASE("the watchdog threshold is the boundary of the >1s buckets") {
-    // The one boundary with a meaning outside this file: kRxWatchdogMs is
-    // 1000 ms, so a gap of exactly that is a gap the panel greys on, and it must
-    // be counted with the long ones.
+TEST_CASE("the 1 s bucket edge is inclusive, and it is now a scale rather than a threshold") {
+    // THIS BOUNDARY USED TO HAVE A MEANING OUTSIDE THIS FILE AND NO LONGER DOES.
+    // `kRxWatchdogMs` was 1,000 ms, so a gap of exactly that was a gap the panel
+    // greyed on and `count_from(kFirstLong)` read as "occasions the panel had
+    // grounds to grey". M4 stage D deleted the constant: the grey threshold is
+    // now calibrated per venue (~2 s at Anvil, ~4 s at Kraken) and this edge is
+    // a FIXED MEASUREMENT SCALE, deliberately unmoved so a hole bucketed today
+    // is comparable with one bucketed during the 23.6 h soak.
+    //
+    // What is still pinned here is the CONVENTION — each edge is the inclusive
+    // lower bound of the bucket above it — because that is what makes two
+    // histograms from different runs comparable at all. The grey count itself is
+    // now `GreyLedger::episodes()`, counted rather than inferred.
     GapHistogram h;
     h.add(999999);
     CHECK(h.count_from(GapScale::kFirstLong) == 0);

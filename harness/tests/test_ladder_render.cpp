@@ -24,6 +24,9 @@
 // pinning it here is discovering it on the panel.
 #include <doctest/doctest.h>
 
+#include <string>
+#include <utility>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -525,6 +528,200 @@ TEST_CASE("the symbol yields to the value rather than overlapping it") {
         symbol_pixels += c.count_in_row(y, Ink::Symbol);
     }
     CHECK(symbol_pixels == 0);
+}
+
+TEST_CASE("the age is drawn, and it yields to the value exactly as the symbol does") {
+    // M4 stage D, A4. `age_ms` has been on DisplaySnapshot since stage A2 and no
+    // panel ever drew it, because the firmware never stamped it. It does now.
+    //
+    // WHERE it lives is Part B's decision and this test does not pin a position —
+    // it pins the PRIORITY, which is the property that stops the header from
+    // overlapping: value first and always, then the age, then the symbol. The
+    // value is the only field that may never be dropped.
+    using depthcharge::AgeText;
+
+    const auto header_ink = [](const DisplaySnapshot& s, Ink want) {
+        LadderView v;
+        GridCanvas c;
+        v.observe(s);
+        v.draw(s, c);
+        int lit = 0;
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            lit += c.count_in_row(y, want);
+        }
+        return lit;
+    };
+
+    // A Kraken-shaped header: a four-decimal price, a one-digit symbol id, and a
+    // reading. All three fit, which is the case worth having a picture of —
+    // 64 px holds "2", "1.5s" and "0.1234" with a column of air between each.
+    DisplaySnapshot s = make_book(4);
+    s.symbol.id = 2;
+    s.symbol.price_decimals = 4;
+    s.has_last = true;
+    s.last_px = 1234;          // 0.1234
+    s.has_age = false;
+
+    const int value_only = header_ink(s, Ink::Value);
+    const int no_age = header_ink(s, Ink::Symbol);
+
+    s.has_age = true;
+    s.age_ms = 1500;           // "1.5s"
+    const int with_age = header_ink(s, Ink::Symbol);
+
+    // The value is untouched by any of this — it is the field that never yields.
+    CHECK(header_ink(s, Ink::Value) == value_only);
+    // And the age is genuinely on the panel: more non-value header ink than the
+    // same frame without a reading.
+    CHECK(with_age > no_age);
+
+    // THE SPACE THE AGE RESERVES IS WHAT THE SYMBOL YIELDS TO, and that — not the
+    // `if` around the age itself — is the load-bearing half of the priority.
+    //
+    // Found by mutation: removing the age's own fit test changes NOTHING on the
+    // panel, because `draw_text` clips silently and every field here is a whole
+    // number of 5 px glyph cells, so an un-yielded age is always an exact
+    // multiple of the advance off the left edge and every glyph of it is fully
+    // clipped. What does change the panel is failing to move `left_limit`: the
+    // symbol then draws into the columns the age is using. A one-digit id is too
+    // narrow to reach them, so the case needs a wide one.
+    {
+        DisplaySnapshot wide = s;
+        wide.symbol.id = 9999;          // 19 px, and the age starts at column 11
+
+        LadderView v;
+        GridCanvas c;
+        v.observe(wide);
+        v.draw(wide, c);
+        CHECK(c.out_of_bounds == 0);
+        CHECK(c.every_pixel_written());
+
+        // No pixel of the header is written more than twice — once by the band
+        // wash, once by whichever glyph owns it. A third write is two fields in
+        // the same place, which is the overlap this whole ordering exists to
+        // prevent and which is otherwise invisible: both fields draw in the same
+        // ink, so a pixel count alone cannot see it.
+        int worst = 0;
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            for (int x = 0; x < kPanelWidth; ++x) {
+                if (c.writes[y][x] > worst) { worst = c.writes[y][x]; }
+            }
+        }
+        CHECK(worst <= 2);
+
+        // And the yield actually happened: the id is gone, not merely shifted.
+        // Columns 0..3 carry no glyph ink at all.
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            for (int x = 0; x < 4; ++x) { CHECK(c.ink[y][x] == Ink::Background); }
+        }
+    }
+
+    // NO OVERLAP WITH THE VALUE either, checked as geometry rather than as a
+    // pixel count. The value is right-aligned, so everything else must end at
+    // least one glyph gap before it starts.
+    {
+        LadderView v;
+        GridCanvas c;
+        v.observe(s);
+        v.draw(s, c);
+        CHECK(c.out_of_bounds == 0);
+        CHECK(c.every_pixel_written());
+
+        const int value_x = kPanelWidth - text_width("0.1234");
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            for (int x = value_x - 1; x < kPanelWidth; ++x) {
+                // The value's own columns may hold Value ink; nothing to its left
+                // may, and no Symbol ink may reach into them.
+                if (x < value_x) { CHECK(c.ink[y][x] != Ink::Value); }
+                CHECK(c.ink[y][x] != Ink::Symbol);
+            }
+        }
+    }
+}
+
+TEST_CASE("a header too tight for everything drops the symbol first and the value last") {
+    // The yield order, exercised by widening the value until each field in turn
+    // has to go. The failure this prevents is a header that silently clips —
+    // which reads on a bench as a rendering bug rather than as a width problem.
+    const auto ink_counts = [](const DisplaySnapshot& s) {
+        LadderView v;
+        GridCanvas c;
+        v.observe(s);
+        v.draw(s, c);
+        int sym = 0;
+        int val = 0;
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            sym += c.count_in_row(y, Ink::Symbol);
+            val += c.count_in_row(y, Ink::Value);
+        }
+        CHECK(c.out_of_bounds == 0);
+        return std::pair<int, int>{sym, val};
+    };
+
+    DisplaySnapshot s = make_book(4);
+    s.symbol.id = 9999;
+    s.has_last = true;
+    s.has_age = true;
+    s.age_ms = 12'345;         // "12.3s"
+
+    // Roomy: a two-digit price leaves space for the age AND the id.
+    s.symbol.price_decimals = 0;
+    s.last_px = 42;
+    const auto roomy = ink_counts(s);
+    CHECK(roomy.second > 0);
+    CHECK(roomy.first > 0);
+
+    // Tight: an eighteen-digit price with eight decimals is wider than the
+    // panel, so the value clamps to column 0 and both other fields go.
+    s.symbol.price_decimals = 8;
+    s.last_px = 123456789012345678LL;
+    const auto tight = ink_counts(s);
+    CHECK(tight.second > 0);       // the value survives everything
+    CHECK(tight.first == 0);       // age and symbol both dropped
+
+    // And the stale header behaves the same way: the reason claims the slot the
+    // price had, and the age still yields to it.
+    s.status = FeedStatus::Stale;
+    s.stale_reason = GapReason::ChecksumFail;
+    const auto stale = ink_counts(s);
+    CHECK(stale.second > 0);
+}
+
+TEST_CASE("no reading is a dash, not a zero, and it says so on the panel") {
+    // `-` and `0.0s` are different claims and exactly one of them is
+    // reassuring. The panel shows `-` for the first 16 s of an Anvil connection
+    // and 32 s of a Kraken one, while the baseline latches.
+    // The two strings themselves are pinned by test_age_estimator.cpp's
+    // "age text" case, which owns the formatter. They were copied here too and
+    // review removed them: one cause going red in two files sends a reader
+    // looking at LadderView before they notice the formatter is the common
+    // factor.
+    const auto header_symbol_ink = [](const DisplaySnapshot& s) {
+        LadderView v;
+        GridCanvas c;
+        v.observe(s);
+        v.draw(s, c);
+        int lit = 0;
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            lit += c.count_in_row(y, Ink::Symbol);
+        }
+        return lit;
+    };
+
+    DisplaySnapshot unknown = make_book(4);
+    unknown.symbol.id = 2;
+    unknown.symbol.price_decimals = 4;
+    unknown.has_last = true;
+    unknown.last_px = 1234;
+    unknown.has_age = false;
+
+    DisplaySnapshot zero = unknown;
+    zero.has_age = true;
+    zero.age_ms = 0;
+
+    // Two different strings, therefore two different fingerprints. If these ever
+    // came out equal the panel would be unable to say "I do not know yet".
+    CHECK(header_symbol_ink(unknown) != header_symbol_ink(zero));
 }
 
 // ---------------------------------------------------------------------------

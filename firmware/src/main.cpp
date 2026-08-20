@@ -22,7 +22,6 @@
 // rather than to whichever core Arduino happened to start on.
 #include <Arduino.h>
 
-#include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/snapshot_channel.hpp>
 
 #include "esp_log.h"
@@ -33,7 +32,9 @@
 #include "heap_probe.hpp"
 #include "panel.hpp"
 #include "render_task.hpp"
+#include "resync.hpp"
 #include "secrets.h"
+#include "venue_build.hpp"
 #include "ws_transport.hpp"
 
 using namespace depthcharge;
@@ -47,7 +48,9 @@ namespace {
     // objects are the entire steady-state static footprint of the pipeline:
     //
     //   FramePipe        4 x 16 KiB reassembly slots        65,536 B
-    //   FeedTask         AnvilAdapter 8,400 + Book 8,552 + staging 1,168
+    //   FeedTask         venue adapter + Book 8,552 + staging 1,168
+    //                    + LivenessWatchdog ~2.4 KiB (a 256-arrival age window
+    //                      and a 32-interval threshold ring, M4 stage D)
     //   SnapshotChannel  three DisplaySnapshot slots         3,528 B
     //   RenderTask       received_ 1,168 + LadderView ~510
     //
@@ -66,12 +69,18 @@ namespace {
 
     FramePipe g_pipe;
     SnapshotChannel g_channel;
-    FeedTask g_feed(g_pipe, g_channel, anvil::kAnvilTicker101, g_idle, g_link);
-    WsTransport g_transport(g_pipe, g_link);
+    // What the feed task says about the subscription and the RX task acts on
+    // (resync.hpp). Declared here, in the file that already owns every
+    // cross-task object, so its lifetime is the program's and neither task can
+    // outlive it.
+    SubscriptionSignal g_subscription;
+    FeedTask g_feed(g_pipe, g_channel, g_subscription, g_idle, g_link);
+    WsTransport g_transport(g_pipe, g_link, g_subscription);
     HeapProbe g_heap;
     Panel g_panel;
     RenderTask g_render(g_channel, g_feed, g_pipe, g_heap, g_idle, g_link,
-                        g_transport.rx_budget(), g_transport.ping_probe(), g_panel);
+                        g_transport.rx_budget(), g_transport.ping_probe(),
+                        g_transport.subscription(), g_subscription, g_panel);
 
     [[noreturn]] void halt(const char* what) {
         ESP_LOGE(kTag, "FATAL: %s — halting. Reset to retry.", what);
@@ -94,11 +103,21 @@ void setup() {
     // evening.
     esp_log_level_set("*", ESP_LOG_INFO);
 
-    ESP_LOGI(kTag, "DepthCharge M3 stage C — feed task, no panel yet");
-    ESP_LOGI(kTag, "engine: ticker %u, price scale 10^-%d, qty scale 10^-%d",
-        static_cast<unsigned>(anvil::kAnvilTicker101.id),
-        static_cast<int>(anvil::kAnvilTicker101.price_decimals),
-        static_cast<int>(anvil::kAnvilTicker101.qty_decimals));
+    // THE FIRST LINE OF THE LOG NAMES THE BUILD. One venue per build is a
+    // compile-time choice (venue_build.hpp), so a capture that does not say
+    // which one produced it is a capture that gets read against the wrong
+    // expectations — and both builds are flashed from the same desk on the
+    // same evening.
+    ESP_LOGI(kTag, "DepthCharge M4 stage D — venue=%.*s liveness=%.*s",
+        static_cast<int>(venue::kName.size()), venue::kName.data(),
+        static_cast<int>(venue::kLivenessSignal.size()), venue::kLivenessSignal.data());
+    ESP_LOGI(kTag, "engine: symbol %u, price scale 10^-%d, qty scale 10^-%d, depth %d,"
+                   " checksum reaches %u level(s) a side",
+        static_cast<unsigned>(venue::kSymbol.id),
+        static_cast<int>(venue::kSymbol.price_decimals),
+        static_cast<int>(venue::kSymbol.qty_decimals),
+        static_cast<int>(venue::kSubscribeDepth),
+        static_cast<unsigned>(venue::kValidatedDepth));
 
     const HeapSample boot = sample_heap();
     ESP_LOGI(kTag, "heap at boot: free=%u largest=%u (internal)",

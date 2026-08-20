@@ -16,17 +16,29 @@ break — Core 1, `consume()`-gated redraw, and reading nothing but the
 ```sh
 cp firmware/include/secrets.h.example firmware/include/secrets.h   # then edit it
 cd firmware
-pio run                       # build (both environments)
-pio run -e depthcharge -t upload -t monitor   # the usual loop
+pio run -e depthcharge -t upload -t monitor          # the usual loop (Anvil)
+pio run -e depthcharge-kraken -t upload -t monitor   # the same object at Kraken
 pio device monitor            # 115200, esp32_exception_decoder
 ```
 
-**Two environments, identical but for one symbol.** `depthcharge` is the
-baseline (Wi-Fi modem sleep **off**); `depthcharge-ps` builds the same firmware
-with `-D DC_WIFI_POWER_SAVE=1`, leaving modem sleep at the Arduino default
-(`WIFI_PS_MIN_MODEM`). They are the two arms of the stall experiment below —
-always name the environment on the command line, because `pio run -t upload`
-with no `-e` builds *and uploads both*, and the second one wins.
+**Six environments, and only two of them are venues.** `depthcharge` is the
+daily driver and the default: Anvil, Wi-Fi modem sleep **off**, the image M3's
+23.6 h soak was run on. The others each change exactly one thing:
+
+| env | what it changes | why it exists |
+| --- | --- | --- |
+| `depthcharge` | — | the default; a bare `pio run` builds this |
+| `depthcharge-kraken` | `-D DC_VENUE=2` | **the other venue** (M4 stage D). MINA/GBP at depth 25 off `ws.kraken.com/v2`, with a CRC32 the board checks and heals from |
+| `depthcharge-ps` | `-D DC_WIFI_POWER_SAVE=1` | modem sleep at the Arduino default — the contrast arm of the stall experiment |
+| `depthcharge-noping` | `-D DC_WS_PING=0` | no client ping, so a bench session can attribute a change to the ping and nothing else |
+| `wifi-diag` | one source file | the association diagnostic; no engine, no panel, no socket |
+| `link-autopsy` | one source file | a deliberately minimal WebSocket client, for comparison against the shipping one |
+
+**Always name the environment on the command line.** `pio run -t upload` with
+no `-e` builds *and uploads every one of them* in sequence, and the last one
+wins — which is how an unlabelled `depthcharge-ps` image once ended up on the
+board. The venue is the first line of the boot log for exactly this reason:
+`DepthCharge M4 stage D — venue=kraken liveness=heartbeat`.
 
 `pio` is PlatformIO Core; on this desk it lives at
 `%USERPROFILE%\.platformio\penv\Scripts\pio.exe`.
@@ -485,15 +497,15 @@ came up, is the age. It costs one counter the adapter was already keeping.
 
 | Field | Healthy | What a bad value means |
 | --- | --- | --- |
-| `drain` | **100%** | the instantaneous half: summaries this window against the 2.00/s broadcast. 41% means the board is receiving 41% of the stream and falling behind by 0.59 s per second |
-| `age` | **under 1 s** | how far behind the book on the panel is. Resolution is one summary period, so a socket that is exactly current reads a 0–500 ms sawtooth |
-| `worst` | tracks `age` | the peak on **this connection**; reset when the socket reconnects, because the backlog dies with the socket |
-| `run` | tracks `worst` | the peak across the **whole run**, retained through reconnects. `worst` far below `run` means reconnects have been flushing a backlog and hiding it — which is exactly why the 2026-08-09 86-minute run looked healthy at 21 reconnects |
+| `age` | **under 1 s**, or `-` | how far behind the book on the panel is. `-` is *no reading yet* and is a different claim from `0.0s`: the baseline latches on the 32nd interval, so an Anvil connection reads `-` for ~16 s and a Kraken one for ~32 s |
+| `worst` | tracks `age` | the peak across the **whole run**, banked through reconnects — because the per-connection figure dies with the socket, and that erasure is exactly why the 2026-08-09 86-minute run looked healthy at 21 reconnects |
+| `baseline` | the venue's interval | **this connection's** reference cadence, latched once from its first 32 intervals. Every age is `elapsed − n × baseline`, so a reader who cannot see the baseline cannot check the arithmetic — and a baseline that is not the venue's true interval is the one way this instrument lies |
+| `median` / `grey at` | 500/2000 ms at Anvil, 1000/4000 at Kraken | the OTHER statistic from the same signal: a rolling median that survives a reconnect, and the threshold derived from it. It must read differently from `baseline` or the two are not measuring different things |
 | `seq` | climbing | the **join key**: Anvil's global wire seq. Join it against a simultaneous desk capture and the lag is a subtraction, sampled at the publish rate — the measurement, where the stopwatch is a biased proxy for it |
 | `AHEAD n.n s (m%)` | **absent** | summaries arriving faster than 2 Hz for long. The denominator is wrong for this server and every age above is scaled by the ratio — re-measure with `py tools/anvil_freshness_probe.py --reference-only`. Tested as a *ratio* against a 5% tolerance, deliberately: a ratio is scale-free, so it survives the 500 ms constant being wrong by any amount, a venue that changes its period, and the board's own crystal error — none of which an absolute threshold survives. The wire itself is 2.0003/s over 30 minutes, so the tolerance is ~3,000× the real drift and this fires only on something structural |
 
-**Read `age` beside `drain`, never alone**, and read the assumption in
-`src/staleness.hpp` before quoting either. The deficit is an age only if the
+**Read `age` beside `baseline`, never alone**, and read the assumption in
+`engine/include/depthcharge/age_estimator.hpp` before quoting either. The deficit is an age only if the
 missing summaries were **queued** rather than dropped; a rate cannot tell those
 apart, and mistaking one for the other is precisely the error that cost this
 milestone the 2026-08-09 "Anvil sheds evenly" finding. That assumption has been
@@ -853,12 +865,16 @@ balanced over hours; it does not decide whether it allocates. Full reasoning in
 | `src/reject_log.hpp` | what the parser threw away: the first ten payloads of each connect, with status, whole length, head, tail and any spliced second frame. **No ESP-IDF** — host-tested by `harness/tests/test_reject_log.cpp` |
 | `src/core_idle.*` | the one platform half of that: per-core idle from an idle hook, because this framework has FreeRTOS run-time stats compiled out |
 | `src/frame_pipe.*` | the four-slot pool + queues, transport → feed, and the arrival histogram |
-| `src/feed_task.*` | Core 0: the pipeline, the RX watchdog, the only book writer |
+| `src/feed_task.*` | Core 0: the pipeline, the liveness watchdog, the age stamp, the only book writer |
 | `src/ws_supervisor.hpp` | when a reconnect is due and how long it is immune. **No ESP-IDF** — host-tested by `harness/tests/test_ws_supervisor.cpp` |
-| `src/staleness.hpp` | how OLD the book is, from the deficit against Anvil's 2 Hz `summary` broadcast. **No ESP-IDF** — host-tested by `harness/tests/test_staleness.cpp`. Raises no `Gap` and nothing branches on it |
+| `src/liveness_watchdog.hpp` | **WHEN THE PANEL GREYS** (M4 stage D): the venue's declared liveness signal against a threshold that signal calibrates, wrapping `depthcharge::LivenessClock` and `depthcharge::AgeEstimator` from `engine/`. **No ESP-IDF** — host-tested by `harness/tests/test_liveness_watchdog.cpp`. It replaced `src/staleness.hpp` and `kRxWatchdogMs`, both deleted |
+| `src/venue_build.hpp` | **ONE VENUE PER BUILD** (M4 stage D): which adapter, which endpoint, which root CA, which counter counts the liveness signal. `#ifndef DC_VENUE` defaults to Anvil. **No ESP-IDF** — both arms host-tested, by `dc_tests` and `dc_tests_kraken` |
+| `src/resync.hpp` | the checksum heal (M4 stage D): the cross-task latch the feed task sets, and the state machine that turns it into an unsubscribe/subscribe pair without a storm. **No ESP-IDF** — host-tested by `harness/tests/test_resync.cpp` |
+| `src/kraken_endpoint.hpp` | Kraken's host, path and the exact subscribe/unsubscribe bytes, pinned against the committed corpus by `harness/tests/test_venue_build.cpp` |
+| `src/kraken_root_ca.hpp` | GTS Root R4, with the chain measured off the live server rather than assumed |
 | `src/ladder_font.hpp` | the 3×5 panel font, 41 glyphs. **No ESP-IDF** — host-tested by `harness/tests/test_ladder_render.cpp`, which is the point: the 64-row budget is computed from these metrics |
 | `src/ladder_render.hpp` | the 64×64 ladder: geometry, `Ink`, the two palettes, the sparkline ring and the trade flash. **No ESP-IDF** — host-tested. Cannot name a colour |
 | `src/panel.*` | the HUB75 driver glue: pin map by field name, the colour-depth decision, and `PanelCanvas` — the only place an `Ink` becomes an RGB value |
 | `src/render_task.*` | Core 1: `consume()` → panel, then the log. Was `serial_console.*` through stage C |
 | `src/heap_probe.*` | invariant #7 instrumentation |
-| `src/anvil_root_ca.hpp` | the pinned TLS root, with its provenance |
+| `src/anvil_root_ca.hpp` | Anvil's pinned TLS root, with its provenance |

@@ -34,11 +34,12 @@
 #include <cstdint>
 
 #include "esp_tls.h"
-#include "anvil_endpoint.hpp"
+#include "venue_build.hpp"
 #include "ws_frame.hpp"
 
 #include "frame_pipe.hpp"
 #include "frame_reassembler.hpp"
+#include "resync.hpp"
 #include "rx_budget.hpp"
 #include "stall_probe.hpp"
 #include "ws_ping.hpp"
@@ -46,8 +47,11 @@
 
 namespace depthcharge::fw {
 
-// The endpoint — host, path, port — is nvil_endpoint.hpp, shared with the
-// diag client so the two cannot drift. See that file for why it moved.
+// The endpoint — host, path, port, root CA — is the SELECTED VENUE'S, and it
+// arrives through `venue_build.hpp`: `anvil_endpoint.hpp` on the default build,
+// `kraken_endpoint.hpp` under `-D DC_VENUE=2`. Each is shared with whoever else
+// needs it — the diag client includes the Anvil one directly — so the two ends
+// cannot drift; see anvil_endpoint.hpp for the session that bought that rule.
 
 // The client's Sec-WebSocket-Key, and the accept value it obliges the server to
 // return: base64(SHA1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")), RFC 6455
@@ -70,8 +74,11 @@ inline constexpr char kWsAccept[] = "D0+kBNqSZmwk6149E3G25IPQoN4=";
 // SO_RCVTIMEO on the socket. A read that times out is NOT a death — Anvil's
 // worst healthy inter-frame gap is 391-594 ms and a weak association adds
 // measured fades to 3.9 s — it is the RX task's chance to notice a client ping
-// is due and to see a reconnect request. Silence is the feed task's business:
-// kRxWatchdogMs (1000 ms) greys the panel and stays exactly where it is.
+// is due, to see a reconnect request, and — since M4 stage D — to notice that
+// a subscribe or a heal is owed. Silence is the feed task's business, and what
+// it greys on is now the venue's liveness signal against a threshold that
+// signal calibrates: ~2,000 ms at Anvil, ~4,000 at Kraken, and no constant
+// anywhere (liveness_watchdog.hpp, which replaced kRxWatchdogMs).
 inline constexpr std::uint32_t kReadTimeoutMs = 1000;
 
 // Client->server pings: ON, and the question they answer is not the one the
@@ -149,6 +156,43 @@ inline constexpr bool kWifiPowerSave = (DC_WIFI_POWER_SAVE != 0);
 // and any bug in it shows up on the first bench run rather than in a month.
 inline constexpr int kWsRxBufferBytes = 4096;
 
+// THE UPGRADE RESPONSE'S HEADER BLOCK, AND IT IS SIZED BY MEASUREMENT.
+//
+// A5, 2026-08-20: this was a 512-byte array on the RX task's stack, sized for
+// Anvil, and it is what stopped the first Kraken build connecting. Wi-Fi came
+// up, DNS resolved, TLS verified against the pinned GTS Root R4 — and then the
+// upgrade failed on every attempt with `upgrade headers did not end in 512
+// bytes`, for ever, with `connects=0` on the soak line.
+//
+// Measured against both live endpoints rather than guessed:
+//
+//     anvil.garethcooke.com    ~200 B    a plain nginx 101
+//     ws.kraken.com          1,002 B    Cloudflare
+//
+// Kraken's is five times Anvil's and almost all of the difference is two
+// `set-cookie` headers — `__cf_bm` (~200 chars) and `_cfuvid` (~150) — plus
+// `CF-Ray`, `Server`, `Strict-Transport-Security` and `Vary`. Cookie values are
+// generated per connection, so this is a number that MOVES, which is the
+// argument for headroom rather than for 1,024.
+//
+// 2 KiB is 2.0x the measured worst case. It is deliberately venue-independent:
+// a per-venue size would be a second thing to get wrong at the next venue, and
+// the whole quantity is 2 KiB on a part with ~180 KiB free.
+//
+// IN BSS AND NOT ON THE STACK, which is the other half of the fix. The RX task
+// has 6,144 bytes and has to hold an mbedtls handshake in them; the two
+// autopsies on record show `stack_free=1932 B`, so a 2 KiB stack array would
+// have left ~400 bytes and turned a header size into a stack overflow. Same
+// reasoning, same file, as `rx_buf_`.
+inline constexpr std::size_t kUpgradeHeaderBytes = 2048;
+
+// The bound on a client text frame is `kMaxShortPayload` in ws_frame.hpp, where
+// the header form that depends on it is built. It used to be re-declared here as
+// `kWsMaxClientTextBytes` and asserted against a third spelling in
+// kraken_endpoint.hpp; review pointed out that the three could be raised
+// together and still be wrong, because two of them named a different fact from
+// the one that makes `0x80 | (len & 0x7F)` correct.
+
 // The reconnect constants and the policy that uses them live in
 // ws_supervisor.hpp, which is ESP-IDF-free and therefore host-tested. What used
 // to be here — a 2 s backoff, and the claim that it preempted the library's
@@ -178,8 +222,14 @@ public:
     // `link` is written here and read by the feed task and console — one writer,
     // 8- and 32-bit fields, the same unsynchronised-diagnostics trade as every
     // counter in this firmware.
-    WsTransport(FramePipe& pipe, LinkQuality& link) noexcept
-        : pipe_(pipe), link_(link), reassembler_(pipe, kFrameCapacity), parser_(*this) {}
+    // `subscription` is what the feed task says about the book: whether it
+    // needs a snapshot only a subscribe can bring, and whether the venue has
+    // refused the subscription outright (resync.hpp). It is read here and
+    // nowhere else, because this object owns `tls_` and no other task may write
+    // to the socket.
+    WsTransport(FramePipe& pipe, LinkQuality& link, SubscriptionSignal& subscription) noexcept
+        : pipe_(pipe), link_(link), signal_(subscription),
+          reassembler_(pipe, kFrameCapacity), parser_(*this) {}
 
     // Blocks until the station has an IP or `timeout_ms` elapses.
     bool connect_wifi(const char* ssid, const char* password,
@@ -304,6 +354,11 @@ public:
     // shape of the type rather than a rule someone has to keep.
     const PingProbe& ping_probe() const noexcept { return probe_; }
 
+    // The subscription state machine, for the serial line. Const for the same
+    // reason as the two above: reported, never steered.
+    const ResyncPolicy& subscription() const noexcept { return subscription_; }
+    const SubscriptionSignal& subscription_signal() const noexcept { return signal_; }
+
 private:
     RxBudget budget_;
     PingProbe probe_;
@@ -314,6 +369,19 @@ private:
     // Sends a client ping if kClientPingMs says one is due. False means the
     // write failed, the socket has been closed, and the caller must not read it.
     bool maybe_ping(std::int64_t now) noexcept;
+
+    // Sends whatever the subscription state machine says is owed — the opening
+    // subscribe, or the unsubscribe/subscribe pair that heals a checksum
+    // failure. Same contract as maybe_ping: false means the socket is gone.
+    //
+    // Compiled to nothing at a venue whose socket IS its subscription.
+    bool maybe_subscribe(std::int64_t now) noexcept;
+
+    // One masked text frame. The BUILDING is `build_masked_text` in ws_frame.hpp
+    // — beside the parser that can read it back, so `test_ws_frame.cpp`
+    // round-trips it rather than a bench discovering that `0x82` is not `0x81`.
+    // What is left here is the write.
+    bool send_text(const char* text) noexcept;
 
     // Scans for `ssid`, prints every sibling that answers with its channel and
     // signal, and hands back the strongest. False means the scan found none, in
@@ -344,7 +412,7 @@ private:
     bool pick_strongest(const char* ssid, std::uint8_t (&bssid)[6],
                         std::int32_t& channel) noexcept;
 
-    // Resolves kAnvilHost on OUR clock, immediately before the connect, and
+    // Resolves the venue's host on OUR clock, immediately before the connect, and
     // returns how long it took.
     //
     // Two jobs, and the second is the one that will still matter in a month.
@@ -389,6 +457,11 @@ private:
     // task stack — the RX task's stack has to hold an mbedtls handshake and this
     // would be a quarter of it — and never a heap block (invariant #7).
     std::uint8_t rx_buf_[kWsRxBufferBytes] = {};
+
+    // The upgrade response's header block. See kUpgradeHeaderBytes for why it
+    // is here rather than on the RX task's stack, and why it is 2 KiB.
+    char upgrade_hdr_[kUpgradeHeaderBytes] = {};
+    std::uint32_t upgrade_header_bytes_ = 0;   // how much of it the last 101 used
 
     // The two words that cross tasks, and the only two.
     //
@@ -440,6 +513,13 @@ private:
     TaskHandle_t rx_task_ = nullptr;
 
     WsSupervisor supervisor_;
+
+    // The subscription half (M4 stage D, A2/A3). `resync_` is written by the
+    // feed task on Core 0 and consumed here; `subscription_` is RX-task-private
+    // state and needs no synchronisation of its own. Both are inert on a build
+    // whose venue has no subscription to manage.
+    SubscriptionSignal& signal_;
+    ResyncPolicy subscription_;
 
     // The association half, added 2026-08-10 after the bench found the case
     // nothing was watching: an AP that deauthenticates with AUTH_FAIL leaves

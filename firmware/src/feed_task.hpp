@@ -35,73 +35,51 @@
 
 #include <cstdint>
 
-#include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/book.hpp>
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/snapshot_channel.hpp>
 
 #include "core_idle.hpp"
 #include "frame_pipe.hpp"
+#include "liveness_watchdog.hpp"
 #include "reject_log.hpp"
+#include "resync.hpp"
 #include "stall_probe.hpp"
-#include "staleness.hpp"
+#include "venue_build.hpp"
 
 namespace depthcharge::fw {
 
-// The RX watchdog, in milliseconds.
+// THE WATCHDOG IS NOT A CONSTANT ANY MORE, AND WHAT IT WATCHES HAS CHANGED.
 //
-// M1's measured number, not a tuned one: across both 5-minute local captures
-// (6,494 frames) the worst healthy inter-frame silence is 640 ms and the median
-// is ~69 ms, while the observed disconnect left a 4,468 ms hole. 1000 ms sits
-// 1.6x above the loudest healthy quiet and 4.5x below the real outage. The host
-// replay uses the identical constant (ReplayOptions::disconnect_gap_ms), which
-// is what makes the M1 goldens a preview of this firmware rather than an
-// analogy.
-inline constexpr std::uint32_t kRxWatchdogMs = 1000;
-
-// The stall probe's definition of a hole is the histogram's >1 s bucket edge,
-// and the watchdog's threshold is this constant. They have always been the same
-// number and every reading of the bench log assumes it — `holes n=`, `event
-// >1s=` and `wd_gaps` are compared against each other line by line. Assert it
-// rather than leave three files agreeing by habit.
-static_assert(kHoleThresholdUs == kRxWatchdogMs * 1000,
-              "the stall probe must count exactly the silences the watchdog greys on");
-
-// WHAT THE WATCHDOG WATCHES — the one place this firmware is deliberately
-// STRICTER than the host replay driver, and the reason is invariant #5.
+// `kRxWatchdogMs = 1000` used to be declared here, with a `static_assert` tying
+// it to `kHoleThresholdUs` and forty lines arguing that a watchdog must arm on
+// an EVENT REACHING THE BOOK rather than on a frame arriving. M4 stage D
+// deleted all of it. The argument was right about arrival and wrong about book
+// events, and the 2026-08-17 ruling (ARCHITECTURE §9) says so outright: **no
+// threshold on book silence can be correct**, because a quiet market and a dead
+// subscription are identical on the wire. MINA/GBP's healthy 25,843 ms of book
+// silence would have greyed this panel twenty-five times.
 //
-// The host raises Gap{Disconnect} on a hole in `rx_ns` between any two frames,
-// because in a captured trace every frame parses and "a frame arrived" and
-// "the book advanced" are the same statement. On a real socket they are not.
-// Bytes can keep arriving that decode to nothing — a server that starts sending
-// a shape the parser rejects, or nothing but `summary` frames — and a watchdog
-// armed on *frame arrival* would sit there happily while the ladder froze,
-// still reading Live. That is precisely the one output invariant #5 forbids:
-// a frozen ladder that looks live.
+// So the rule now lives in `liveness_watchdog.hpp`, which watches the venue's
+// declared liveness signal against a threshold that signal calibrates itself,
+// and it is host-tested — the constant never was, because this header reaches
+// FreeRTOS through `frame_pipe.hpp` and cannot compile on the desk.
 //
-// So this watchdog is armed by an EVENT reaching the book, not by a frame
-// reaching the parser. It costs nothing to do so, which is the part that had to
-// be measured rather than argued — over both committed captures the worst
-// healthy gap is identical whichever way you count it:
-//
-//     any frame                        640.2 ms
-//     event-producing (book/snap/trade) 640.2 ms
-//     book-affecting (book/snapshot)    640.2 ms
-//
-// They agree because the book stream is the dense one (~12 Hz) and the 2 Hz
-// summaries never fill a hole the book frames left. The 1.6x margin under
-// 1000 ms therefore survives intact, and the firmware gets a rule that also
-// covers the two failure modes a trace file cannot contain.
-//
-// The divergence from the host driver is recorded in the stage C session log
-// as a candidate for aligning the host at M4; it is not done here because that
-// driver is golden-covered and stage C's scope is firmware.
+// WHAT SURVIVED THE DELETION AND WHAT IT NOW MEANS. `kHoleThresholdUs` and the
+// `GapScale` edges are untouched, and they are no longer the grey threshold —
+// they are a FIXED MEASUREMENT SCALE, so that a hole bucketed today is
+// comparable with one bucketed during the 23.6 h soak. `event_gaps`' >1 s
+// column used to be readable as "occasions the panel had grounds to grey"; it
+// is not, and `greys` on the serial line is that number now. `stall_probe.hpp`
+// still opens a hole record at 1 s of book silence, which remains the right
+// question for the instrument it belongs to — whether a stall is board-bound or
+// link-bound is not a question about staleness.
 
 class FeedTask {
 public:
     struct Stats {
         std::uint32_t frames_in = 0;
-        std::uint32_t watchdog_gaps = 0;    // silence exceeded kRxWatchdogMs
+        std::uint32_t watchdog_gaps = 0;    // the liveness signal went quiet past its threshold
         std::uint32_t socket_gaps = 0;      // transport reported the socket down
         std::uint32_t connects = 0;
         std::uint64_t worst_gap_us = 0;     // largest observed inter-frame silence
@@ -163,20 +141,29 @@ public:
         // kRejectsPerConnect of each connect; a healthy run never touches it.
         RejectLog rejects{};
 
-        // HOW OLD THE BOOK IS (M3 stage E).
+        // HOW MANY TIMES THE PANEL WENT GREY, and for how long in total.
         //
-        // Everything above answers "is the feed stopped" or "whose fault is
-        // that". None of it can see a feed that is running, parsing and healthy
-        // on every counter while showing a book a hundred seconds behind the
-        // market — which is what the 2026-08-11 bench was doing. This is the
-        // deficit between Anvil's fixed 2 Hz `summary` broadcast and the rate
-        // this socket receives it at, integrated over the connection.
+        // NEW AT M4 STAGE D, AND IT REPLACES AN INFERENCE. The bench used to
+        // read the grey count off `event_gaps`' >1 s column, which worked only
+        // while the watchdog threshold and that bucket edge were the same
+        // number. They are not: the threshold is now calibrated per venue
+        // (~2,000 ms at Anvil, ~4,000 at Kraken) and the edge is a fixed scale.
+        // A derived number that quietly stops being derivable is worse than no
+        // number, so it is counted directly.
         //
-        // Read it with its own assumption in hand (staleness.hpp): the deficit
-        // is an age only if the missing summaries are QUEUED, and rate alone
-        // cannot tell queuing from shedding. Upper bound, not measurement, until
-        // the lag-versus-uptime run calibrates it.
-        StalenessEstimator staleness{};
+        // Counted on the FEED side, at the transition into stale, because that
+        // is where the decision is taken. The render task prints its own
+        // `*** STALE ***` / `*** LIVE ***` transition lines off the published
+        // snapshot and the two must agree; a disagreement means a published
+        // frame was superseded before the render task saw it, which is legal
+        // (invariant #4) and worth knowing about.
+        // Lifted into `GreyLedger` (liveness_watchdog.hpp) after review: new
+        // counting logic living in a `.cpp` no host build compiles is new
+        // counting logic with no coverage, and the transition rule has three
+        // cases worth pinning — grey at boot, ONE episode however many gaps
+        // produced it, and an open episode folded in by the reader so a line
+        // taken mid-outage reports the outage rather than zero.
+        GreyLedger grey{};
 
         std::uint32_t worst_queue_wait_us = 0;
         // The most messages ever left queued BEHIND the one being processed —
@@ -188,11 +175,20 @@ public:
 
     // `idle` and `link` are read-only instruments this task samples as it goes;
     // neither can affect what it does, and both are const so that stays true by
-    // construction rather than by review.
-    FeedTask(FramePipe& pipe, SnapshotChannel& channel, const SymbolSpec& symbol,
+    // construction rather than by review. `subscription` is the one thing this
+    // task WRITES that leaves it — a statement about the book, not book state;
+    // see resync.hpp.
+    //
+    // THE SYMBOL IS NO LONGER A PARAMETER (M4 stage D, A3). It used to be passed
+    // in from `main.cpp`, which meant the ladder's scale and the adapter's scale
+    // were two spellings that could disagree — and a wrong scale does not fail,
+    // it draws a wrong ladder. Both now come from `venue_build.hpp`, which is
+    // also where the adapter's type comes from, so there is one place to be
+    // wrong and it is checked by `test_venue_build.cpp` on both arms.
+    FeedTask(FramePipe& pipe, SnapshotChannel& channel, SubscriptionSignal& subscription,
              const CoreIdleProbe& idle, const LinkQuality& link) noexcept
-        : pipe_(pipe), channel_(channel), idle_(idle), link_(link), adapter_(symbol),
-          book_(symbol) {}
+        : pipe_(pipe), channel_(channel), subscription_(subscription), idle_(idle), link_(link),
+          book_(venue::kSymbol, window::kWindowPolicy, venue::kValidatedDepth) {}
 
     // Creates the task pinned to Core 0. Returns false if FreeRTOS refused.
     // NOTE: ESP-IDF's xTaskCreate takes the stack size in BYTES, not words —
@@ -202,7 +198,24 @@ public:
     bool start(std::uint32_t stack_bytes = 8192, UBaseType_t priority = 5) noexcept;
 
     const Stats& stats() const noexcept { return stats_; }
-    const anvil::AnvilAdapter::Stats& adapter_stats() const noexcept { return adapter_.stats(); }
+    const venue::Adapter::Stats& adapter_stats() const noexcept { return adapter_.stats(); }
+
+    // The two clocks and the grey decision taken on them (liveness_watchdog.hpp).
+    // Const: the render task reads it to print the age and the threshold, and an
+    // instrument that the console could steer is not an instrument.
+    const LivenessWatchdog& liveness() const noexcept { return watchdog_; }
+
+    // WHAT THE VENUE'S OWN CHECKSUM CONFIRMS, per side, as of the last publish.
+    //
+    // A4 asks the board for one number the bench cannot compute at a glance:
+    // rows within the checksum's reach. It is `window::WindowStats::rows_validated`
+    // — the count of RENDERED rows whose rank in the book is inside the venue's
+    // validated depth — and it exists only because `Book` was constructed with
+    // `venue::kValidatedDepth` above. Left at the default it would read 0, which
+    // is indistinguishable from Anvil's honest 0, which is why the argument is
+    // passed at the one construction site rather than at a call.
+    const window::WindowStats& bid_window() const noexcept { return book_.bid_window(); }
+    const window::WindowStats& ask_window() const noexcept { return book_.ask_window(); }
 
     // THE JOIN KEY, and the reason the age line carries it.
     //
@@ -214,7 +227,32 @@ public:
     // `tools/anvil_freshness_probe.py` already performs across two sockets.
     // It replaces a human with a stopwatch, and unlike the stopwatch it measures
     // the age itself rather than the age divided by the drain fraction.
-    std::int64_t last_wire_seq() const noexcept { return adapter_.last_wire_seq(); }
+    //
+    // KRAKEN HAS NO WIRE SEQ AT ALL (§4: "Kraken has no seq — its adapter
+    // synthesises one"), so there is nothing to join on and this reports -1
+    // rather than the synthesised counter. Printing the synthesised one would
+    // look exactly like a join key and correlate with nothing outside this
+    // board, which is the worst thing an instrument can do.
+    std::int64_t last_wire_seq() const noexcept {
+#if DC_VENUE_HAS_SUBSCRIPTION
+        // -1 and not the synthesised counter: printing that would look exactly
+        // like a join key and correlate with nothing outside this board.
+        // Instruments that consume a COUNTER rather than displaying one are
+        // given 0 instead, via `wire_seq_for_probe()` — review found -1 flowing
+        // into `StallProbe`, where a step of ~0 against a nonzero expectation is
+        // the documented signature of a stalled broadcaster.
+        return -1;
+#else
+        return adapter_.last_wire_seq();
+#endif
+    }
+
+    // The same fact, shaped for an instrument that differences it. 0 at a venue
+    // with no wire seq, so the derived rate is an honest zero rather than a
+    // negative step that reads as a fault.
+    std::int64_t wire_seq_for_probe() const noexcept {
+        return venue::kHasWireSeq ? last_wire_seq() : 0;
+    }
     const Book::Stats& book_stats() const noexcept { return book_.stats(); }
 
 private:
@@ -235,27 +273,44 @@ private:
     // and a booting device is indistinguishable from a hung one.
     void publish_current() noexcept;
 
-    // Raise Gap{Disconnect} at most once per outage. Re-raising every second
+    // Raise Gap{Disconnect} at most once per outage. Re-raising every threshold
     // would republish an unchanged grey frame and bury the transition in the
     // log; the book is already Stale and only a Snapshot clears it.
     void raise_gap_once() noexcept;
 
+    // Republish the current book without applying an event, so the age on the
+    // panel and the beat pixel stay current through a quiet market. See the
+    // definition for why this is not cosmetic.
+    void republish_if_due(std::int64_t now_us) noexcept;
+
     FramePipe& pipe_;
     SnapshotChannel& channel_;
+    SubscriptionSignal& subscription_;
     const CoreIdleProbe& idle_;
     const LinkQuality& link_;
 
-    anvil::AnvilAdapter adapter_;
+    // The selected venue's adapter, constructed by `venue::make_adapter()` and
+    // initialised directly from its prvalue — C++17's guaranteed elision, so no
+    // copy and no move of an object that owns ~9 KiB of decoded-frame buffer and
+    // has already produced one use-after-move defect (B1's review).
+    venue::Adapter adapter_ = venue::make_adapter();
     Book book_;
     DisplaySnapshot staging_{};
 
-    // Watchdog state. `watching_` means "the book has advanced, so silence from
-    // here is meaningful"; it is false before the first event — a device that
-    // has never connected is already Stale{Resync} and does not need a Gap to
-    // say so. `last_event_us_` is deliberately NOT cleared when the watchdog
-    // fires, so the next event can measure the whole outage rather than the
-    // sliver of it after the alarm.
-    bool watching_ = false;
+    // The grey decision and the two clocks it is taken on. A member of the task
+    // rather than of `Stats`, because it is state this task acts on rather than
+    // a counter it reports — `Stats` is read across a core boundary and nothing
+    // over there may steer what the panel does.
+    LivenessWatchdog watchdog_;
+
+    // `gap_raised_` keeps one outage to one Gap. The arming state that used to
+    // sit beside it moved into `LivenessWatchdog` with the rule that reads it.
+    //
+    // `last_event_us_` is now purely an INSTRUMENT: it dates the last event that
+    // reached the book, which feeds `worst_gap_us`, `event_gaps` and the stall
+    // probe's window. Nothing branches on it any more — book silence is a number
+    // (`age_ms`), never a fault. It is deliberately NOT cleared anywhere, so the
+    // first event after an outage measures the whole hole.
     bool gap_raised_ = false;
     std::int64_t last_event_us_ = 0;
 
@@ -273,6 +328,10 @@ private:
     //
     // `socket_dropped_pending_` marks a hole that spanned a transport gap, so a
     // reconnect's blocking `stop()` is never read as the steady-state stall.
+    // When the book was last published, so a quiet market still refreshes the
+    // age and the heartbeat pixel. See `republish_if_due`.
+    std::int64_t last_publish_us_ = 0;
+
     std::uint32_t prev_idle0_us_ = 0;
     std::uint32_t prev_idle1_us_ = 0;
     std::int64_t last_msg_arrival_us_ = 0;

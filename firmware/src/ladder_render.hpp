@@ -65,6 +65,7 @@
 #include <cstdint>
 
 #include <depthcharge/decimal.hpp>
+#include <depthcharge/age_estimator.hpp>
 #include <depthcharge/display_snapshot.hpp>
 
 #include "ladder_font.hpp"
@@ -514,11 +515,52 @@ private:
         if (value_x < 0) { value_x = 0; }
         draw_text(c, value_x, kHeaderTop, value, Ink::Value);
 
-        // The symbol is the anchor, but it yields: a header that overlaps is
-        // worse than one that is missing an id the object only ever shows one of.
+        // THE AGE, AND IT IS PROVISIONAL — M4 stage D, A4.
+        //
+        // `age_ms` has existed on DisplaySnapshot since stage A2 and no panel has
+        // ever drawn it, because the firmware never stamped it. It does now, and
+        // the bench needs to be able to read it: a book's queuing lag is the one
+        // thing on this object that a person watching the ladder cannot infer
+        // from the ladder.
+        //
+        // WHERE IT GOES IS PART B'S DECISION, NOT THIS ONE. The brief says so —
+        // "the value slot currently carries last-price and stale-reason; age is a
+        // third claimant on the same pixels" — and Part A is told to take no
+        // rendering decisions. So this takes the cheapest placement that answers
+        // A4 and pre-empts nothing: the age sits to the LEFT of the value, in the
+        // slot the symbol already occupies, under the same yield rule the symbol
+        // already had. Nothing moves. `kLevels` stays 26, every row constant in
+        // test_ladder_render.cpp keeps its value, and a Part B that decides the
+        // age belongs somewhere else deletes eight lines rather than unpicking a
+        // second header row (which would cost THREE levels a side, not one).
+        //
+        // THE PRIORITY IS VALUE > AGE > SYMBOL, and it is the existing rule
+        // extended by one step rather than a new one. The value has always won
+        // outright — a stale panel showing a price it cannot vouch for and no
+        // reason is the wrong half of the payload on screen. The symbol has
+        // always yielded, because this object shows exactly one of them and a
+        // header that overlaps is worse than one missing an id nobody is reading.
+        // The age lands between: more useful than the id, never at the value's
+        // expense.
+        //
+        // `-` when there is no reading, which is a different statement from 0.0s
+        // and is `AgeText::unknown()`'s whole reason for existing. It is what the
+        // panel shows for the first 16 s of an Anvil connection and 32 s of a
+        // Kraken one, while the baseline latches.
+        const AgeText age = snap.has_age ? AgeText(snap.age_ms) : AgeText::unknown();
+        const int age_w = text_width(age.buf);
+        int left_limit = value_x;
+        if (age_w + kGlyphAdvance <= left_limit) {
+            const int age_x = left_limit - kGlyphAdvance - age_w;
+            draw_text(c, age_x, kHeaderTop, age.buf, Ink::Symbol);
+            left_limit = age_x;
+        }
+
+        // The symbol is the anchor, but it yields, and it now yields to two
+        // things instead of one.
         const TextField sym = TextField::scaled(static_cast<std::int64_t>(snap.symbol.id), 0);
         const int sym_w = text_width(sym.buf);
-        if (sym_w + kGlyphAdvance <= value_x) {
+        if (sym_w + kGlyphAdvance <= left_limit) {
             draw_text(c, 0, kHeaderTop, sym.buf, Ink::Symbol);
         }
     }

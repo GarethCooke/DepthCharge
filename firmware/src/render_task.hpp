@@ -50,6 +50,7 @@
 #include "heap_probe.hpp"
 #include "ladder_render.hpp"
 #include "panel.hpp"
+#include "resync.hpp"
 #include "rx_budget.hpp"
 #include "ws_ping.hpp"
 
@@ -68,9 +69,10 @@ class RenderTask {
 public:
     RenderTask(SnapshotChannel& channel, const FeedTask& feed, const FramePipe& pipe,
                HeapProbe& heap, const CoreIdleProbe& idle, const LinkQuality& link,
-               const RxBudget& rx, const PingProbe& ping, Panel& panel) noexcept
+               const RxBudget& rx, const PingProbe& ping, const ResyncPolicy& subscription,
+               const SubscriptionSignal& signal, Panel& panel) noexcept
         : channel_(channel), feed_(feed), pipe_(pipe), heap_(heap), idle_(idle), link_(link),
-          rx_(rx), ping_(ping), panel_(panel) {}
+          rx_(rx), ping_(ping), subscription_(subscription), signal_(signal), panel_(panel) {}
 
     // Creates the task pinned to Core 1 — the other half of the two-core split.
     // Bytes, not words (see feed_task.hpp). The task formats several 64-bit
@@ -107,6 +109,20 @@ private:
     // the draw rate and the worst single frame. The second pair is the feed-side
     // regression check's twin — if the LCD_CAM DMA and the Wi-Fi/TLS stack are
     // starving each other, it shows up as a draw rate below the publish rate.
+    // THE ONE LINE AN UNATTENDED SOAK IS READ FROM (M4 stage D, A4).
+    //
+    // Everything else this class prints is a diagnosis: nineteen lines that
+    // answer "why", once somebody already knows something happened. This answers
+    // "did anything happen", in one greppable line per statistics block, so that
+    // an overnight capture is a FILE rather than a memory — which is what the
+    // brief asks for, and what M3's 23.6 h soak had to be reconstructed from
+    // hourly medians because nobody had written one.
+    //
+    // Every field on it is a run TOTAL or a run EXTREME, never a window rate, so
+    // two lines an hour apart can be subtracted. The prefix is a single token, so
+    // `grep SOAK` is the whole reading protocol.
+    void print_soak(const FeedTask::Stats& f, const venue::Adapter::Stats& a) noexcept;
+
     void print_panel() noexcept;
 
     // The per-status breakdown of what the parser rejected. Prints nothing at
@@ -155,6 +171,13 @@ private:
     // frozen-ladder-reading-LIVE outcome the invariant forbids. It prints it and
     // does nothing else with it.
     const PingProbe& ping_;
+    // The subscription state machine, for the soak line's `heals` and
+    // `throttled`. Const for the same reason as everything else this task is
+    // handed: it prints the transport's state and can never steer it.
+    const ResyncPolicy& subscription_;
+    // The feed side's half of the same subject: how many times the venue refused
+    // the subscription outright. Const, reported, never steered.
+    const SubscriptionSignal& signal_;
     Panel& panel_;
 
     // The RX budget's previous snapshot and window anchor — this task's own,
@@ -214,10 +237,6 @@ private:
         std::uint32_t chunks = 0;
         std::uint64_t events = 0;
         std::uint32_t drawn = 0;
-        // `summary` frames, whose rate is a CLOCK rather than a market
-        // observation (staleness.hpp) — so its per-window fraction of 2.00/s is
-        // the instantaneous drain rate the accumulated age is integrated from.
-        std::uint64_t summaries = 0;
     };
     Window prev_{};
     bool have_prev_ = false;

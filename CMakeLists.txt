@@ -1,4 +1,4 @@
-# DepthCharge â€” host build.
+# DepthCharge — host build.
 #
 # Builds the portable engine and the host harness (replay reader, adapter,
 # phase-1 book, console ladder, goldens). Firmware is a separate PlatformIO
@@ -37,8 +37,8 @@ target_compile_features(dc_engine INTERFACE cxx_std_20)
 
 # --- invariant #1, enforced rather than asserted ------------------------------
 # One generated TU per engine header, each including only that header. It fails
-# the build if a header stops being self-contained, and â€” because the host has no
-# ESP-IDF/FreeRTOS/Arduino headers to find â€” it fails the build the moment one
+# the build if a header stops being self-contained, and — because the host has no
+# ESP-IDF/FreeRTOS/Arduino headers to find — it fails the build the moment one
 # leaks into engine/. "engine/ builds on the host" stops being a claim a session
 # has to remember to check.
 file(GLOB_RECURSE DC_ENGINE_HEADERS CONFIGURE_DEPENDS
@@ -58,13 +58,13 @@ target_link_libraries(dc_engine_header_check PRIVATE dc_engine dc_warnings)
 # The check above proves engine/ compiles on the host. It cannot prove it
 # compiles for the ESP32-S3, and the two disagree: the target toolchain is a
 # different compiler generation with a different libstdc++, so a header can be
-# perfectly valid here and reject on the board. That is not hypothetical â€” a
+# perfectly valid here and reject on the board. That is not hypothetical — a
 # constexpr std::reverse_copy compiles on GCC 15.2 and is ill-formed on the
 # xtensa GCC 8.4 that espressif32 6.5.0 pins, and nothing in this build would
 # have said so before M3 tried to link.
 #
 # So: compile the same generated per-header TUs with the PlatformIO xtensa
-# compiler when it is installed, with ESP-IDF-shaped flags. Optional by design â€”
+# compiler when it is installed, with ESP-IDF-shaped flags. Optional by design —
 # a contributor without PlatformIO still gets a working host build, and the
 # check simply reports that it was skipped.
 set(DC_XTENSA_GXX "$ENV{USERPROFILE}/.platformio/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf-g++.exe"
@@ -118,15 +118,15 @@ target_include_directories(dc_vendor SYSTEM INTERFACE
 # --- Anvil frame parser: TWO implementations of one declaration ---------------
 # depthcharge::anvil::parse_anvil_frame is declared in engine/include and
 # implemented twice: with nlohmann/json (desk-side, allocates, exhaustively
-# correct â€” the reference the goldens were derived against) and, from M3 stage B,
+# correct — the reference the goldens were derived against) and, from M3 stage B,
 # with a hand-rolled streaming scanner that never allocates (invariant #7) and is
-# what links into firmware/. Everything else in the adapter â€” including the
-# scaling, side-mapping and type-mapping in anvil_scaling.hpp â€” is shared header
+# what links into firmware/. Everything else in the adapter — including the
+# scaling, side-mapping and type-mapping in anvil_scaling.hpp — is shared header
 # code, so the swap is exactly one of these two libraries.
 #
 # Keeping each a separate library is what makes the separation checkable rather
 # than stated: dc_engine_anvil_streaming does NOT link dc_vendor, so nlohmann
-# cannot reach the target parser even by accident. Note the limit of that â€” with
+# cannot reach the target parser even by accident. Note the limit of that — with
 # static libraries a binary that linked BOTH would quietly take whichever the
 # linker reached first, not error. Nothing here does; the executables below each
 # name exactly one, and that is the property to preserve when adding a target.
@@ -176,7 +176,7 @@ target_link_libraries(dc_harness
 
 # --- executables -------------------------------------------------------------
 # Threads: the ladder's paced playback, and from M3 stage A the two-thread
-# SnapshotChannel tests. engine/ itself needs none â€” the channel is std::atomic
+# SnapshotChannel tests. engine/ itself needs none — the channel is std::atomic
 # only (invariant #1), and it is the harness that supplies the second thread.
 find_package(Threads REQUIRED)
 
@@ -189,7 +189,7 @@ target_link_libraries(dc_ladder PRIVATE dc_harness dc_engine_anvil dc_engine_kra
 # The record taxonomy of every committed trace, and its pin (M4 stage A).
 # It links a parser implementation only because dc_harness leaves
 # parse_anvil_frame unresolved for the replay driver; the taxonomy pass itself
-# never parses an Anvil frame â€” it reads the envelope and asks the venue's
+# never parses an Anvil frame — it reads the envelope and asks the venue's
 # decoder to name each record.
 add_executable(dc_taxonomy harness/src/dc_taxonomy_main.cpp)
 target_link_libraries(dc_taxonomy PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_warnings)
@@ -211,11 +211,12 @@ add_executable(dc_tests
   harness/tests/test_parser_equivalence.cpp
   harness/tests/test_reject_log.cpp
   harness/tests/test_replay_goldens.cpp
+  harness/tests/test_resync.cpp
   harness/tests/test_venue_build.cpp
   harness/tests/test_rx_budget.cpp
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
-  harness/tests/test_staleness.cpp
+  harness/tests/test_liveness_watchdog.cpp
   harness/tests/test_trace_venue.cpp
   harness/tests/test_ws_frame.cpp
   harness/tests/test_ws_ping.cpp
@@ -228,18 +229,20 @@ target_compile_definitions(dc_tests PRIVATE
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
 # what the parser threw away, the reconnect policy that decides how long the
 # panel stays grey, the 64x64 ladder renderer and the font its row budget is
-# computed from, the summary-deficit age estimator from stage E, and â€” from D5 â€”
-# the client-ping round-trip that prices this socket's server-side send queue,
-# are deliberately ESP-IDF-free so they can be tested here. These are the ONLY
-# firmware/ paths the host build knows about, and every one of them is a header â€”
+# computed from, the liveness watchdog that decides WHEN the panel greys (M4
+# stage D — it replaced stage E's summary-deficit estimator, whose test went with
+# it), and — from D5 — the client-ping round-trip that prices this socket's
+# server-side send queue, are deliberately ESP-IDF-free so they can be tested
+# here. These are the ONLY
+# firmware/ paths the host build knows about, and every one of them is a header —
 # no firmware .cpp is compiled on the host, so nothing in firmware/ can quietly
 # become a host dependency.
 #
 # ladder_render.hpp is the one that most needed it. Stage D's claim is that a
 # stale book CANNOT be drawn in colour, and the panel is a bench instrument two
 # people can look at and disagree about; here it is a 64x64 grid of Ink and three
-# mechanical questions (test_ladder_render.cpp). The row budget â€” 27 levels a
-# side, a header, and 64 rows exactly â€” is likewise a static_assert on this desk
+# mechanical questions (test_ladder_render.cpp). The row budget — 27 levels a
+# side, a header, and 64 rows exactly — is likewise a static_assert on this desk
 # rather than a discovery on the bench.
 target_include_directories(dc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
 target_link_libraries(dc_tests PRIVATE
@@ -256,7 +259,7 @@ target_link_libraries(dc_tests PRIVATE
 #                               postcondition, which anvil_frame.hpp says a
 #                               second implementation must inherit rather than
 #                               re-earn
-#   test_parser_equivalence.cpp the JSON grammar the traces never exercise â€”
+#   test_parser_equivalence.cpp the JSON grammar the traces never exercise —
 #                               escapes, duplicate keys, over-range integers,
 #                               invalid UTF-8, error precedence
 #   test_streaming_parser.cpp   the parts that are only true of THIS parser: the
@@ -278,7 +281,7 @@ target_link_libraries(dc_tests_streaming PRIVATE
 # --- the pingless arm's one branch (D5) ---------------------------------------
 # `kClientPingEnabled` is a compile-time constant, so the branch it guards is
 # unreachable from dc_tests, which builds with the ping on. Same trick as
-# dc_tests_streaming above â€” one source, a second link configuration â€” for the
+# dc_tests_streaming above — one source, a second link configuration — for the
 # one property that only exists in the other arm: the pingless build must say it
 # is not asking, never that nothing came back. The two read identically on a
 # bench line and mean opposite things.
@@ -321,7 +324,7 @@ target_link_libraries(dc_tests_kraken PRIVATE
 
 # The replay report, produced by the other parser. dc_replay prints per-frame
 # statistics and the final ladder state; running both over both traces and
-# diffing the output is the coarse-grained twin of the goldens above â€” it proves
+# diffing the output is the coarse-grained twin of the goldens above — it proves
 # equality of the whole pipeline's output text, not just of the pinned fields.
 add_executable(dc_replay_streaming harness/src/dc_replay_main.cpp)
 target_link_libraries(dc_replay_streaming PRIVATE
@@ -354,7 +357,7 @@ add_test(NAME dc_replay_baseline_20260809
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline_20260809.ndjson)
 # A7's wire, captured the day it went live (2026-08-16). The board now subscribes
 # with `&depth=27` and is served 30 levels a side by Anvil's tier ladder, so this
-# is the ONLY committed trace that records what the firmware actually receives â€”
+# is the ONLY committed trace that records what the firmware actually receives —
 # the other three are full-depth history. Kept alongside them rather than
 # replacing them: the shallow book is the new normal, the deep one is what every
 # golden before today was derived from, and both must keep parsing.
@@ -370,7 +373,7 @@ add_test(NAME dc_replay_streaming_baseline_20260809
 add_test(NAME dc_replay_streaming_reconnect
   COMMAND dc_replay_streaming
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_reconnect.ndjson)
-# The shallow book through the parser that actually links into the firmware â€”
+# The shallow book through the parser that actually links into the firmware —
 # which is the one that matters for A7, since the streaming parser is what will
 # meet a 30-level frame on the board.
 add_test(NAME dc_replay_streaming_depth27
@@ -393,7 +396,7 @@ add_test(NAME dc_ladder_depth27
 # The idle server (2026-08-17): 1,753 frames over an EMPTY book, so the whole
 # chain runs with zero levels on either side from the first frame to the last.
 # Every other committed trace has a populated book within one frame, so nothing
-# before this exercised the empty case end to end â€” and the panel's answer to
+# before this exercised the empty case end to end — and the panel's answer to
 # "no orders exist" must be a clean empty ladder, not a crash and not a stale
 # state. That is a different claim from "no data arrived", which is what the
 # watchdog covers.
@@ -412,12 +415,12 @@ add_test(NAME dc_channel_race COMMAND dc_tsan_workload 1)
 # Before stage A, dc_replay could not read any of these: it rejected the
 # metadata header on the required `ticker`, and would then have rejected 61 of
 # the depth-25 slice's 1,599 records for carrying no string `type`. These four
-# tests are deliverable 2's provable end state â€” the reader dispatches to
+# tests are deliverable 2's provable end state — the reader dispatches to
 # Kraken's decoder, the decoder names every record, and the run exits clean.
 #
 # M4 STAGE B1: dc_ladder RUNS THESE NOW TOO. Stage A could only offer dc_replay,
 # because the ladder drives the replay DRIVER and the driver had no Kraken
-# adapter â€” it refused the venue loudly instead. With the adapter in, the whole
+# adapter — it refused the venue loudly instead. With the adapter in, the whole
 # chain (parse -> ladder -> truncate -> apply -> publish -> draw) runs end to
 # end on every committed slice, which is the invariant-#6 claim for this stage
 # and is a strictly stronger statement than "the reader can name the records".
@@ -431,7 +434,7 @@ foreach(_k d10 d25 d100)
             --no-color)
 endforeach()
 # The quiet pair, which is the only artefact in the repository containing a
-# nine-second healthy silence â€” deliverable 4's demonstration runs on this file.
+# nine-second healthy silence — deliverable 4's demonstration runs on this file.
 add_test(NAME dc_replay_kraken_quiet_pair
   COMMAND dc_replay
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260816.ndjson)
@@ -442,7 +445,7 @@ add_test(NAME dc_ladder_kraken_quiet_pair
 # ...and the EXTREME of the same case, captured at a second hour (2026-08-17):
 # 25,843 ms of healthy book silence with the heartbeat keeping 936-1,042 ms time
 # straight through it. This is the trace the staleness ruling exists to serve,
-# and the one that retired the 15,000 ms book-silence constant â€” at which it
+# and the one that retired the 15,000 ms book-silence constant — at which it
 # would have invented three disconnects on a feed that never lost a packet.
 add_test(NAME dc_replay_kraken_quiet_pair_extreme
   COMMAND dc_replay
@@ -455,15 +458,15 @@ add_test(NAME dc_ladder_kraken_quiet_pair_extreme
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_20260817.ndjson
           --no-color)
 
-# THE RESYNC SLICE (M4 stage B2) â€” the artefact the triage has owed since stage
+# THE RESYNC SLICE (M4 stage B2) — the artefact the triage has owed since stage
 # A, and the only committed trace at any venue in which the CLIENT SPEAKS TWICE.
 # One connection, one deliberate unsubscribe/re-subscribe provoked mid-capture,
 # and a genuine mid-stream `book/snapshot` from the venue. Nothing about it is
 # synthetic: the resubscribe is a thing a client does and the snapshot is a thing
 # Kraken sent.
 #
-# What it holds that nothing else does: an ADAPTER-RAISED Gap â€” the unsubscribe
-# ack drops the book and raises Gap{Resync} â€” a 1,047 ms grey window that no
+# What it holds that nothing else does: an ADAPTER-RAISED Gap — the unsubscribe
+# ack drops the book and raises Gap{Resync} — a 1,047 ms grey window that no
 # watchdog produced, a second baseline, and 19/19 checksums verified across both
 # subscriptions. Committed on the quiet pair because a resync needs a wall-clock
 # window long enough for two heartbeat calibrations and only a slow pair fits
@@ -488,7 +491,7 @@ add_test(NAME trace_taxonomy_selfcheck
 set_tests_properties(trace_taxonomy_selfcheck PROPERTIES TIMEOUT 300)
 
 # Explicit timeouts on the two targets that now run threads. A hand-off bug that
-# blocks the writer does not fail an assertion â€” it hangs â€” so the useful report
+# blocks the writer does not fail an assertion — it hangs — so the useful report
 # is ctest saying "Timeout" in a minute rather than inheriting the 1500 s
 # default and looking like the machine died.
 set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_tests_kraken dc_channel_race
@@ -498,7 +501,7 @@ set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_tests_kraken
 # The FIRST test in this file that is not C++, and it exists because of a specific
 # failure: tools/kraken_frame_economics.py produced every figure in
 # harness/replay/NOTES-kraken.md and the M4 stage-0 brief, and it shipped two bugs
-# on the way there â€” a truncation column that discarded every level entering the
+# on the way there — a truncation column that discarded every level entering the
 # top N, and a verify pass whose float shadow silently skipped 92 real checksum
 # comparisons. Both printed believable numbers. The firmware's instruments are
 # pinned by host goldens; the Python ones were not, and that asymmetry cost real
@@ -510,7 +513,7 @@ set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_tests_kraken
 # removing the truncation, keeping leading zeros in the checksum token, and
 # widening the CRC to the top 12 are each caught.
 #
-# Optional by design, exactly like dc_engine_target_check above â€” a contributor
+# Optional by design, exactly like dc_engine_target_check above — a contributor
 # without a Python 3 interpreter still gets a complete C++ build and a STATUS line
 # saying which check was skipped.
 find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -532,7 +535,7 @@ if(Python3_Interpreter_FOUND)
   # windows without checking that they contained the event they were named for,
   # which is the `t+65..t+160` defect of stage A one layer up: an order for a
   # 4-gap window that would have produced a 3-gap file. It takes NO trace
-  # argument on purpose â€” the cases that matter are the ones no committed
+  # argument on purpose — the cases that matter are the ones no committed
   # capture contains, because every committed capture satisfies both rules and a
   # corpus-driven test here would be five copies of one observation.
   add_test(NAME slice_tool_selfcheck

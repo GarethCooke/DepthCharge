@@ -95,9 +95,20 @@ namespace dc::harness {
 // written here. `for_venue()` is how a caller that has read a trace asks for
 // the right one.
 //
-// The firmware half of this is stage B's — `kRxWatchdogMs` is untouched. This
-// is decision 2 (ARCHITECTURE §9, 2026-08-17) arriving in the harness first,
-// which is the cheapest place to find out whether the split clock was right.
+// The firmware half landed at M4 stage D: `kRxWatchdogMs` is DELETED and the
+// board arms on the venue's liveness signal against this same
+// `LivenessClock` — now in `engine/`, linked by both ends. This was decision
+// 2 (ARCHITECTURE §9, 2026-08-17) arriving in the harness first, which was
+// the cheapest place to find out whether the split clock was right.
+//
+// ONE DIFFERENCE SURVIVES AND IS DELIBERATE. This driver arms on the gap
+// between any two RECEIVED RECORDS, because in a trace file a disconnect is
+// record-arrival silence and there is nothing else to detect it with; the
+// firmware arms on LIVENESS-signal silence. They agree on every committed
+// input and separate only where records arrive that are not the liveness
+// signal. Aligning them moves golden-covered code and belongs in a brief —
+// see DESIGN §08 strain 10, whose own prescribed resolution was withdrawn at
+// stage D because it predates the ruling and contradicts it.
 struct ReplayOptions {
     // 0 = calibrate from the trace's own liveness signal (the ruling's rule).
     // A non-zero value is an explicit override and is what every committed

@@ -11,6 +11,10 @@ namespace {
 
 constexpr const char* kTag = "panel";
 
+// The two engine clocks reach this file only to be PRINTED — `feed_.liveness()`
+// hands back a const reference and there is nothing on it this task could steer.
+using depthcharge::AgeText;
+
 // Steady-state cadence. Anvil publishes ~13.6 events/s and every one of them is
 // a published frame, so printing them all would be ~1 KB/s of log and unreadable
 // on the bench. One line a second is enough to see the version advancing; every
@@ -195,6 +199,48 @@ void RenderTask::print_stats() noexcept {
     const auto& f = feed_.stats();
     const auto& p = pipe_.stats();
 
+    // THE TWO VENUE-SHAPED LINES, AND THE ONLY `#if` IN THIS FILE. Everything
+    // else the console prints is venue-agnostic by construction; adapter counters
+    // are not, because the counters themselves differ — Anvil has `summary` and
+    // `other_ticker`, Kraken has `heartbeats`, four checksum columns and an
+    // eviction count. Printing a common subset would throw away exactly the
+    // numbers a bench evening is there to read, and inventing a shared shape
+    // would put venue vocabulary somewhere `engine/` could not check it.
+#if DC_VENUE == DC_VENUE_KRAKEN
+    ESP_LOGI(kTag, "-- adapter: in=%llu out=%llu snap=%llu upd=%llu beat=%llu ack=%llu/%llu",
+             static_cast<unsigned long long>(a.frames_in),
+             static_cast<unsigned long long>(a.events_out),
+             static_cast<unsigned long long>(a.snapshot_frames),
+             static_cast<unsigned long long>(a.update_frames),
+             static_cast<unsigned long long>(a.heartbeats),
+             static_cast<unsigned long long>(a.acks),
+             static_cast<unsigned long long>(a.unsubscribe_acks));
+    // THE CHECKSUM LEDGER, AND ITS IDENTITY IS THE POINT: seen == matched +
+    // failed + unverifiable. `unverifiable` is not `failed` — it is a book
+    // message arriving before this client had a baseline to check it against —
+    // and collapsing the two is what would make a mid-stream start look like
+    // corruption. `unchecksummed` should be 0 on this wire; anything else means
+    // a book message arrived without the field the healing path depends on.
+    ESP_LOGI(kTag, "-- crc    : seen=%llu ok=%llu FAIL=%llu unverifiable=%llu unchecksummed=%llu"
+                   " | resyncs=%llu",
+             static_cast<unsigned long long>(a.checksums_seen),
+             static_cast<unsigned long long>(a.checksums_matched),
+             static_cast<unsigned long long>(a.checksums_failed),
+             static_cast<unsigned long long>(a.checksums_unverifiable),
+             static_cast<unsigned long long>(a.book_msgs_unchecksummed),
+             static_cast<unsigned long long>(a.resyncs_requested));
+    ESP_LOGI(kTag, "-- errors : parse=%llu price=%llu qty=%llu symbol=%llu unknown=%llu"
+                   " | levels applied=%llu removed=%llu evicted=%llu deeper=%llu",
+             static_cast<unsigned long long>(a.parse_errors),
+             static_cast<unsigned long long>(a.price_errors),
+             static_cast<unsigned long long>(a.qty_errors),
+             static_cast<unsigned long long>(a.other_symbol),
+             static_cast<unsigned long long>(a.unknown_kind),
+             static_cast<unsigned long long>(a.levels_applied),
+             static_cast<unsigned long long>(a.levels_removed),
+             static_cast<unsigned long long>(a.levels_evicted),
+             static_cast<unsigned long long>(a.levels_deeper_than_subscribed));
+#else
     ESP_LOGI(kTag, "-- adapter: in=%llu out=%llu snap=%llu book=%llu trade=%llu summary=%llu",
              static_cast<unsigned long long>(a.frames_in),
              static_cast<unsigned long long>(a.events_out),
@@ -209,6 +255,7 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned long long>(a.unknown_kind),
              static_cast<unsigned long long>(a.truncated_frames),
              static_cast<unsigned long long>(a.wire_seq_backward));
+#endif
     print_rejects(f.rejects);
     ESP_LOGI(kTag, "-- book   : adopted=%llu trades=%llu gaps=%llu publishes=%llu",
              static_cast<unsigned long long>(b.snapshots_adopted),
@@ -220,6 +267,7 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned>(f.socket_gaps), static_cast<unsigned>(f.connects),
              static_cast<unsigned>(f.worst_gap_us / 1000),
              static_cast<unsigned>(f.worst_parse_us));
+    print_soak(f, a);
     print_distributions(f, p);
     print_stall(f);
     ESP_LOGI(kTag, "-- pipe   : published=%u oversize=%u no_slot=%u qfull=%u abandoned=%u cont=%u ctrl=%u",
@@ -246,6 +294,86 @@ void RenderTask::print_stats() noexcept {
     print_panel();
     print_rates(p, f, a.events_out);
     heap_.report("steady", frames_drawn_ - frames_at_baseline_);
+}
+
+void RenderTask::print_soak(const FeedTask::Stats& f,
+                            const venue::Adapter::Stats& a) noexcept {
+    const std::int64_t now = esp_timer_get_time();
+    const LivenessWatchdog& lw = feed_.liveness();
+
+    // THE AGE COMES FROM THE SNAPSHOT, NOT FROM THE ESTIMATOR, and review is
+    // why. `AgeEstimator::read` walks 256 `int64_t` arrivals and reads a
+    // `double` baseline; calling it from here means doing that while the feed
+    // task pushes into the same ring on the other core, and a torn `double` is
+    // a nonsense reference cadence and therefore a nonsense age. The value this
+    // task is entitled to already crossed the boundary correctly — the feed side
+    // stamped it into the `DisplaySnapshot` this task consumed, through the
+    // wait-free mailbox that exists for exactly that (invariants #4 and #8).
+    //
+    // Everything else read off `lw` below is a 32-bit millisecond mirror the
+    // feed task refreshes on each liveness arrival, which this core loads
+    // atomically — see liveness_watchdog.hpp.
+    const AgeText age_txt = AgeText::from(received_.has_age, received_.age_ms);
+    const AgeText worst_txt = AgeText(lw.worst_age_ms());
+    const std::uint64_t grey_ms = f.grey.total_ms(now);
+    const HeapSample heap = sample_heap();
+
+    // ROWS FILLED, AND ROWS WITHIN THE CHECKSUM'S REACH — summed over both sides
+    // of the LAST publish. Stage C measured this over whole runs (37.0% for
+    // `top` and `thinned` against 11.9% for `largest`, at depth 100); A4 asks the
+    // board for its own, and at the shipped depth its own is a CONSTANT: 25
+    // levels a side into 27 rows drops nothing, so all three policies coincide
+    // and the fraction is simply what the venue validates over what it serves.
+    // That constancy is the finding rather than a disappointment — the depth
+    // question only exists above the panel's height, which is what stage C
+    // handed to Part B to decide.
+    const window::WindowStats& bids = feed_.bid_window();
+    const window::WindowStats& asks = feed_.ask_window();
+    const std::uint32_t filled = bids.rows_filled + asks.rows_filled;
+    const std::uint32_t unknown = bids.rows_unknown + asks.rows_unknown;
+    const std::uint32_t validated = bids.rows_validated + asks.rows_validated;
+    const std::uint32_t pct_x10 = (filled != 0) ? (validated * 1000u) / filled : 0u;
+
+    ESP_LOGI(kTag,
+             "SOAK venue=%.*s up=%llus live=%d age=%s worst_age=%s baseline=%ums"
+             " grey_n=%u grey_ms=%llu wd=%u sock=%u connects=%u"
+             " rows=%u/%u unknown=%u crc_rows=%u (%u.%u%%)"
+             " resync_req=%u heals=%u owed=%d refused=%u crc_fail=%llu"
+             " heap=%u largest=%u frames=%u drawn=%u",
+             static_cast<int>(venue::kName.size()), venue::kName.data(),
+             static_cast<unsigned long long>(now / 1000000),
+             (have_seen_frame_ && last_status_ == FeedStatus::Live) ? 1 : 0,
+             age_txt.buf, worst_txt.buf,
+             static_cast<unsigned>(lw.baseline_ms()),
+             static_cast<unsigned>(f.grey.episodes()),
+             static_cast<unsigned long long>(grey_ms),
+             static_cast<unsigned>(f.watchdog_gaps),
+             static_cast<unsigned>(f.socket_gaps),
+             static_cast<unsigned>(f.connects),
+             static_cast<unsigned>(filled),
+             static_cast<unsigned>(filled + unknown),
+             static_cast<unsigned>(unknown),
+             static_cast<unsigned>(validated),
+             static_cast<unsigned>(pct_x10 / 10), static_cast<unsigned>(pct_x10 % 10),
+             static_cast<unsigned>(venue::resyncs_requested(a)),
+             static_cast<unsigned>(subscription_.heals()),
+             subscription_.owed() ? 1 : 0,
+             static_cast<unsigned>(signal_.refusals()),
+             static_cast<unsigned long long>(venue::checksum_failures(a)),
+             static_cast<unsigned>(heap.free_internal),
+             static_cast<unsigned>(heap.largest_block_internal),
+             static_cast<unsigned>(f.frames_in),
+             static_cast<unsigned>(frames_drawn_));
+
+    // WHAT THE CHECKSUM CANNOT SEE, said in words on the build where the answer
+    // is zero. `crc_rows=0 (0.0%)` reads as a failure; "this venue publishes no
+    // checksum" reads as a property of the venue, which is what it is.
+    if constexpr (venue::kValidatedDepth == 0) {
+        ESP_LOGI(kTag,
+                 "SOAK note: %.*s publishes no checksum, so NO rendered row on this"
+                 " build was ever externally confirmed",
+                 static_cast<int>(venue::kName.size()), venue::kName.data());
+    }
 }
 
 void RenderTask::print_panel() noexcept {
@@ -499,7 +627,6 @@ void RenderTask::print_rates(const FramePipeStats& p, const FeedTask::Stats& f,
     cur.chunks = p.chunks;
     cur.events = events_out;
     cur.drawn = frames_drawn_;
-    cur.summaries = f.staleness.summaries_total();
 
     if (have_prev_ && now > prev_.at_us) {
         // Integer arithmetic throughout — invariant #3's habit, and on this
@@ -547,38 +674,63 @@ void RenderTask::print_rates(const FramePipeStats& p, const FeedTask::Stats& f,
                  static_cast<unsigned>(chunks_x100 % 100),
                  static_cast<unsigned>(dt_ms));
 
-        // HOW OLD THE BOOK IS, AND THE RATIO IT CAME FROM (M3 stage E).
+        // HOW OLD THE BOOK IS, AND THE CLOCK THE ANSWER CAME FROM.
         //
-        // Printed here, directly under `-- rate`, because the two are one
-        // reading: `rate` says how much of the stream is arriving and this says
-        // what that costs in seconds. Every earlier instrument in this firmware
-        // measures whether the feed is stopped; a feed at 41% of the broadcast
-        // is not stopped and every counter above reads healthy while the panel
-        // shows a book a hundred seconds old.
+        // Printed directly under `-- rate` because the two are one reading:
+        // `rate` says how much of the stream is arriving and this says what that
+        // costs in seconds. Every earlier instrument in this firmware measures
+        // whether the feed is STOPPED; a feed at 41% of the broadcast is not
+        // stopped and every counter above reads healthy while the panel shows a
+        // book a hundred seconds old.
         //
-        // `drain` is the instantaneous half — summaries received this window
-        // against the 2.00/s Anvil broadcasts, so 100% is keeping up. The `age`
-        // is that deficit integrated since the socket came up. **It is an age
-        // only if the missing summaries were queued rather than shed** —
-        // staleness.hpp states the assumption and the calibration owed against
-        // it; read it as an upper bound until the lag-versus-uptime run lands.
+        // REWRITTEN AT M4 STAGE D, AND THE FIELDS CHANGED WITH THE ARITHMETIC.
+        // `drain %` and `summary N of M` are gone with the cumulative estimator
+        // that produced them: they divided by a hardcoded 500 ms broadcast
+        // period, which is Anvil's number and is wrong by 2x at Kraken. What
+        // replaces them is the windowed estimator's own working:
+        //
+        //   `age`       the windowed deficit — the sup over every suffix of the
+        //               last 256 liveness arrivals of (elapsed - n x baseline).
+        //   `worst`     the largest ever seen, banked across reconnects, because
+        //               the per-connection figure is destroyed every time the
+        //               socket blinks and that erasure is how the 86-minute run
+        //               of 2026-08-09 looked healthy.
+        //   `baseline`  THIS connection's reference cadence, latched once from
+        //               its first 32 intervals. Every age is `elapsed - n x
+        //               baseline`, so a reader who cannot see the baseline cannot
+        //               check the arithmetic — and a baseline that is not the
+        //               venue's true interval is the one way this instrument
+        //               lies (the socket-behind-from-birth blind spot, M6).
+        //   `median`    the OTHER statistic taken from the same signal, and the
+        //   `grey at`   threshold derived from it. It is a rolling median that
+        //               survives a reconnect, where the baseline does not; the
+        //               two must be visibly different numbers or nobody will
+        //               believe they are measuring different things.
+        //
+        // `-` for the age means NO READING, not zero: before the baseline latches
+        // the estimator has nothing to measure against, and printing 0.0s there
+        // would be the one reassuring answer it is not entitled to give.
+        //
         // `seq` is the JOIN KEY, not a diagnostic — see FeedTask::last_wire_seq.
-        // With it on this line, the serial log and a simultaneous desk capture
-        // can be joined offline into a continuous lag curve at the publish rate,
-        // which measures the age directly. The stopwatch alternative measures
-        // age/drain and is biased by ~2.4x at this board's drain fraction.
-        //
-        // Note what `drain` can and cannot say: over a 10 s window its
-        // denominator truncates to 20 broadcast slots, so the field quantises to
-        // multiples of 5%. It is the shape, not the third digit; the cumulative
-        // `summary N of M` pair beside it is the precise ratio.
-        const std::uint32_t d_summ =
-            static_cast<std::uint32_t>(cur.summaries - prev_.summaries);
-        char age[208];
-        f.staleness.render(now, age, sizeof age);
-        ESP_LOGI(kTag, "-- age    : %s | drain %u%% this window (%u in %u ms) | seq %lld", age,
-                 static_cast<unsigned>(drain_percent(d_summ, static_cast<std::uint64_t>(dt_ms) * 1000ull)),
-                 static_cast<unsigned>(d_summ), static_cast<unsigned>(dt_ms),
+        // With it on this line, the serial log and a simultaneous desk capture can
+        // be joined offline into a continuous lag curve at the publish rate. It
+        // reads -1 at a venue with no wire seq to join on.
+        // Same rule as the SOAK line: the age is the snapshot's, everything
+        // else is the 32-bit mirror. See print_soak.
+        const LivenessWatchdog& lw = feed_.liveness();
+        const AgeText age_txt = AgeText::from(received_.has_age, received_.age_ms);
+        const AgeText worst_txt = AgeText(lw.worst_age_ms());
+        ESP_LOGI(kTag,
+                 "-- age    : %s (worst %s) | baseline %u ms | %.*s median %u ms,"
+                 " grey at %u ms after %u sample(s)%s | back-stamps %u | seq %lld",
+                 age_txt.buf, worst_txt.buf,
+                 static_cast<unsigned>(lw.baseline_ms()),
+                 static_cast<int>(venue::kLivenessSignal.size()), venue::kLivenessSignal.data(),
+                 static_cast<unsigned>(lw.median_ms()),
+                 static_cast<unsigned>(lw.threshold_ms()),
+                 static_cast<unsigned>(lw.samples()),
+                 lw.calibrated() ? "" : " UNCALIBRATED",
+                 static_cast<unsigned>(lw.non_monotone()),
                  static_cast<long long>(feed_.last_wire_seq()));
 
         // DIRECTLY UNDER `-- age`, BECAUSE THE TWO ARE ONE READING. The age says
