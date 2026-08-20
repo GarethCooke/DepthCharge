@@ -667,3 +667,47 @@ logging, not for this one.
 | holds colour through 26 s of book silence | **PASSED** — 150,179 ms with `upd` frozen, `live=1`, `grey_n` and `grey_ms` unmoved, `wd=0` (A5 log, t=290,266 → 440,445 ms) |
 | a CRC failure heals rather than greying permanently | **PASSED** — 13/13 healed over 2 h 19 m, `refused=0` |
 | greys within the calibrated threshold of the heartbeat stopping | **NOT YET** — the watchdog has fired twice on this board but never with capture attached, and an interface-level block cannot produce it because the socket dies first (measured: the panel greyed within about a second of the station reporting disassociation, well inside the 4,006 ms threshold). Needs a packet-DROP rule. |
+
+---
+
+### 2026-08-20 (later still) · owner at the bench + Opus 5 (1M) · **B1 clause 3: a method eliminated, not a clause passed**
+
+Second attempt at the one B1 clause without evidence — *the panel greys within the calibrated
+liveness threshold of the heartbeat stopping.* Capture attached first this time
+(`firmware/logs/kraken-b1-decopause-20260820.log`), board at **4 h 10 m on one flash**,
+threshold in force **4,038 ms** from a measured 1,009 ms heartbeat median.
+
+Owner paused the DepthCharge client in the **Deco app**, on the reasoning that a per-client
+internet pause should blackhole the traffic while leaving the station associated — which is the
+condition the clause needs and the one an interface disable cannot produce.
+
+**It does not.** `sock` went 5 → 6 with `wd` unmoved at 2, and the transport logged
+`wifi down 10024 ms ... rejoining (#1)`. **The Deco deauthenticates the client rather than
+dropping its packets**, so TLS died and the socket path raised the Gap exactly as an interface
+disable does. Clause 3 remains open, and the evening's real product is a negative result worth
+having: *no router-side control on this mesh can stage the half-open case.*
+
+**What would.** Two routes, neither taken tonight:
+
+* **A test build** — `-D DC_TEST_MUTE_LIVENESS=<n>`, which after *n* seconds stops feeding
+  `watchdog_.on_liveness()` while the socket carries on normally. That is precisely the clause's
+  condition, exercises the real calibrated threshold on real hardware, and differs from the
+  shipping image by one suppressed call.
+* **A PC hotspot** — associate the board to a Windows hosted network and add a firewall DROP to
+  Kraken's address. Shipping image, genuine blackhole; costs a `secrets.h` change, a rebuild and
+  a reflash.
+
+**Deliberately deferred, and the reason is B3.** Either route reflashes the board and discards
+an uptime that is now the best soak evidence this project has for Kraken. The clause is cheap
+to close on a board that is about to be reflashed anyway; it is expensive to close on one that
+is a sixth of the way to M3's 23.6 hours.
+
+**Strain 21, third consecutive reproduction.** Recovery landed at **−70 dBm** (then −73, run
+minimum now −84) against a −37 dBm baseline. Three recoveries, three weak draws: this is a
+pattern rather than an incident, and D1 should be read as reproducible rather than observed.
+The re-subscription was answered sub-second again, which is the third data point corroborating
+yesterday's two-clock correction.
+
+**Also still true at 4 h 17 m on one flash**: `crc_fail=18 heals=18 refused=0`, heap 61,124 B
+(12 bytes below the 31-minute reading), `connects=7` — every one of those a deliberate
+interference, none spontaneous.
