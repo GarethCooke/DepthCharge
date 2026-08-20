@@ -542,3 +542,128 @@ without one that does not build. **Nothing is pushed.**
 3. B3's soak. The new risk B3 names — whether Kraken survives unattended overnight — is still
    open; 31 minutes says nothing about it.
 4. B4's M3 residues while the board is out.
+
+---
+
+### 2026-08-20 (evening) · owner at the bench + Opus 5 (1M) · **B1's grey transition, observed and captured — and it does NOT test what it looks like it tests**
+
+Owner blocked the Wi-Fi with the board running the Kraken build and the panel up; serial
+captured to `firmware/logs/kraken-b1-grey-20260820.log` by attaching **without resetting the
+board** (DTR/RTS held low before open — the same auto-reset circuit behind this desk's
+orphaned-monitor "brownout loops"). The board had by then been up **8,335 s — 2 h 19 m —** on
+the image A5 flashed, which makes its counters a longer record than A5's own 31 minutes.
+
+#### The finding that matters: the socket wins the race, so this tests M3 and not A1
+
+| | before the block | after |
+| --- | --- | --- |
+| `wd` (liveness watchdog firings) | 2 | **2** |
+| `sock` (transport reported the socket down) | 4 | **5** |
+
+**The grey was raised by the socket dying, not by the liveness threshold.** Killing the Wi-Fi
+kills the TLS read, `on_disconnected()` raises `Gap{Disconnect}` immediately, and the 4,006 ms
+watchdog never gets to expire. Both paths render as `STALE (disconnect)` — `raise_gap_once()`
+uses the same `GapReason` for both, deliberately, because from the book's point of view they
+are the same event — so **the panel cannot distinguish them and only the counters can.**
+
+This was initially read off the log the other way round and corrected from the counters. It is
+worth stating as a bench rule rather than an anecdote:
+
+> **To exercise the liveness watchdog you must blackhole the packets without killing the
+> socket** — a firewall DROP rule against `ws.kraken.com:443`, or a router-side block — not an
+> interface disable. Disabling the interface always kills TLS first, and what you then measure
+> is M3's socket path, which has been passing since 2026-08-16.
+
+**`wd=2` is nonetheless real**: two earlier blocks in the same session DID fire the liveness
+watchdog, before capture was attached. So the new rule has fired on hardware. It has not yet
+been fired *with a stopwatch on it*, and B1's second clause stays open on that technicality.
+
+#### What the capture does show, and it is not nothing
+
+```
+I (8410786)  -- age : 0.1s (worst 4.4s) | baseline 1000 ms | heartbeat median 1001 ms,
+                      grey at 4006 ms after 32 sample(s)
+W (8411049)  *** STALE (disconnect) at v11496 — panel greys here ***
+[8426595]    [ws] wifi down 30050 ms and the framework has stopped trying — rejoining (#3)
+[8430102]    [ws] feed down 33557 ms — asking the RX task for a socket (attempt #6)
+[8432545]    [ws] upgrade ok: 1002 of 2048 header bytes
+[8432545]    [ws] socket up: dns 0 ms, connect+upgrade 2437 ms, fd 48, rssi -71 dBm
+[8432554]    [ws] subscribe sent (#19)
+I (8447304)  *** LIVE at v11498 ***     grey for 36254 ms before resync
+```
+
+* The panel greyed, stayed grey for as long as the block was held (the owner did not unblock
+  promptly, so **36,254 ms is a hold time and not a recovery figure**), and came back on its
+  own with no reset — `connects` 5 → 6, one grey episode, `grey_n` 18 → 19.
+* The Wi-Fi supervisor did its M3 job: the framework stopped retrying and `rejoining (#1/#2/#3)`
+  fired at 10 s intervals until the association came back.
+* **The upgrade fix holds on a reconnect**: `upgrade ok: 1002 of 2048 header bytes`, the same
+  1,002 bytes A5 measured, on the nineteenth subscribe of the board's life.
+* **The recovery was prompt once the association returned**: socket up 2,437 ms after the
+  attempt began (`dns 0 ms`), subscribe out 9 ms later, snapshot back inside a second. The
+  36,254 ms of grey is dominated by the block being held, not by the board.
+
+#### A5's numbers, extended by 2 h 19 m of unattended running
+
+The same image, still on one flash: `crc_fail=13 resync_req=13 heals=13 owed=0 refused=0` —
+**thirteen genuine CRC32 failures and thirteen recoveries**, up from three at 31 minutes, with
+the ledger still closing (`seen=3247 ok=3171 FAIL=13 unverifiable=63 unchecksummed=0`). Heap
+**61,136 → 61,084 B free** across 2 h 19 m: 52 bytes, which is flat. `worst_gap` still
+160,373 ms with `-- event >1s=1040` — **1,040 book silences over a second, and `wd=2`**, both
+of those two from deliberate interference. The pipe's `no_slot` is 33 against 18 heals, still
+clustered on snapshot bursts.
+
+#### NEW, and it is an M3 residue reproducing on the Kraken build
+
+**The recovery re-rolled the mesh lottery.** rssi was −37 dBm before the block; the socket came
+back up at **−71 dBm** and the association has since sat at −72/−77 with a run minimum of −82.
+That is **DESIGN §08 strain 21** — *"a recovery re-rolls the mesh lottery, and the board never
+roams off what it draws"* — verbatim, and it is on ROADMAP's backlog as D1. It cost nothing
+measurable this time; what it costs is a question for a session that can compare a strong
+recovery against a weak one.
+
+#### AND THE FINDING THAT NEARLY PUT A FICTION IN THIS LOG: THE SERIAL LOG HAS TWO CLOCKS
+
+This entry first recorded a **14,750 ms** delay between the re-subscribe and the snapshot that
+answered it, and a **14.5 s** delay between losing the association and the panel greying.
+**Neither happened.** Both were computed by subtracting a `[nnnnnnn]` timestamp from an
+`I (nnnnnnn)` one, and **those are different clocks**:
+
+* `[nnnnnnn]` is Arduino's `log_x`, i.e. `millis()` — the same clock as `esp_timer`.
+* `I (nnnnnnn)` is ESP-IDF's own `ESP_LOGx` prefix, from the FreeRTOS tick count.
+
+They are not interchangeable and they were **~14.6 s apart** during this test. Measured
+directly, and quantisation-free because it is a difference of differences: consecutive `SOAK`
+lines advance their own `I (…)` prefix by **10,021–10,022 ms** for every **10,000 ms** the
+`up=` field (which is `esp_timer`) advances — the tick clock running **~0.22% fast**. The
+accumulated skew was ~0.6 s during A5's 31 minutes and ~14.6 s by the time of this test, so it
+opened up over the intervening two hours. **The mechanism is not established here and is not
+guessed at.**
+
+Corrected against the measured skew:
+
+| | first recorded | corrected |
+| --- | --- | --- |
+| association lost → panel greys | 14.5 s | **~0–1 s**, essentially simultaneous |
+| re-subscribe → snapshot | 14,750 ms | **sub-second**, in line with the ~160 ms every heal shows |
+
+The grey figure is the one that matters, and its correction *strengthens* the reading above:
+the socket path greyed the panel within about a second of the station reporting disassociation,
+which is precisely why the 4,006 ms liveness threshold never got a look in.
+
+**The instrument hazard is the durable finding.** A bench session reading this log will subtract
+one prefix from the other — it is the obvious thing to do, the two look alike, and for the
+first half hour of a run they agree to within a second. After two hours they are fifteen
+seconds apart. **Rule: compare `[...]` with `[...]`, or `I (...)` with `I (...)`, and never one
+with the other; when a figure must span both, convert through the `SOAK` line's `up=` field,
+which is `esp_timer` and is printed beside an `I (...)` prefix on the same line.** Whether the
+firmware should simply stop emitting two clocks is a question for a session that owns the
+logging, not for this one.
+
+#### Where B1 stands after this
+
+| clause | status |
+| --- | --- |
+| holds colour through 26 s of book silence | **PASSED** — 150,179 ms with `upd` frozen, `live=1`, `grey_n` and `grey_ms` unmoved, `wd=0` (A5 log, t=290,266 → 440,445 ms) |
+| a CRC failure heals rather than greying permanently | **PASSED** — 13/13 healed over 2 h 19 m, `refused=0` |
+| greys within the calibrated threshold of the heartbeat stopping | **NOT YET** — the watchdog has fired twice on this board but never with capture attached, and an interface-level block cannot produce it because the socket dies first (measured: the panel greyed within about a second of the station reporting disassociation, well inside the 4,006 ms threshold). Needs a packet-DROP rule. |
