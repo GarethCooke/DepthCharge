@@ -6,18 +6,21 @@
 
 #include <depthcharge/feed_event.hpp>
 
-#include "dc_harness/age_estimator.hpp"
-#include "dc_harness/liveness_clock.hpp"
+#include <depthcharge/age_estimator.hpp>
+#include <depthcharge/liveness_clock.hpp>
 #include "dc_harness/trace_decoder.hpp"
 
 namespace dc::harness {
 namespace {
 
+using depthcharge::AgeEstimator;
+using depthcharge::AgeReading;
 using depthcharge::Book;
 using depthcharge::DisplaySnapshot;
 using depthcharge::FeedEvent;
 using depthcharge::FeedStatus;
 using depthcharge::GapReason;
+using depthcharge::LivenessClock;
 using depthcharge::SnapshotChannel;
 
 // Holds the wiring for one replay. The engine pieces are members, in the same

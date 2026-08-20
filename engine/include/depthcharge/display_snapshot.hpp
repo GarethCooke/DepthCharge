@@ -60,7 +60,7 @@ struct DisplaySnapshot {
 
     // How far behind the venue this book is, in milliseconds — QUEUING LAG, and
     // not time since the last frame or time since the book last changed (M4
-    // stage A2; the definition is pinned in dc_harness/age_estimator.hpp and in
+    // stage A2; the definition is pinned in depthcharge/age_estimator.hpp and in
     // ARCHITECTURE §5). `has_age` is false until the estimator has calibrated,
     // because "no reading yet" and "the book is current" are different
     // statements and exactly one of them is reassuring.

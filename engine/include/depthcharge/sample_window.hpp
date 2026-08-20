@@ -1,4 +1,4 @@
-// dc_harness/sample_window.hpp — the fixed ring, and the one median convention.
+// depthcharge/sample_window.hpp — the fixed ring, and the one median convention.
 //
 // Two instruments read the venue's liveness signal and answer different
 // questions from it: `liveness_clock.hpp` decides when the panel greys, and
@@ -7,22 +7,27 @@
 // own copy of three lines of ring arithmetic and their own median.
 //
 // That is exactly the shape of defect this project keeps finding — two copies
-// of a rule, drifting. `staleness.hpp` documents one already: `delivered_us()`
-// was written twice and the two copies had already disagreed about `>=` versus
-// `>` before anyone noticed, harmlessly, which is how near-duplicates survive
-// long enough to matter. So the ring and the median live here, once, and the
-// two instruments differ only in what they measure — which is the difference
-// that is supposed to be visible.
+// of a rule, drifting. The now-deleted `firmware/src/staleness.hpp` documented
+// one: its `delivered_us()` was written twice and the two copies had already
+// disagreed about `>=` versus `>` before anyone noticed, harmlessly, which is
+// how near-duplicates survive long enough to matter. So the ring and the median
+// live here, once, and the two instruments differ only in what they measure —
+// which is the difference that is supposed to be visible.
 //
-// ESP-IDF-free and allocation-free, because both of its users are: this is part
-// of what stage B lifts into `firmware/`.
+// IT LIVES IN `engine/` BECAUSE BOTH ENDS RUN IT. Moved here from
+// `harness/include/dc_harness/` at M4 stage D (2026-08-20) together with its two
+// users, so the host harness and the firmware compute the book's age and the
+// grey threshold with the same code rather than with two implementations that
+// agreed by circumstance. ESP-IDF-free and allocation-free, which is what makes
+// that possible: `engine/` is host-buildable by invariant #1 and every header in
+// it is compiled by `dc_engine_target_check` under xtensa GCC 8.4 as well.
 #pragma once
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 
-namespace dc::harness {
+namespace depthcharge {
 
 // A fixed-capacity ring of the last `N` samples, in arrival order.
 //
@@ -73,4 +78,4 @@ inline double lower_median(double* first, std::size_t n) noexcept {
     return first[(n - 1) / 2];
 }
 
-}  // namespace dc::harness
+}  // namespace depthcharge

@@ -1,4 +1,4 @@
-// dc_harness/liveness_clock.hpp — the self-calibrating staleness threshold.
+// depthcharge/liveness_clock.hpp — the self-calibrating staleness threshold.
 //
 // M4 stage A ruling, 2026-08-17 (ARCHITECTURE.md §9). Staleness stops counting
 // BOOK EVENTS and counts the venue's declared LIVENESS SIGNAL — Anvil's
@@ -13,18 +13,21 @@
 // all. So the threshold is derived at runtime from the signal itself: a rolling
 // median of the observed inter-arrival, times `kThresholdMultiple`.
 //
-// ESP-IDF-free and allocation-free after construction, deliberately: this is the
-// half of the rule stage B lifts into `firmware/`, and invariant #7 applies
-// there. Fixed-size ring, no heap, no floating-point state beyond the samples.
+// ESP-IDF-free and allocation-free after construction, deliberately — and since
+// M4 stage D (2026-08-20) that is load-bearing rather than aspirational: this
+// header lives in `engine/` and is linked by BOTH the harness and the firmware,
+// so the threshold the panel greys on and the threshold a golden is scored
+// against are one implementation. Fixed-size ring, no heap, no floating-point
+// state beyond the samples. Invariant #7 applies on the target.
 #pragma once
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
-#include "dc_harness/sample_window.hpp"
+#include <depthcharge/sample_window.hpp>
 
-namespace dc::harness {
+namespace depthcharge {
 
 // ---------------------------------------------------------------------------
 // THE ONE CONSTANT, AND WHAT IT IS MADE OF
@@ -83,9 +86,26 @@ inline constexpr double kThresholdMultiple = 4.0;
 // Measured: 111 s of accumulated lag over 150 s (ARCHITECTURE §9, 2026-08-11).
 // The floor is what makes the threshold survive its own recovery.
 //
-// 1,000 ms is the smallest threshold this project has ever run (`kRxWatchdogMs`),
-// which makes it the smallest one with evidence behind it. **Do not tune it away
-// as belt-and-braces** — `test_trace_venue.cpp` pins the drain-burst case.
+// **RAISED 1,000 -> 2,000 ms AT M4 STAGE D, BECAUSE 1,000 WAS SIZED AGAINST THE
+// WRONG QUANTITY.** The original number was `kRxWatchdogMs`, "the smallest
+// threshold this project has ever run" — but that constant bounded BOOK-EVENT
+// silence at Anvil, where the worst healthy gap is 391-640 ms. This one bounds
+// LIVENESS-signal silence, and the table above measures that at **968.8 ms worst
+// healthy at Anvil and 1,119.0 ms at Kraken**. A 1,000 ms floor is BELOW Kraken's
+// worst healthy heartbeat interval, so a window still clamped from a drain burst
+// would grey a perfectly healthy feed on an ordinary heartbeat — the exact false
+// grey the floor exists to prevent, produced by the floor itself.
+//
+// 2,000 ms clears Anvil's worst healthy by 2.06x and Kraken's by 1.79x. It is
+// also exactly `kThresholdMultiple x 500 ms`, i.e. the threshold a 2 Hz venue
+// warrants anyway, so the clamped state is never tighter than the tightest
+// cadence this project ships against. The exposure it leaves is bounded and
+// stated: a burst-clamped window refills in `kWindowSamples` arrivals — 16 s at
+// Anvil, 32 s at Kraken — and only during that does the 1.79x margin apply.
+//
+// **Do not tune it away as belt-and-braces** — `test_trace_venue.cpp` pins the
+// drain-burst case and `test_liveness_watchdog.cpp` sweeps it at both venues'
+// cadences, which is what would have caught the original number.
 //
 // The ceiling is the more important of the two, and it is what stops a SUSTAINED
 // SLOWDOWN from disabling the detector: as the median grows the threshold grows,
@@ -94,7 +114,7 @@ inline constexpr double kThresholdMultiple = 4.0;
 // has observed — Anvil's 176,000 ms silence of 2026-08-16 (A2b) — which it
 // catches at 30 s rather than never, and against MINA/GBP's healthy 25,843 ms
 // BOOK silence, which it does not touch because the heartbeat never stopped.
-inline constexpr double kThresholdFloorMs = 1000.0;
+inline constexpr double kThresholdFloorMs = 2000.0;
 inline constexpr double kThresholdCeilingMs = 30000.0;
 
 // The generous default used until the window has `kMinSamples` intervals.
@@ -138,6 +158,7 @@ public:
     void on_liveness(std::int64_t rx_ns) noexcept {
         if (have_prev_) {
             intervals_.push(static_cast<double>(rx_ns - prev_ns_) / 1e6);
+            threshold_ms_ = compute_threshold_ms();
         }
         prev_ns_ = rx_ns;
         have_prev_ = true;
@@ -157,7 +178,30 @@ public:
     }
 
     // The staleness threshold this venue currently warrants.
-    double threshold_ms() const noexcept {
+    //
+    // O(1), AND THE CACHE IS WHAT MAKES THE TARGET AFFORD IT. The value is a
+    // pure function of `intervals_`, and `intervals_` changes in exactly one
+    // place — `on_liveness` — so recomputing it there and returning the stored
+    // number here is exactly equal to computing it on demand, for every possible
+    // history. That equality is not an argument, it is `liveness clock: the
+    // cached threshold equals the recomputed one at every step` in
+    // test_liveness_watchdog.cpp, swept over a randomised walk.
+    //
+    // The reason it matters is the firmware. `median_ms()` copies the ring onto
+    // the stack and `std::sort`s 32 doubles; the feed task recomputes its queue
+    // deadline on EVERY wake, which is per received message (~13/s at Anvil,
+    // more in a burst) and again on every watchdog expiry. On a part with no
+    // double-precision FPU that is a soft-float sort in the feed loop, for a
+    // number that can only have changed on a liveness arrival (~2/s at Anvil,
+    // 1/s at Kraken). The host driver queries it just as often and the saving is
+    // real there too; it is simply not the reason.
+    double threshold_ms() const noexcept { return threshold_ms_; }
+
+private:
+    // The uncached form, called only from `on_liveness`. Kept as its own
+    // function so the test above has something to compare the cache against —
+    // a cache checked against itself checks nothing.
+    double compute_threshold_ms() const noexcept {
         if (!calibrated()) { return kUncalibratedThresholdMs; }
         const double t = kThresholdMultiple * median_ms();
         return t < kThresholdFloorMs   ? kThresholdFloorMs
@@ -165,10 +209,13 @@ public:
                                        : t;
     }
 
-private:
     SampleRing<double, kWindowSamples> intervals_;
     std::int64_t prev_ns_ = 0;
     bool have_prev_ = false;
+    // Starts at the uncalibrated default, which is what `compute_threshold_ms()`
+    // returns for an empty window — so the cache is correct before the first
+    // arrival as well as after it.
+    double threshold_ms_ = kUncalibratedThresholdMs;
 };
 
-}  // namespace dc::harness
+}  // namespace depthcharge

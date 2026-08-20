@@ -18,11 +18,12 @@
 
 #include <depthcharge/decimal.hpp>
 
-#include "dc_harness/age_estimator.hpp"
+#include <depthcharge/age_estimator.hpp>
 
 namespace dc::harness {
 namespace {
 
+using depthcharge::AgeText;
 using depthcharge::BookLevel;
 using depthcharge::DisplaySnapshot;
 using depthcharge::GapReason;

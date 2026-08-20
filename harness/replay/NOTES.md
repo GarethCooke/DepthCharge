@@ -383,7 +383,7 @@ it all arrived, late.
 
 ## M4 stage A2 addendum (2026-08-17) — what the age meter reads on these files, and the one it cannot read
 
-The estimator is `dc_harness/age_estimator.hpp`; the definition it computes is **queuing
+The estimator is `depthcharge/age_estimator.hpp` (it moved out of `dc_harness/` at M4 stage D, when the firmware began linking it); the definition it computes is **queuing
 lag**, not time since the last frame and not time since the book last changed.
 
 ### The healthy floor is one interval, and the M1 trace's 0.9 s is real

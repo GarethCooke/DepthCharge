@@ -3,10 +3,12 @@
 
 #include <string>
 
-#include "dc_harness/liveness_clock.hpp"
+#include <depthcharge/liveness_clock.hpp>
 #include "dc_harness/venue.hpp"
 
 namespace dc::harness {
+
+using depthcharge::kThresholdMultiple;
 
 void print_trace_findings(std::FILE* out, const TraceStats& s, const char* indent) {
     const VenueTraits& t = venue_traits(s.meta.venue);
@@ -47,7 +49,7 @@ void print_trace_findings(std::FILE* out, const TraceStats& s, const char* inden
     // measures. Two quantities that differ by orders of magnitude were sharing a
     // name in the report a reader checks the watchdog against. This row is
     // market information; the age is computed from the LIVENESS row above and
-    // lives on `DisplaySnapshot` (dc_harness/age_estimator.hpp).
+    // lives on `DisplaySnapshot` (depthcharge/age_estimator.hpp).
     std::fprintf(out, "%sLIVENESS    : %zu x %.*s   median %.1f ms   worst %.1f ms\n",
                  indent, s.liveness_events,
                  static_cast<int>(t.liveness_signal.size()), t.liveness_signal.data(),

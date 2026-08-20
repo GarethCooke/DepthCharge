@@ -30,6 +30,10 @@ namespace {
 
 using nlohmann::json;
 
+// The grey threshold's clock moved into `engine/` at M4 stage D so the firmware
+// and this statistics pass score the same silences with the same code.
+using depthcharge::LivenessClock;
+
 // --- metadata ----------------------------------------------------------------
 
 // Take one optional metadata field, reporting whether it was present. Six

@@ -23,7 +23,7 @@
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/feed_event.hpp>
 
-#include "dc_harness/age_estimator.hpp"
+#include <depthcharge/age_estimator.hpp>
 #include "dc_harness/console_ladder.hpp"
 #include "dc_harness/replay_driver.hpp"
 #include "dc_harness/trace.hpp"
@@ -511,7 +511,7 @@ TEST_CASE("age meter: the reconnect trace peaks at the outage and dies with the 
     REQUIRE(after_gap > 0);
     // At least the new connection's whole baseline window: the meter says
     // nothing until it has measured this socket's clock for itself.
-    CHECK(unknown_after_gap >= dc::harness::kBaselineSamples);
+    CHECK(unknown_after_gap >= depthcharge::kBaselineSamples);
 
     // By the end of the trace the new connection has re-measured the venue's
     // clock for itself and the meter is back on the floor.

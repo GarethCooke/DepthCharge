@@ -37,7 +37,7 @@
 #include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/window.hpp>
 
-#include "dc_harness/age_estimator.hpp"
+#include <depthcharge/age_estimator.hpp>
 #include "dc_harness/console_ladder.hpp"
 #include "dc_harness/replay_driver.hpp"
 #include "dc_harness/trace.hpp"
@@ -336,8 +336,8 @@ void print_report(const Args& args, const ReplayResult& r) {
     // a panel that is NOT greying has fallen. Both numbers are printed with the
     // median they derive from, because every age here is `elapsed - n x median`
     // and a reader who cannot see the median cannot check the arithmetic.
-    const dc::harness::AgeText worst_age(r.worst_age_ms);
-    const dc::harness::AgeText final_age(r.final_snapshot.age_ms);
+    const depthcharge::AgeText worst_age(r.worst_age_ms);
+    const depthcharge::AgeText final_age(r.final_snapshot.age_ms);
     const std::string_view signal = dc::harness::venue_traits(r.meta.venue).liveness_signal;
     print_window(r);
     std::printf("age       : worst %s   at end %s   (queuing lag, never a grey signal)\n",

@@ -23,16 +23,16 @@
 #include <string>
 #include <vector>
 
-#include "dc_harness/age_estimator.hpp"
-#include "dc_harness/liveness_clock.hpp"
+#include <depthcharge/age_estimator.hpp>
+#include <depthcharge/liveness_clock.hpp>
 
-using dc::harness::AgeEstimator;
-using dc::harness::AgeReading;
-using dc::harness::AgeText;
-using dc::harness::kAgeWindowSamples;
-using dc::harness::kBaselineSamples;
-using dc::harness::kMinSamples;
-using dc::harness::LivenessClock;
+using depthcharge::AgeEstimator;
+using depthcharge::AgeReading;
+using depthcharge::AgeText;
+using depthcharge::kAgeWindowSamples;
+using depthcharge::kBaselineSamples;
+using depthcharge::kMinSamples;
+using depthcharge::LivenessClock;
 
 namespace {
 

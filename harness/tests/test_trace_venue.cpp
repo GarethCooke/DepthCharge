@@ -26,13 +26,16 @@
 #include <string>
 #include <type_traits>
 
-#include "dc_harness/liveness_clock.hpp"
+#include <depthcharge/liveness_clock.hpp>
 #include "dc_harness/replay_driver.hpp"
 #include "dc_harness/trace.hpp"
 #include "dc_harness/trace_decoder.hpp"
 #include "dc_harness/venue.hpp"
 
 using namespace dc::harness;
+// The grey threshold's clock lives in `engine/` since M4 stage D, so the
+// firmware and the harness score a silence with one implementation.
+using namespace depthcharge;
 
 namespace {
 

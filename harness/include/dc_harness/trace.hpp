@@ -31,7 +31,7 @@
 #include <string>
 #include <string_view>
 
-#include "dc_harness/liveness_clock.hpp"
+#include <depthcharge/liveness_clock.hpp>
 #include "dc_harness/venue.hpp"
 
 namespace dc::harness {

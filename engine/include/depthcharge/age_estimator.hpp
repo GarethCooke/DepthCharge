@@ -1,4 +1,4 @@
-// dc_harness/age_estimator.hpp — how far behind the venue is the book on screen?
+// depthcharge/age_estimator.hpp — how far behind the venue is the book on screen?
 //
 // M4 stage A2. The companion to liveness_clock.hpp and the other half of the
 // 2026-08-17 ruling: that ruling took book silence away from the STALENESS clock
@@ -212,13 +212,17 @@
 // ============================================================================
 //
 // ESP-IDF-free and allocation-free, like liveness_clock.hpp beside it and for
-// the same reason: this is the half stage B lifts into `firmware/`, where it
-// **supersedes `firmware/src/staleness.hpp`** — that file's cumulative estimator
-// and its hardcoded `kSummaryPeriodUs = 500000` are both things the ruling
-// forbids (the interval is operator configuration DepthCharge cannot read back).
-// Until stage B does that swap, the host and the target compute the book's age
-// two different ways, which is a divergence recorded in DESIGN §08 rather than
-// left to be discovered on a bench evening.
+// the same reason: at M4 stage D (2026-08-20) this moved into `engine/` and the
+// firmware links it, **deleting `firmware/src/staleness.hpp` outright** — that
+// file's cumulative estimator and its hardcoded `kSummaryPeriodUs = 500000` were
+// both things the ruling forbids (the interval is operator configuration
+// DepthCharge cannot read back). Until that deletion the host and the target
+// computed the book's age two different ways, agreeing only because Anvil's
+// broadcast interval happened to be the hardcoded 500 ms — the coincidence class
+// (ARCHITECTURE §9, 2026-08-18), and a divergence no host test could see. It is
+// closed by deletion, which was always the only way it could close (DESIGN §08
+// strain 23). Every reference to `staleness.hpp` below is to that deleted file
+// and is kept because the contrast is why this arithmetic has the shape it has.
 #pragma once
 
 #include <algorithm>
@@ -228,10 +232,10 @@
 #include <cstdio>
 #include <limits>
 
-#include "dc_harness/liveness_clock.hpp"
-#include "dc_harness/sample_window.hpp"
+#include <depthcharge/liveness_clock.hpp>
+#include <depthcharge/sample_window.hpp>
 
-namespace dc::harness {
+namespace depthcharge {
 
 // The window, in liveness arrivals. See ITS CEILING above for what the number
 // buys; 256 x 8 B = 2 KiB, which is the whole reason it is not larger.
@@ -307,6 +311,20 @@ struct AgeText {
     // The absent reading, spelled once so every caller spells it the same way.
     static AgeText unknown() noexcept { return AgeText{}; }
 
+    // AND THE TERNARY THAT CHOOSES BETWEEN THEM, ALSO SPELLED ONCE. Added at
+    // M4 stage D after review found `r.valid ? AgeText(r.ms) : AgeText::unknown()`
+    // written out at four call sites, one of which had already drifted to a
+    // hand-written "-". The failure mode of a fifth caller forgetting the
+    // ternary is not a crash: it is `0.0s` printed for a connection that has no
+    // reading yet, which is the one reassuring answer the two-state design
+    // exists to withhold.
+    static AgeText from(const AgeReading& r) noexcept {
+        return r.valid ? AgeText(r.ms) : unknown();
+    }
+    static AgeText from(bool valid, std::uint32_t ms) noexcept {
+        return valid ? AgeText(ms) : unknown();
+    }
+
 private:
     AgeText() noexcept { buf[0] = '-'; buf[1] = '\0'; }
 };
@@ -355,9 +373,43 @@ public:
         baseline_ms_ = 0.0;
     }
 
+    // THE SOCKET DID NOT DIE — IT WENT QUIET AND CAME BACK, and that is a
+    // different event which must NOT discard the baseline. Added at M4 stage D
+    // after review.
+    //
+    // The distinction is the one this file already argues at length under THE
+    // BLIND SPOT: a baseline is only measurable on a connection whose
+    // server-side queue is EMPTY, which is true exactly once, at connect. A
+    // watchdog firing on a live socket is not that moment. Re-latching there
+    // measures the DRAIN, not the cadence — and the drain is a burst.
+    //
+    // Worked through, because the failure is silent and permanent: Anvil queues
+    // and never drops per socket, so a 40 s stall accumulates ~80 `summary`
+    // frames that flush in ~200 ms on recovery, i.e. ~2.5 ms apart. A baseline
+    // re-latched from those reads ~2.5 ms instead of 500 ms, and every age
+    // afterwards is `elapsed - n x 2.5 ms` — which on a perfectly healthy feed
+    // accrues 99.5% of wall-clock as phantom lag, for the life of the
+    // connection. The panel would read minutes behind while being current.
+    //
+    // So this banks the peak and voids the current READING — the arrivals are
+    // cleared because the estimator genuinely cannot say whether the frames it
+    // missed were queued or never sent — and leaves the baseline alone, because
+    // the venue's cadence has not changed and this connection already measured
+    // it at the only moment it could.
+    void on_stall(std::int64_t at_ns) noexcept {
+        bank(read(at_ns));
+        arrivals_.clear();
+    }
+
     // The current estimate. Const: a reader can ask without moving anything.
     AgeReading read(std::int64_t now_ns) const noexcept {
         if (baseline_ms_ <= 0.0) { return AgeReading{}; }
+        // AN EMPTY WINDOW IS "NO READING", NOT ZERO. Reachable only through
+        // `on_stall`, which keeps the baseline and drops the arrivals: the sup
+        // below would then run over nothing and return the clamp, claiming the
+        // book is current at the exact instant the watchdog greyed the panel.
+        // Same rule, same reason, as the pre-baseline case one line up.
+        if (arrivals_.size() == 0) { return AgeReading{}; }
 
         // The sup over every suffix of the window. The i = now suffix scores
         // zero and is the clamp, so `best` starts there and the answer is never
@@ -425,4 +477,4 @@ private:
     std::uint32_t worst_ms_ = 0;
 };
 
-}  // namespace dc::harness
+}  // namespace depthcharge
