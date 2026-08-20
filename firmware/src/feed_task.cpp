@@ -201,7 +201,16 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // counts as missing, inflating the lag — cross-check `-- errors parse=`,
     // which is why both lines are in the same block.
     if (venue::liveness_count(adapter_) != liveness_before) {
-        watchdog_.on_liveness(ns_from_us(now));
+        // The mute is the bench's only way to stage a stopped heartbeat over a
+        // live socket; it is compiled out of every shipping build. See
+        // liveness_watchdog.hpp.
+        if (!test_liveness_muted(now)) {
+            watchdog_.on_liveness(ns_from_us(now));
+        }
+        // Nothing is counted on the muted branch: `DC_SOAK_TEST_TAG` names the
+        // mute uptime on every SOAK line, and `up=` on that same line says
+        // whether it has passed. A counter would be a second way to say it, and
+        // one of the two would eventually be the one nobody printed.
     }
 
     // AND THE HEALING PATH (A2), PUBLISHED AS A LEVEL RATHER THAN AN EDGE.

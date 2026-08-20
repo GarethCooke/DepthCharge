@@ -666,7 +666,7 @@ logging, not for this one.
 | --- | --- |
 | holds colour through 26 s of book silence | **PASSED** — 150,179 ms with `upd` frozen, `live=1`, `grey_n` and `grey_ms` unmoved, `wd=0` (A5 log, t=290,266 → 440,445 ms) |
 | a CRC failure heals rather than greying permanently | **PASSED** — 13/13 healed over 2 h 19 m, `refused=0` |
-| greys within the calibrated threshold of the heartbeat stopping | **NOT YET** — the watchdog has fired twice on this board but never with capture attached, and an interface-level block cannot produce it because the socket dies first (measured: the panel greyed within about a second of the station reporting disassociation, well inside the 4,006 ms threshold). Needs a packet-DROP rule. |
+| greys within the calibrated threshold of the heartbeat stopping | **PASSED** — staged in firmware (`DC_TEST_MUTE_LIVENESS`) after both network-side methods were eliminated. `wd` 0->1 with `sock=0 connects=1`: the watchdog fired, over a socket that never dropped. |
 
 ---
 
@@ -711,3 +711,128 @@ yesterday's two-clock correction.
 **Also still true at 4 h 17 m on one flash**: `crc_fail=18 heals=18 refused=0`, heap 61,124 B
 (12 bytes below the 31-minute reading), `connects=7` — every one of those a deliberate
 interference, none spontaneous.
+
+---
+
+### 2026-08-20 (evening, third attempt) · Opus 5 (1M) · **B1 clause 3 CLOSED — and the run demonstrated the review's central fix on hardware**
+
+The bench could not produce a stopped heartbeat over a live socket: disabling the interface
+and the mesh's per-client pause **both deauthenticate**, measured twice, `sock` incrementing
+and `wd` not. So the condition was staged in firmware instead — `DC_TEST_MUTE_LIVENESS=90`,
+passed for one run through `PLATFORMIO_BUILD_FLAGS` and present in no `platformio.ini`
+environment — which suppresses exactly one call, `watchdog_.on_liveness()`, after a stated
+uptime. Everything else runs untouched.
+
+**The heartbeats never stopped arriving**, and that is what makes this a test of the watchdog
+rather than of a dead feed: `-- adapter beat=` climbed 77 → 87 → 96 → … → 177, a clean ~10 per
+10 s straight through the mute and to the end of the run. The socket, the reads, the book and
+the checksum all carried on (`crc seen=43 ok=43 FAIL=0`). Only the watchdog's *input* was
+staged. **It stages the input, not the network condition** — a genuine half-open TCP state is
+still unexercised, and the transport's behaviour in one remains unknown.
+
+#### The discriminator, which no previous attempt reached
+
+| | before | after |
+| --- | --- | --- |
+| `wd` (liveness watchdog firings) | 0 | **1** |
+| `sock` (transport reported the socket down) | 0 | **0** |
+| `connects` | 1 | **1** |
+
+**The liveness threshold raised the grey, over a socket that never dropped.** That is the
+clause, and it is the first time this board has produced it with capture attached.
+
+#### The timing, stated as tightly as the log actually supports
+
+```
+I (90481)  -- adapter: in=94 out=15 snap=1 upd=14 beat=77 ack=1/0
+I (90511)  SOAK up=90s live=1 wd=0 sock=0 connects=1        <- mute engages here
+I (90657)  -- age : 0.0s | baseline 1003 ms | heartbeat median 1000 ms, grey at 3998 ms
+I (92503)  v67  LIVE
+W (93460)  *** STALE (disconnect) at v68 — panel greys here ***
+I (96958)  *** LIVE at v72 ***   grey for 3497 ms before resync
+```
+
+Clock skew at this point in the run is **+511 ms** (RTOS prefix minus `esp_timer`, measured
+off consecutive SOAK lines), so the grey landed at `esp_timer` ≈ **92,949 ms**, i.e. **2.9 s
+after the mute engaged**, against a calibrated threshold of **3,998 ms**. Those reconcile
+because the last heartbeat the watchdog was *told about* arrived up to a second before the
+mute point — arrivals here run ~1 s apart with a measured worst of 1,056 ms. **The log does
+not pin it tighter than "the observed silence at greying was between 2.9 s and 4.0 s", because
+individual heartbeat arrivals are not timestamped in the output.** Stated that way rather than
+as a single number: the last two timing claims in this session were both wrong from arithmetic
+across these two clocks, and the fix is to say what the log supports.
+
+Either way the clause is met — the panel greyed **within** the calibrated threshold, not after
+it, and not on some other path.
+
+#### FINDING 1 — the review's critical finding, demonstrated on silicon
+
+The panel came back **on its own, 3,497 ms later, over the same socket**, with the heartbeat
+still muted for ever: watchdog fires → `Gap{Disconnect}` → book dropped → `!has_baseline()`
+→ the resync **level** is true → unsubscribe/subscribe → fresh snapshot → LIVE at v72.
+
+**This is loss path #4 from the adversarial review** — *the liveness watchdog firing over a
+live socket* — and it is the one that had no other way of being reached. Under the
+edge-triggered design written first, the book being dropped clears the baseline that
+`verify_checksum` needs in order to latch, so nothing would have re-raised the request and
+**the panel would have stayed grey over a healthy heartbeating socket until a power cycle**.
+Instead: 3,497 ms. A5 exercised the level via three CRC failures; this run exercised it via
+the watchdog, which is the path A5 could not produce.
+
+#### FINDING 2 — NEW, and not fixed: the watchdog fires exactly once
+
+`armed_ = true` is set in **`on_liveness` and nowhere else** (`liveness_watchdog.hpp:154`);
+`note_fired` clears it. So a liveness signal that never returns re-arms nothing. The run shows
+it plainly: after the heal, `up=100s` through `up=190s` all read `live=1` with `wd` frozen at
+1 and **not one liveness arrival in those 93 seconds**.
+
+That is defensible as far as it goes — the heal fetched a fresh snapshot, so the book on the
+panel is genuinely current, and `note_fired`'s comment is right that one outage should be one
+Gap. **The hole is what happens next**: with the watchdog disarmed and the book-event watchdog
+correctly deleted in A1, a feed whose heartbeat is permanently dead **and whose book then
+froze** would render LIVE indefinitely. Narrow — it needs permanent liveness loss, a
+successful heal, and then silence — but it is precisely the *frozen ladder that looks live*
+the 2026-08-17 ruling exists to prevent, so it is written down rather than filed as a quirk.
+
+**Not fixed here.** Re-arming on anything other than a liveness arrival is a decision about
+what counts as liveness, which is what the 2026-08-17 ruling governs and what this brief
+freezes (§4/§5). It belongs to **B2**.
+
+#### A defect in the test flag itself, found by using it
+
+The image announced itself **only at boot**. Every capture this project takes is attached
+*without* resetting the board — that is what `capture_noreset.py` is for, since resetting to
+attach destroys the uptime the log is about — so a mid-run attach could not have told a test
+image from a shipping one. The `liveness_muted_at_s` counter meant to cover that was
+incremented and **never printed**: write-only state, which is the same defect wearing a
+different hat.
+
+Replaced with `DC_SOAK_TEST_TAG`, a preprocessor-chosen string literal appended to the SOAK
+line, so **any ten-second window of output identifies the image** and the shipping build does
+not contain the string at all rather than merely declining to print it. Verified two ways:
+`static_assert(sizeof(DC_SOAK_TEST_TAG) == 1)` in the gated host suite, and a grep of the
+built `firmware.bin` for `TEST IMAGE` — **absent**. The write-only counter was deleted rather
+than printed: two ways of saying the same thing, and one of them would have been the one
+nobody printed.
+
+#### Evidence
+
+* Host **33/33 ctest**, 369 cases / 895,796 assertions, with the new `static_assert`.
+* Shipping `depthcharge-kraken`: **883,657 B flash / 154,864 B RAM — byte-identical to the A5
+  baseline.** The tag costs nothing when off. (The on-disk `.bin` is 884,016 B; that is the
+  padded image and a different measure — checked rather than assumed after the two numbers
+  disagreed.)
+* Test image: 883,897 B, +240 B, all of it the banner.
+* **The board has been reflashed with the clean shipping image and confirmed running it**: no
+  boot banner, no tag on any SOAK line, `live=1 connects=1 crc_rows=20 (40.0%)`.
+
+#### Where B1 stands
+
+**All three clauses closed.** Colour held through a 160,373 ms book silence (A5); 18/18 CRC
+failures healed with `refused=0` over 4 h 17 m; and the panel now greys on the liveness
+threshold with the socket demonstrably up.
+
+#### Exact next step
+
+**B2's three decisions** — the owner's alone, and now with Finding 2 on the table as input to
+the third. Then B3's soak, then B4's M3 residues. Nothing is pushed.

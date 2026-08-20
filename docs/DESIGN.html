@@ -2155,9 +2155,12 @@ classDiagram
       <code>-Werror -fno-exceptions -fno-rtti</code> on every host configure, so
       &ldquo;the target can build them&rdquo; is a build product and not a claim (19 xtensa
       objects now, was 16); and the firmware links them, which is the fact that makes a second
-      implementation impossible rather than merely absent. <b>The grey TRANSITION remains a
-      bench observation and Part B owns it</b> — what closed here is the divergence, not the
-      behaviour.
+      implementation impossible rather than merely absent. <b>The grey TRANSITION is now observed
+      too</b>: on 2026-08-20 the liveness threshold raised the grey with <code>wd</code> 0&rarr;1
+      and <code>sock=0 connects=1</code> &mdash; over a socket that never dropped &mdash; staged
+      with <code>DC_TEST_MUTE_LIVENESS</code> after both network-side methods were eliminated
+      (interface-disable and the mesh's per-client pause <b>both deauthenticate</b>, measured
+      twice).
       <br><br>
       <b>The cost, measured rather than assumed, because the card would have wanted it.</b>
       Both lifted clocks are <code>double</code> throughout, and <code>engine/</code> had no
@@ -3201,6 +3204,43 @@ classDiagram
   </div>
 
   <div class="strain">
+    <h4>26 &middot; The liveness watchdog fires exactly once, because only an arrival re-arms it</h4>
+    <p>
+      Opened 2026-08-20 (M4 stage D, B1 clause 3), and found by the run that closed the clause
+      rather than by reading the code. <code>LivenessWatchdog::armed_</code> is set
+      <b>in <code>on_liveness</code> and nowhere else</b>
+      (<code>firmware/src/liveness_watchdog.hpp:154</code>); <code>note_fired</code> clears it and
+      <code>on_socket_change</code> clears it. So a liveness signal that stops and never returns
+      arms nothing again.
+    </p>
+    <p>
+      <b>The measurement.</b> With heartbeats muted permanently at 90 s uptime, the watchdog fired
+      once at ~92.9 s, the resync level healed the book over the same socket, and the panel then
+      read <code>live=1</code> with <code>wd</code> frozen at 1 for the remaining 93 seconds
+      &mdash; <b>with not one liveness arrival in that time</b>, and with the book genuinely
+      updating and verifying (<code>crc seen=43 ok=43 FAIL=0</code>).
+    </p>
+    <p>
+      <b>Why it is defensible as far as it goes.</b> The heal fetched a fresh snapshot, so what is
+      on the panel is current; and <code>note_fired</code>'s comment is right that one outage
+      should be one Gap rather than one a second for as long as the venue is quiet.
+      <b>The hole is what happens next.</b> With the watchdog disarmed and the book-event watchdog
+      deleted in A1 &mdash; correctly, and with 183 healthy book silences over a second to justify
+      it &mdash; a feed whose heartbeat is permanently dead <b>and whose book then froze</b> would
+      render LIVE indefinitely. Nothing would catch it. That is narrow: it needs permanent liveness
+      loss, a successful heal, and then silence. It is also precisely the <i>frozen ladder that
+      looks live</i> that the 2026-08-17 staleness ruling exists to prevent, which is why it is a
+      strain card and not a footnote.
+    </p>
+    <p>
+      <b>Deliberately not fixed in stage D.</b> Re-arming on anything other than a liveness arrival
+      &mdash; a snapshot, a book event, a successful heal &mdash; is a decision about
+      <i>what counts as liveness</i>, and that is exactly what the 2026-08-17 ruling governs and
+      what stage D's brief freezes. It is <b>B2's</b>, with the measurement above as its input.
+    </p>
+  </div>
+
+  <div class="strain">
     <h4>22 · One reader, two venues — and the pressure is on the traces, not on the reader</h4>
     <p>
       Opened 2026-08-17 (M4 stage A). <code>TraceReader</code> now validates an envelope and
@@ -3408,8 +3448,14 @@ classDiagram
   <code>connects=1 sock=0</code>; the checksum ledger closed at <code>seen=597 ok=564 FAIL=3
   unverifiable=30 unchecksummed=0</code>; heap was flat at 61,136 B across all 185 soak lines; and
   the calibrated threshold settled at <b>4,006 ms</b> from a measured 1,001 ms heartbeat median.
-  <b>The clause still un-observed is the grey TRANSITION</b> — cutting the connection and timing
-  it — and no soak has been run. <b>Part B is the bench evening that watches those.</b><br>
+  <b>B1's three clauses are now all closed</b>: colour held through a 160,373 ms book silence,
+  18/18 CRC failures healed over 4 h 17 m, and the grey TRANSITION was observed on 2026-08-20
+  with <code>wd</code> 0&rarr;1 and the socket demonstrably up. That run also <b>demonstrated the
+  review's critical finding on silicon</b> &mdash; the watchdog firing over a live socket, loss
+  path #4, recovered by the resync LEVEL in 3,497 ms where the edge design would have stayed grey
+  until a power cycle &mdash; and opened a new one: <b>the watchdog re-arms only on a liveness
+  arrival</b>, so a permanently dead heartbeat fires it exactly once. <b>No soak has been run;
+  B2's decisions and B3's soak are what remain.</b><br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
   last work order: <code>docs/briefs/M4-stage-D-the-bench.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in

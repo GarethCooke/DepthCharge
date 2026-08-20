@@ -62,6 +62,69 @@ namespace depthcharge::fw {
 // The one conversion, spelled once. See the header comment.
 constexpr std::int64_t ns_from_us(std::int64_t us) noexcept { return us * 1000; }
 
+// ---------------------------------------------------------------------------
+// THE ONE THING NO ROUTER ON THIS DESK CAN STAGE
+// ---------------------------------------------------------------------------
+//
+// M4's definition of done requires the panel to grey within the calibrated
+// liveness threshold **of the heartbeat stopping**. Staging that needs the
+// venue's clock to fall silent while the SOCKET STAYS UP — the half-open case
+// this watchdog exists for — and on 2026-08-20 two attempts established that
+// the bench cannot produce it from the network side:
+//
+//   * disabling the interface kills the TLS read, so `on_disconnected()` raises
+//     the Gap within about a second and the threshold never runs;
+//   * the mesh's own per-client "pause" DEAUTHENTICATES rather than dropping
+//     packets, and does exactly the same thing.
+//
+// Both were measured: `sock` incremented and `wd` did not. So the condition is
+// staged HERE instead, by muting the feed task's liveness arrivals after a
+// stated uptime while everything else — the socket, the reads, the book, the
+// panel — carries on untouched. What that exercises is the real object, the
+// real calibrated threshold and the real queue-wait arithmetic on real silicon;
+// the only difference from the shipping image is one suppressed call.
+//
+// **IT IS OFF UNLESS ASKED FOR, AND IT ANNOUNCES ITSELF WHEN IT IS NOT.**
+// `DC_TEST_MUTE_LIVENESS` is undefined in every environment in
+// `platformio.ini` on purpose — a test-only flag that lives in a build
+// environment is a test-only flag somebody eventually ships. It is passed for
+// one run through `PLATFORMIO_BUILD_FLAGS`, which is this project's established
+// way of doing exactly that (see firmware/README.md), and `main.cpp` prints a
+// banner at boot so no capture taken from such an image can be mistaken for a
+// capture of the shipping one.
+//
+// A BOOT BANNER IS NOT ENOUGH, and the run of 2026-08-20 proved it: every
+// capture this project takes is attached WITHOUT resetting the board — that is
+// the whole point of `capture_noreset.py`, because resetting to attach destroys
+// the uptime the log is about. A marker that only prints at boot is therefore
+// invisible to exactly the captures that matter. `DC_SOAK_TEST_TAG` puts it on
+// every SOAK line instead, so any ten-second window of the output identifies the
+// image. It is a string LITERAL chosen by the preprocessor, so the shipping
+// binary does not merely skip printing it — it does not contain it.
+#ifndef DC_TEST_MUTE_LIVENESS
+#define DC_TEST_MUTE_LIVENESS 0
+#endif
+
+#define DC_STRINGIFY_(x) #x
+#define DC_STRINGIFY(x) DC_STRINGIFY_(x)
+
+#if DC_TEST_MUTE_LIVENESS
+#define DC_SOAK_TEST_TAG \
+    " *** TEST IMAGE: liveness MUTED after " DC_STRINGIFY(DC_TEST_MUTE_LIVENESS) " s — NOT SHIPPING ***"
+#else
+#define DC_SOAK_TEST_TAG ""
+#endif
+
+inline constexpr bool kTestMutesLiveness = (DC_TEST_MUTE_LIVENESS != 0);
+inline constexpr std::int64_t kTestMuteLivenessAfterUs =
+    static_cast<std::int64_t>(DC_TEST_MUTE_LIVENESS) * 1000 * 1000;
+
+// True once a muted build has passed its uptime and should stop feeding the
+// watchdog. Always false in a shipping image, at compile time.
+constexpr bool test_liveness_muted(std::int64_t uptime_us) noexcept {
+    return kTestMutesLiveness && uptime_us >= kTestMuteLivenessAfterUs;
+}
+
 // The two engine clocks, plus the single decision the firmware takes on them.
 //
 // ONE OBJECT AND NOT TWO MEMBERS, because the two clocks must see every arrival

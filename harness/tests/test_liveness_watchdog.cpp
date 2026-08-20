@@ -80,6 +80,37 @@ TEST_CASE("the one conversion is spelled once, and it is the one that would be f
     static_assert(ns_from_us(4'000'000) == 4'000'000'000LL, "4 s of us is 4 s of ns");
 }
 
+TEST_CASE("the liveness mute is OFF, and the check that says so runs in every build") {
+    // A test-only flag that lives in a build environment is a test-only flag
+    // somebody eventually ships. `DC_TEST_MUTE_LIVENESS` lives in no
+    // `platformio.ini` environment and is passed for one run through
+    // `PLATFORMIO_BUILD_FLAGS`; this is the assertion that the DEFAULT is off,
+    // compiled into the same suite the shipping build is gated on.
+    //
+    // It exists because the bench cannot stage a stopped heartbeat over a live
+    // socket from the network side: disabling the interface and pausing the
+    // client in the mesh app BOTH deauthenticate, so the socket dies first and
+    // the threshold never runs. Measured twice on 2026-08-20, `sock`
+    // incrementing and `wd` not.
+    using depthcharge::fw::kTestMutesLiveness;
+    using depthcharge::fw::test_liveness_muted;
+
+    static_assert(!kTestMutesLiveness,
+                  "DC_TEST_MUTE_LIVENESS must be off in any build this suite gates");
+    CHECK_FALSE(test_liveness_muted(0));
+    CHECK_FALSE(test_liveness_muted(1));
+    CHECK_FALSE(test_liveness_muted(86'400'000'000LL));   // a day of uptime
+
+    // And the SOAK line's marker is a preprocessor-chosen literal, so a shipping
+    // image does not contain the string at all rather than merely declining to
+    // print it. `sizeof` an empty literal is 1 — the NUL. If this ever fires,
+    // something has shipped a build that announces itself as a test image, which
+    // is the good failure; the bad one is the reverse and the static_assert above
+    // catches that.
+    static_assert(sizeof(DC_SOAK_TEST_TAG) == 1,
+                  "a shipping image must carry no test-image tag");
+}
+
 TEST_CASE("a board that has never heard the venue does not raise a Gap to say so") {
     // It is already Stale{Resync} — the book has never been told anything — and
     // a Gap there would be a second way of saying the same thing. Same rule the

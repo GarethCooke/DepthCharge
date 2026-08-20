@@ -119,6 +119,13 @@ void setup() {
         static_cast<int>(venue::kSubscribeDepth),
         static_cast<unsigned>(venue::kValidatedDepth));
 
+    // A TEST IMAGE MUST SAY SO, LOUDLY AND AT BOOT. Compiled out of every
+    // shipping build; see DC_TEST_MUTE_LIVENESS in liveness_watchdog.hpp.
+    if (kTestMutesLiveness) {
+        ESP_LOGW(kTag, "*** TEST IMAGE: liveness arrivals MUTED after %d s — NOT THE SHIPPING BUILD ***",
+                 static_cast<int>(kTestMuteLivenessAfterUs / 1000000));
+    }
+
     const HeapSample boot = sample_heap();
     ESP_LOGI(kTag, "heap at boot: free=%u largest=%u (internal)",
         static_cast<unsigned>(boot.free_internal),

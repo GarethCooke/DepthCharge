@@ -339,7 +339,7 @@ void RenderTask::print_soak(const FeedTask::Stats& f,
              " grey_n=%u grey_ms=%llu wd=%u sock=%u connects=%u"
              " rows=%u/%u unknown=%u crc_rows=%u (%u.%u%%)"
              " resync_req=%u heals=%u owed=%d refused=%u crc_fail=%llu"
-             " heap=%u largest=%u frames=%u drawn=%u",
+             " heap=%u largest=%u frames=%u drawn=%u" DC_SOAK_TEST_TAG,
              static_cast<int>(venue::kName.size()), venue::kName.data(),
              static_cast<unsigned long long>(now / 1000000),
              (have_seen_frame_ && last_status_ == FeedStatus::Live) ? 1 : 0,
