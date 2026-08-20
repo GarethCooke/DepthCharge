@@ -373,7 +373,7 @@
     <span class="status green">engine <b>M1 shipped</b></span>
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status green">M3 <b>done 2026-08-16 — live Anvil on the panel</b></span>
-    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0) · <b>stage A2 done 2026-08-17</b> — the age meter: <code>age_ms</code> on <code>DisplaySnapshot</code>, a sliding-window deficit against a baseline the connection measures for itself, rendered to minutes, and nothing branches on it (strain 17) · <b>stage B1 done 2026-08-18</b> — the second adapter links: decimal strings to integer ticks with no float in the path, the venue's book held and TRUNCATED in the adapter, evictions emitted as <code>Delta{qty=0}</code>, the phase-1 book taught to apply a delta (not the dense window — that is stage C), <code>run_replay</code>'s venue guard removed and the two defects it was hiding fixed, and decoder identity pinned in every Kraken golden with the dispatch mutation run and red (strain 3, strain 21)</b> · <b>stage B2 done 2026-08-18</b> — the healing path: the venue's CRC32 verified after every applied book message (<b>4,878 / 4,878</b> on the committed slices, from integer ticks, no wire text retained), a mismatch raising <code>Gap{ChecksumFail}</code> and dropping the book with a resubscribe latched for the transport, and the coverage of that check <em>stated</em> rather than inferred — it validates the top 10 levels a side and nothing below them. A resync slice captured deliberately (one connection, one unsubscribe/re-subscribe, a genuine mid-stream snapshot <b>byte-shape identical to the on-connect one</b>, so position is the only signal there is), which found a parser that read every <code>method</code> frame as a subscribe ack. And <b>Kraken QUEUES</b> — measured under a throttled socket, so <code>age_ms</code> at this venue is a lag and stands (strain 17) · <b>stage C done 2026-08-19</b> — the render window: three row policies behind one interface, compile-time selected on the board and runtime-selectable in the harness, with every §1 invariant property-tested across all three and three mutations run red. <b>The measurement reshaped the stage</b>: real books are sparse in price — one adjacent level pair in five is a single tick from its neighbour, and 25 levels span 182 ticks on BTC/USD and 6,613 on MINA/GBP — so a 27-row panel cannot be a price axis, and the two price-axis candidates were measured out of the set before being built. <b>And at the shipped depth of 25 into 27 rows all three policies are byte-identical</b>, so the choice only exists if the firmware subscribes deeper than it can draw (strain 24)</span>
+    <span class="status amber">next <b>M4 — Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0) · <b>stage A2 done 2026-08-17</b> — the age meter: <code>age_ms</code> on <code>DisplaySnapshot</code>, a sliding-window deficit against a baseline the connection measures for itself, rendered to minutes, and nothing branches on it (strain 17) · <b>stage B1 done 2026-08-18</b> — the second adapter links: decimal strings to integer ticks with no float in the path, the venue's book held and TRUNCATED in the adapter, evictions emitted as <code>Delta{qty=0}</code>, the phase-1 book taught to apply a delta (not the dense window — that is stage C), <code>run_replay</code>'s venue guard removed and the two defects it was hiding fixed, and decoder identity pinned in every Kraken golden with the dispatch mutation run and red (strain 3, strain 21)</b> · <b>stage B2 done 2026-08-18</b> — the healing path: the venue's CRC32 verified after every applied book message (<b>4,878 / 4,878</b> on the committed slices, from integer ticks, no wire text retained), a mismatch raising <code>Gap{ChecksumFail}</code> and dropping the book with a resubscribe latched for the transport, and the coverage of that check <em>stated</em> rather than inferred — it validates the top 10 levels a side and nothing below them. A resync slice captured deliberately (one connection, one unsubscribe/re-subscribe, a genuine mid-stream snapshot <b>byte-shape identical to the on-connect one</b>, so position is the only signal there is), which found a parser that read every <code>method</code> frame as a subscribe ack. And <b>Kraken QUEUES</b> — measured under a throttled socket, so <code>age_ms</code> at this venue is a lag and stands (strain 17) · <b>stage C done 2026-08-19</b> — the render window: three row policies behind one interface, compile-time selected on the board and runtime-selectable in the harness, with every §1 invariant property-tested across all three and three mutations run red. <b>The measurement reshaped the stage</b>: real books are sparse in price — one adjacent level pair in five is a single tick from its neighbour, and 25 levels span 182 ticks on BTC/USD and 6,613 on MINA/GBP — so a 27-row panel cannot be a price axis, and the two price-axis candidates were measured out of the set before being built. <b>And at the shipped depth of 25 into 27 rows all three policies are byte-identical</b>, so the choice only exists if the firmware subscribes deeper than it can draw (strain 24) · <b>stage D Part A done 2026-08-20</b> — the board that Part B benches: <code>staleness.hpp</code> and <code>kRxWatchdogMs</code> DELETED and the two clocks lifted into <code>engine/</code>, so host and target compute the book&rsquo;s age with one implementation and the panel greys on the venue&rsquo;s own liveness signal against a threshold that signal calibrates (~2 s at Anvil, ~4 s at Kraken) rather than on 1,000 ms of book silence — <b>strain 23 closed by deletion, which was always the only way it could close</b>; the firmware finally ACTS on <code>resync_wanted()</code>, so a CRC failure heals instead of greying for ever; one venue per build behind <code>DC_VENUE</code> with the Kraken image compiling, linking and pinned against the committed corpus byte for byte; and the age reaches the panel and a one-line-per-interval <code>SOAK</code> record reaches the serial log. The adversarial review found <b>three criticals, all one species</b>: a cross-task request that can be refused must be a LEVEL and not an edge, or four separate paths destroy it and the panel stays grey over a healthy heartbeating socket until a power cycle · <b>A5 ran — 1,860 s on MINA/GBP</b>, and it found the one defect no host test could: the upgrade header buffer was Anvil-sized at 512 B and Cloudflare's 101 is 1,002, so the first Kraken image never connected at all. Fixed and re-run: <b>the panel held colour through a 160,373 ms book silence</b> (criterion: 26 s) with <b>183 book silences over 1 s and zero watchdog firings</b> — the deleted 1,000 ms constant would have greyed it 183 times — and <b>three genuine CRC32 failures healed in 1.6–2.1 s each over a socket that never dropped</b>. Heap flat, threshold settled at 4,006 ms from a measured 1,001 ms heartbeat median. <b>What is still unproven is the grey TRANSITION — cutting the connection and timing it — and the soak. Both are Part B's</b></span>
     <span class="status">first-party C++ <b>~19,600 lines</b></span>
     <span class="status">drawn from source at <b>79c1867</b></span>
   </div>
@@ -1271,9 +1271,26 @@ sequenceDiagram
     </figcaption>
   </figure>
 
-  <h3>The firmware watches something slightly different, on purpose</h3>
+  <h3>The firmware watches something slightly different, on purpose
+      — <em>and since M4 stage D it watches something different again</em></h3>
+  <p class="verdict">
+    <b>&#9888; READ THIS SECTION AS HISTORY. Superseded 2026-08-20 (M4 stage D, A1).</b> The
+    board no longer arms on book events and no longer holds a 1,000&nbsp;ms constant:
+    <code>kRxWatchdogMs</code> is deleted and <code>firmware/src/liveness_watchdog.hpp</code>
+    arms on the venue&rsquo;s declared LIVENESS SIGNAL — Anvil&rsquo;s 2&nbsp;Hz
+    <code>summary</code>, Kraken&rsquo;s 1&nbsp;Hz <code>heartbeat</code> — against a threshold
+    calibrated from that signal&rsquo;s own rolling median (4&times;, floored at 1,000&nbsp;ms,
+    capped at 30,000). Orientation only, since nothing reads them: ~2,000&nbsp;ms at Anvil,
+    ~4,000 at Kraken. The reasoning below was right about frame ARRIVAL and wrong about book
+    events, and the 2026-08-17 ruling says so: <b>no threshold on book silence can be
+    correct</b>, because a quiet market and a dead subscription are identical on the wire.
+    MINA/GBP&rsquo;s healthy 25,843&nbsp;ms of book silence would have greyed this panel
+    twenty-five times. Book silence is now <code>age_ms</code>, rendered and never branched on.
+    The 640.2&nbsp;ms table below is still a true measurement of Anvil in 2026-07; it is simply
+    no longer the measurement that sizes anything.
+  </p>
   <p>
-    M3 stage C implements the same 1000 ms rule on the board — and then arms it from a
+    M3 stage C implemented the same 1000 ms rule on the board — and then arms it from a
     different event, which is the one place the two halves of this project deliberately
     disagree. The host driver fires on a hole in <code>rx_ns</code> between any two
     <em>frames</em>, which is exact for a trace file: in a capture every frame parses, so "a
@@ -1574,7 +1591,9 @@ classDiagram
         +requires_ticker : bool
         +requires_symbol : bool
         +frames_carry_type : bool
-        +stale_gap_ms : double
+        +liveness_signal : string_view
+        +legacy_book_threshold_ms : double
+        +validated_depth : uint32
     }
 
     class RecordClassifier {
@@ -1624,7 +1643,7 @@ classDiagram
     }
 
     class LivenessClock {
-        &lt;&lt;ESP-IDF-free — stage B lifts it&gt;&gt;
+        &lt;&lt;engine/ since M4 stage D — the firmware links it&gt;&gt;
         -intervals_ : SampleRing~double,32~
         +on_liveness(int64) void
         +median_ms() double
@@ -1632,7 +1651,7 @@ classDiagram
     }
 
     class AgeEstimator {
-        &lt;&lt;ESP-IDF-free — stage B lifts it&gt;&gt;
+        &lt;&lt;engine/ since M4 stage D — the firmware links it&gt;&gt;
         -arrivals_ : SampleRing~int64,256~
         -baseline_ms_ : double
         -worst_ms_ : uint32
@@ -1732,14 +1751,20 @@ classDiagram
     binary directory, so switching between them needs <code>build/host</code> cleared).
     Eleven ctest entries run; the main doctest binary carries <b>211 cases across sixteen
     files</b>, and a second doctest binary re-runs the parser-facing subset of them against the
-    other implementation of the parse seam. <b>Eight of those files test <em>firmware</em>
+    other implementation of the parse seam. <b>Ten of those files test <em>firmware</em>
     headers</b> — <code>frame_reassembler</code>, <code>gap_histogram</code>,
     <code>stall_probe</code>, <code>reject_log</code>, <code>ws_supervisor</code>,
     <code>ladder_render</code> (with <code>ladder_font</code>), <code>panel_budget</code> and,
-    from stage E, <code>staleness</code> are all deliberately ESP-IDF-free so that the
-    reassembly, the bucketing, the stall verdict, the reject capture, the reconnect policy, the
-    64×64 geometry, the framebuffer arithmetic and the age estimate are ctest's problem rather
-    than the bench's. Every one of them is a header; no firmware <code>.cpp</code> is compiled
+    from M4 stage D, <code>liveness_watchdog</code>, <code>resync</code> and
+    <code>venue_build</code> are all deliberately ESP-IDF-free so that the reassembly, the
+    bucketing, the stall verdict, the reject capture, the reconnect policy, the 64×64 geometry,
+    the framebuffer arithmetic, <b>the decision to grey the panel</b> and <b>the checksum heal's
+    pacing</b> are ctest's problem rather than the bench's. (<code>staleness</code> was on this
+    list until stage D deleted it; the brief said of its replacement that "no host test can
+    check" the rewire, and that is true of the BEHAVIOUR — a panel greying four seconds after a
+    heartbeat stops — but not of the POLICY, which is arithmetic, and arithmetic is cheap to
+    test. What is left in <code>feed_task.cpp</code> afterwards is a queue timeout and a clock
+    read.) Every one of them is a header; no firmware <code>.cpp</code> is compiled
     on the host, so nothing in <code>firmware/</code> can quietly become a host dependency.
   </p>
 
@@ -1936,8 +1961,9 @@ classDiagram
 
   <p>
     Everything above describes code that works and is green. This section is the honest
-    counterweight: twelve places where the current shape is either unenforced, speculative,
-    or about to be tested by a milestone that does not exist yet. Each is stated with what
+    counterweight: the places where the current shape is either unenforced, speculative,
+    or about to be tested by a milestone that does not exist yet. There are twenty-six of
+    them; this line said &ldquo;twelve&rdquo; from M1 until 2026-08-20 because nobody counted. Each is stated with what
     would break it and what resolves it.
   </p>
 
@@ -2073,7 +2099,7 @@ classDiagram
   </div>
 
   <div class="strain">
-    <h4>21 · Two hand-rolled JSON scanners, sharing a grammar and not a line of code
+    <h4>25 · Two hand-rolled JSON scanners, sharing a grammar and not a line of code
         — <em>incurred at M4 stage B1</em></h4>
     <p>
       <code>anvil_frame_streaming.cpp</code> (984 lines) and
@@ -2109,10 +2135,45 @@ classDiagram
   </div>
 
   <div class="strain">
-    <h4>23 · Host and target compute the book&rsquo;s age by different code
-        — <em>latent since M4 stage A2; owner, expiry and tripwire assigned at B1;
-        RENUMBERED FROM 22 AT B2</em></h4>
+    <h4><s>23 · Host and target compute the book&rsquo;s age by different code</s>
+        — <em>CLOSED 2026-08-20 at M4 stage D, by deletion, which was always the only way it
+        could close</em></h4>
     <p class="verdict">
+      <b>Closed 2026-08-20 (M4 stage D, item A1).</b> The three headers moved into
+      <code>engine/include/depthcharge/</code> under namespace <code>depthcharge</code>;
+      <code>firmware/src/staleness.hpp</code> and <code>harness/tests/test_staleness.cpp</code>
+      were deleted whole, taking <code>StalenessEstimator</code>, <code>SecondsText</code>,
+      <code>kSummaryPeriodUs</code> and <code>drain_percent</code> with them. The firmware feed
+      task now calls the same <code>on_liveness()</code> the host replay driver calls, with the
+      same arrival, feeding the same two objects — <b>one implementation, reached by both
+      callers</b>, which is what the card said the only remedy was.
+      <br><br>
+      <b>What proves it, given that the card&rsquo;s own point was that no host test could
+      see the divergence.</b> Three things, none of them a test of the old claim: the goldens
+      are unchanged through the move, so the lift altered no arithmetic; the three headers are
+      now compiled by <code>dc_engine_target_check</code> under xtensa GCC 8.4 with
+      <code>-Werror -fno-exceptions -fno-rtti</code> on every host configure, so
+      &ldquo;the target can build them&rdquo; is a build product and not a claim (19 xtensa
+      objects now, was 16); and the firmware links them, which is the fact that makes a second
+      implementation impossible rather than merely absent. <b>The grey TRANSITION remains a
+      bench observation and Part B owns it</b> — what closed here is the divergence, not the
+      behaviour.
+      <br><br>
+      <b>The cost, measured rather than assumed, because the card would have wanted it.</b>
+      Both lifted clocks are <code>double</code> throughout, and <code>engine/</code> had no
+      floating point at all before this. Against the pre-change image:
+      <code>feed_task.cpp.o</code> grows <b>6,708 &rarr; 8,806 B</b> of <code>.text</code> and
+      now references eight soft-float helpers where it referenced none;
+      <code>render_task.cpp.o</code> grows <b>16,523 &rarr; 19,082 B</b>; the whole Anvil image
+      grows <b>877,053 &rarr; 880,885 B</b> of flash and <b>142,048 &rarr; 144,488 B</b> of RAM,
+      the RAM figure being almost exactly the 2,344 B of window the two clocks carry. The M3
+      streaming-parser acceptance recorded &ldquo;zero floating-point instructions in the
+      disassembly&rdquo; as a property of this firmware; <b>that property is now gone, on
+      purpose, and this is where it is written down.</b> The RUNTIME cost is not measured yet:
+      it lands in <code>worst_parse_us</code>, which the board already prints, so A5&rsquo;s run
+      produces the number rather than an argument about it.
+    </p>
+    <p>
       <b>This card was opened as &ldquo;22&rdquo; at stage B1 and there was already a card 22</b>
       &mdash; <em>One reader, two venues</em>, opened at stage A and carrying six inbound
       references from the stage-A briefs. Two live cards under one number in a document whose
@@ -2139,9 +2200,9 @@ classDiagram
       deletion</b>, which is what stage B1&rsquo;s Part B item 8 was for.
     </p>
     <p>
-      <b>Status: LATENT, not active.</b> Nothing on the target reads Kraken until D. The board
-      today runs Anvil, where the firmware estimator&rsquo;s hardcoded 500&nbsp;ms happens to be
-      the right constant — so the two agree by circumstance, which is the
+      <b>Status while it was open: LATENT, not active.</b> Nothing on the target read Kraken
+      until D. The board ran Anvil, where the firmware estimator&rsquo;s hardcoded 500&nbsp;ms
+      happened to be the right constant — so the two agreed by circumstance, which is the
       <a href="#ar">coincidence class</a> one level up (ARCHITECTURE §9, 2026-08-18) and exactly
       why it is written down rather than left to the next reader to notice.
     </p>
@@ -2161,9 +2222,11 @@ classDiagram
       nothing on the board says so. The circumstance that makes this latent is Anvil, and it
       expires with Anvil.
     </p>
-    <p class="verdict">Tripwire: <b>if anything before D proposes flashing a Kraken build, THIS
-      CLOSES FIRST</b> &mdash; the lift is not optional preparation for that flash, it is a
-      precondition of the panel&rsquo;s age field meaning anything</p>
+    <p class="verdict">Tripwire, and it fired exactly as written: <b>the Kraken build (A3) and
+      the lift (A1) landed in the same sitting, with the lift first</b> &mdash; A3 is the card&rsquo;s
+      own stated expiry, so a Kraken image flashed with <code>staleness.hpp</code> still in it
+      would have measured a 1&nbsp;Hz heartbeat against a constant that says 500&nbsp;ms and put
+      an age on the panel wrong by a factor of two, with nothing on the board saying so</p>
   </div>
 
   <div class="strain">
@@ -2330,7 +2393,40 @@ classDiagram
       weaker rule and the panel runs the stronger one, so the harness can no longer be said to
       preview the firmware exactly. The right end state is one rule in both places.
     </p>
-    <p class="verdict">Resolves: <b>M4 — move the host driver onto the event-armed rule. Golden-neutral on all three committed traces (the worst gap is identical whichever way it is counted: 640.2 ms at M0, 391 ms in 2026-08), but no longer neutral in general — a throttled stream separates the two rules 4× — so the M4 brief owns a throttled trace as well as a re-pin, and it is a change to golden-covered code that belongs in a brief, not in a firmware stage</b></p>
+    <p class="verdict">
+      <b>&#9888; THE RESOLUTION THIS CARD PRESCRIBED IS WITHDRAWN, and the card is not closed.</b>
+      Everything above was written before the staleness ruling of 2026-08-17 (ARCHITECTURE §9),
+      which says that <b>no threshold on book-event silence can be correct at any venue</b> — a
+      quiet market and a dead subscription are identical on the wire, and MINA/GBP&rsquo;s
+      healthy 25,843&nbsp;ms of book silence is a property of the market. &ldquo;Move the host
+      driver onto the event-armed rule&rdquo; would have propagated the wrong rule rather than
+      unified two, so it was NOT executed. This card should have been corrected at stage A and
+      was not; it is corrected here.
+      <br><br>
+      <b>What actually happened, 2026-08-20 (M4 stage D, A1).</b> The FIRMWARE moved off the
+      event-armed rule altogether: it now arms on the venue&rsquo;s declared liveness signal
+      against a threshold that signal calibrates
+      (<code>firmware/src/liveness_watchdog.hpp</code>, host-tested). Book-event silence is
+      still measured — <code>event_gaps</code>, <code>worst_gap_us</code> and the stall probe&rsquo;s
+      hole records all still use it — but nothing branches on it; it is the raw material of
+      <code>age_ms</code>. So the two definitions the card names are both gone, and what is
+      left is a THIRD divergence, smaller and stated:
+      <br><br>
+      <b>The host replay driver still arms on a hole between any two RECORDS</b>, judged
+      against the same calibrated threshold, because in a trace file a disconnect is
+      record-arrival silence and there is nothing else to detect it with. The firmware arms on
+      LIVENESS-signal silence. The two agree at both venues on every committed input (a
+      Kraken socket that stops heartbeating stops sending records; an Anvil one likewise), and
+      they separate only where records arrive that are not the liveness signal — a status-frame
+      flood, or a shape the parser rejects. <code>harness/src/trace.cpp</code>&rsquo;s statistics
+      pass already counts liveness-to-liveness firings separately, so the number to compare
+      exists. <b>Aligning the driver is not stage D&rsquo;s: it is a change to golden-covered code
+      and it belongs in a brief.</b>
+      <br><br>
+      Resolves: <b>M5 or a brief of its own — move the replay driver onto liveness-armed
+      silence, with the two firing counts diffed over the whole corpus first. NOT the
+      event-armed rule, which the ruling forbids.</b>
+    </p>
   </div>
 
   <div class="strain">
@@ -2999,12 +3095,14 @@ classDiagram
       here: an age computed against it reads <b>0.0 s through a 111 s backlog</b>.
     </p>
     <p>
-      <b>Two residues, both named rather than closed.</b> (1) <code>firmware/src/
+      <b>Two residues, both named rather than closed.</b> (1) <s><code>firmware/src/
       staleness.hpp</code> still runs the stage-E cumulative estimator with
       <code>kSummaryPeriodUs = 500000</code> in it, so until stage B lifts
       <code>age_estimator.hpp</code> across, <b>the host and the target compute the book's
-      age two different ways</b> — a divergence that is invisible in any host test by
-      construction, which is exactly why it is written here. (2) The estimator has a proved
+      age two different ways</b></s> — <b>CLOSED 2026-08-20 at M4 stage D: the file is deleted
+      and the firmware links the harness&rsquo;s estimator. See strain 23, and note that this was
+      a divergence invisible in any host test by construction, which is why it needed deleting
+      rather than testing.</b> (2) The estimator has a proved
       blind spot: a socket already behind when it latched cannot detect it, because
       <em>"the venue broadcasts at 2 Hz and I am two minutes behind"</em> and <em>"the venue
       broadcasts at 0.5 Hz and I am current"</em> are byte-identical on the wire. On the one
@@ -3031,9 +3129,9 @@ classDiagram
     <p class="verdict">Resolves: <b>the measurement landed at stage E1, the rendering and the
     §5 decision at M4 stage A2 — <code>age_ms</code> is on <code>DisplaySnapshot</code>,
     invariant #5 is untouched, and the panel can finally say <em>live, and ninety seconds
-    behind</em>. Still open, and both now have owners: stage B lifts the estimator into
-    <code>firmware/</code> and deletes the cumulative one (until then host and target disagree
-    by construction), and M6 owes the client ping, which is the only instrument that can see a
+    behind</em>. <b>Residue (1) closed 2026-08-20 (M4 stage D, A1): the estimator moved into
+    <code>engine/</code>, the firmware links it, and the cumulative one is deleted.</b> Still
+    open for residue (2): M6 owes the client ping, which is the only instrument that can see a
     socket that was behind from birth. Briefs: <code>docs/briefs/M3-stage-E-the-age-of-the-book.md</code>
     (the proposal), <code>docs/briefs/M4-stage-A2-the-age-meter.md</code> (what shipped); desk
     evidence in <code>hardware/bench-2026-08-11-feed-lag.md</code></b></p>
@@ -3086,8 +3184,23 @@ classDiagram
       <code>DisplaySnapshot</code> cannot currently express — <b>the same +8 bytes on the struct
       and +24 in the mailbox the price-axis window needs, priced in full at ROADMAP D6</b>. <b>The tripwire is the subscribed
       depth</b>: while it stays at or below 27 this card is dormant, because every level is
-      rendered and all three policies coincide.</p>
+      rendered and all three policies coincide.
+      <br><br>
+      <b>Updated 2026-08-20 (M4 stage D, A4): the board now reports its own number and the
+      card stays dormant.</b> <code>Book</code> is constructed with the venue&rsquo;s
+      <code>validated_depth</code> (Kraken 10, Anvil 0), so
+      <code>window::WindowStats::rows_validated</code> is a real count on the target, and the
+      <code>SOAK</code> line carries <code>crc_rows</code> beside <code>rows</code>. At the
+      shipped depth the answer is a CONSTANT — 25 levels a side into 27 rows drops nothing, so
+      the fraction is simply what the venue validates over what it serves — and that constancy
+      IS stage C&rsquo;s finding rendered on hardware rather than a disappointment. Anvil&rsquo;s
+      <code>validated_depth</code> of <b>0 is a statement, not an unset field</b>, so the line
+      says <em>&ldquo;anvil publishes no checksum, so NO rendered row on this build was ever
+      externally confirmed&rdquo;</em> in words rather than printing a percentage of nothing.</p>
 
+  </div>
+
+  <div class="strain">
     <h4>22 · One reader, two venues — and the pressure is on the traces, not on the reader</h4>
     <p>
       Opened 2026-08-17 (M4 stage A). <code>TraceReader</code> now validates an envelope and
@@ -3155,6 +3268,25 @@ classDiagram
       job is not to reconcile two numbers but to delete one.
     </p>
     <p>
+      <b>Updated 2026-08-20 (M4 stage D, A1): the first clause is now CLOSED, by that
+      deletion.</b> <code>kRxWatchdogMs</code> is gone, and with it the
+      <code>static_assert</code> that tied it to <code>kHoleThresholdUs</code>. The firmware
+      holds no staleness duration of any kind: <code>firmware/src/liveness_watchdog.hpp</code>
+      asks <code>depthcharge::LivenessClock</code> — the harness&rsquo;s own object, now in
+      <code>engine/</code> — for a threshold derived at runtime. <b>The two ends cannot drift
+      because there is only one end.</b>
+      <br><br>
+      One thing the deletion cost, recorded because it is the kind of loss that is silent.
+      <code>GapScale</code>&rsquo;s 1,000&nbsp;ms bucket edge used to BE the watchdog threshold,
+      which is what made <code>event &gt;1s=</code> readable as &ldquo;occasions the panel had
+      grounds to grey&rdquo;. It is not any more — the threshold is ~2,000&nbsp;ms at Anvil and
+      ~4,000 at Kraken while the edge is a fixed measurement scale, deliberately unmoved so a
+      hole bucketed today is comparable with one bucketed during the 23.6&nbsp;h soak. The grey
+      count is therefore now COUNTED rather than inferred: <code>FeedTask::Stats::greys</code>
+      and <code>grey_us_total</code>, on the <code>SOAK</code> line. A derived number that
+      quietly stops being derivable is worse than no number.
+    </p>
+    <p>
       <b>And the third clause gains a sibling that is the same shape.</b> A dispatch that
       picks the wrong adapter produces a golden derived from the wrong parser; a
       <em>liveness signal named wrong</em> produces a panel that greys on the wrong
@@ -3206,6 +3338,33 @@ classDiagram
     <li>§05 — stage D gave it its rendered half. The two-state render is no longer a rule the renderer keeps: it emits <code>Ink</code>, the palette is chosen once from <code>snap.status</code>, and <code>static_assert(all_grey(kStalePalette))</code> makes a coloured stale panel a build failure. That belongs beside the watchdog here the next time this section is rewritten, together with the complement <code>test_ladder_render.cpp</code> pins — the same book renders an identical <code>Ink</code> grid Live and Stale.</li>
     <li>§06 — the trace layer gained the venue split at M4 stage A: <code>TraceReader</code> owns the envelope, a per-venue decoder owns the dialect, and three rules that were universal only because Anvil was the only venue (a required <code>ticker</code>, a required string <code>type</code>, the 1000 ms threshold) became columns in a table. The class diagram carries <code>VenueTraits</code>, <code>RecordClassifier</code> and the two decoders, and <code>Replay</code> holds a decoder rather than an adapter. <s>When stage B's Kraken adapter lands, <code>KrakenTraceDecoder::decode</code> stops being a counter and this section needs the second arrow drawn.</s> <b>Landed at stage B1 and STILL OWED HERE:</b> §03 draws <code>AnvilAdapter</code> only, and there is now a second adapter with a ladder, a truncation rule and (from B2) a checksum comparison, none of which appears in a diagram. The class diagram, the healthy-frame sequence and §07's cost table are all one venue behind. Recorded rather than quietly left, because a design document that draws one of two adapters is worse than one that draws neither: it reads as complete.</li>
     <li>§05 — gained the firmware's event-armed watchdog and why it differs from the host's frame-armed one. When M4 aligns the two, this section collapses back to one rule — and that alignment is no longer golden-neutral by inspection, because a throttled stream separates the two rules 4× (strain 12). It has since gained the arrival-vs-event split as well, and then the correction the bench forced on it — the first row of that split's verdict table over-claims, because the arrival stamp sits downstream of the TLS decrypt and Anvil sheds to a slow consumer, so the board-versus-link verdict moved to per-core idle. When the stall is found and fixed, the histograms stay (they are how the next one gets found) but both verdict tables become history.</li>
+    <li><b>§05, §06 and §08 — done at M4 stage D Part A (2026-08-20), and this is the list of
+      what moved.</b> §05's "The firmware watches something slightly different, on purpose" is
+      marked SUPERSEDED in place rather than deleted: the board no longer arms on book events at
+      all, and the 640.2 ms table it rests on is still a true measurement of Anvil in 2026-07
+      that no longer sizes anything. §06's class diagram loses the
+      <code>&lt;&lt;stage B lifts it&gt;&gt;</code> stereotype on <code>LivenessClock</code> and
+      <code>AgeEstimator</code> (they are in <code>engine/</code> now) and
+      <code>VenueTraits</code>'s long-renamed <code>stale_gap_ms</code>. §06's host-tested
+      firmware headers go from eight to ten — <code>staleness</code> out,
+      <code>liveness_watchdog</code>, <code>resync</code> and <code>venue_build</code> in.
+      §08: <b>23 CLOSED</b> by deletion, <b>22's first clause CLOSED</b>, <b>17's residue (1)
+      CLOSED</b>, <b>24 updated</b> (the board reports its own checksum reach and stays
+      dormant), and <b>10 CORRECTED</b> — its prescribed resolution predates the 2026-08-17
+      staleness ruling and contradicts it, so it was withdrawn rather than executed. Two
+      citation defects fixed while in there: the duplicate card 21 (the JSON-scanner card
+      becomes 25) and card 22's missing opening <code>&lt;div&gt;</code>, which had it
+      rendering inside card 24. The intro's "twelve places" is now the twenty-six it has been
+      for some time.</li>
+    <li><b>STILL OWED after stage D, stated so it is not read as done.</b> §03 draws
+      <code>AnvilAdapter</code> only and there is now a second adapter, a checksum comparison
+      and a healing path; §03's class diagram has no <code>LivenessWatchdog</code>,
+      <code>ResyncPolicy</code> or <code>venue_build</code> seam; the healthy-frame sequence
+      does not draw the age stamp that now sits between <code>Book::publish</code> and
+      <code>SnapshotChannel::publish</code>, nor the subscribe the RX task now owes a new
+      socket; and §07's cost table is one venue and one 2.4 KiB clock behind. That is a
+      diagram-drawing evening, deliberately not folded into a stage whose deliverable is a
+      board that flashes.</li>
   </ul>
 </section>
 
@@ -3216,21 +3375,43 @@ classDiagram
   capture and analysis tooling in <code>tools/</code>.
   Revisions before stage B counted with a tool that dropped unterminated final lines, so those
   figures are not comparable with these.<br>
-  Verified against a green host build: 11/11 ctest, 250/250 doctest
-  in <code>dc_tests</code> (829,925 assertions) and 46/46 in <code>dc_tests_streaming</code>,
-  plus a clean ThreadSanitizer report from WSL Debian g++ 10.2.1, and a clean
-  <code>pio run</code> of all five firmware environments — <code>depthcharge</code> at
-  RAM 43.3% / 141,888 B, flash 874,597 B, on the rebuilt-lwIP framework that is now the
-  default build. Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the
-  parser's <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>,
-  as is the render task's (zero floating-point instructions, no <code>operator new</code>).
-  The firmware has now run on hardware for <b>23.6 continuous hours</b> (2026-08-15/16:
+  Verified against a green host build from a WIPED build tree, 2026-08-20 (M4 stage D
+  Part A): <b>33/33 ctest</b>; <b>367/367 doctest</b> in <code>dc_tests</code> (895,787
+  assertions), 50/50 in <code>dc_tests_streaming</code>, 8/8 in the new
+  <code>dc_tests_kraken</code> and 4/4 in <code>dc_tests_noping</code>; <b>19 xtensa objects</b>
+  from <code>dc_engine_target_check</code> (17 engine headers plus two engine
+  <code>.cpp</code>s) under GCC 8.4 at <code>-Werror -fno-exceptions -fno-rtti</code>; and a
+  clean <code>pio run</code> of <code>depthcharge</code> (RAM 144,488 B, flash 880,885 B) and
+  the new <code>depthcharge-kraken</code> (152,816 B, 883,357 B), both on the rebuilt-lwIP
+  framework. <b>Twenty mutations were run and all twenty went red</b> &mdash; five of them only
+  after a first attempt showed the check did not catch them, which is five coverage defects
+  the ledger found and the suite did not. The ThreadSanitizer report is from an earlier
+  revision and is refreshed by hand (strain 2). Every <code>sizeof</code> in §07 is measured under GCC 15.2 x86-64; the
+  parser's <code>.text</code> and symbol list are from xtensa GCC 8.4 at <code>-Os</code>.
+  <b>The render task's and the feed task's &ldquo;zero floating-point instructions&rdquo; claim
+  expired at M4 stage D</b> and is not quietly dropped here: lifting the two
+  <code>double</code>-based clocks into the firmware took <code>feed_task.cpp.o</code> from
+  6,708 to 8,806 B of <code>.text</code> with eight soft-float helpers where it had none, and
+  <code>render_task.cpp.o</code> from 16,523 to 19,082 B (figures from the pre-review build;
+  the review's fixes moved the whole image by under 100 bytes either way). No <code>operator new</code>, still.
+  The firmware has run on hardware for <b>23.6 continuous hours</b> (2026-08-15/16:
   <code>connects=1</code> across a 10.9 h segment, 403,823 frames, zero parse errors, zero
-  framing rejects, heap +452 B); the <b>pull-the-Wi-Fi stale/resync acceptance is the one
-  thing still un-observed</b>, and where this document describes that path it is describing
-  code that is reviewed and host-tested rather than code that has been watched.<br>
+  framing rejects, heap +452 B) and the pull-the-Wi-Fi stale/resync acceptance passed on
+  2026-08-16. <b>Everything M4 stage D Part A changed has now been watched, except one clause.</b>
+  A5 ran the Kraken build for <b>1,860 s on MINA/GBP over a single socket</b> on 2026-08-20. It
+  found the defect no host test could — the upgrade header buffer was an Anvil-sized 512 B on the
+  RX task's stack and Cloudflare's 101 response is <b>1,002 B</b>, so the first image never
+  connected at all — and then, once fixed: the panel <b>held colour through a 160,373 ms
+  book-event silence</b> against a 26 s criterion, with <b>183 book silences over one second and
+  ZERO watchdog firings</b> (the deleted 1,000 ms constant would have greyed it 183 times in 31
+  minutes); it <b>healed three genuine CRC32 failures</b> in 1,814 / 1,634 / 2,144 ms with
+  <code>connects=1 sock=0</code>; the checksum ledger closed at <code>seen=597 ok=564 FAIL=3
+  unverifiable=30 unchecksummed=0</code>; heap was flat at 61,136 B across all 185 soak lines; and
+  the calibrated threshold settled at <b>4,006 ms</b> from a measured 1,001 ms heartbeat median.
+  <b>The clause still un-observed is the grey TRANSITION</b> — cutting the connection and timing
+  it — and no soak has been run. <b>Part B is the bench evening that watches those.</b><br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
-  last work order: <code>docs/briefs/M3-closeout-transport-and-docs.md</code>.<br>
+  last work order: <code>docs/briefs/M4-stage-D-the-bench.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in
   this document.
 </footer>
