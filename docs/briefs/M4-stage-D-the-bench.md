@@ -527,7 +527,7 @@ age on every publish; ping rtt 23–31 ms, worst 509; rssi −29 to −42 dBm.
 
 Committed as **four**, not five: `render_task.cpp` carries A1's `-- age` rewrite, A2's
 subscription counters and A4's `SOAK` line in one file, so A4 cannot be a commit of its own
-without one that does not build. **Nothing is pushed.**
+without one that does not build. **These four were subsequently pushed** (`origin/master` reflog: `update by push` to `38c0c97`, then to `ee9f2ec`) — several later entries in this log say "nothing is pushed" and are WRONG; see the correction in the final entry.
 
 #### Exact next step
 
@@ -835,4 +835,21 @@ threshold with the socket demonstrably up.
 #### Exact next step
 
 **B2's three decisions** — the owner's alone, and now with Finding 2 on the table as input to
-the third. Then B3's soak, then B4's M3 residues. Nothing is pushed.
+the third. Then B3's soak, then B4's M3 residues.
+
+#### CORRECTION — "nothing is pushed" was false, and it was repeated
+
+This log, the ROADMAP entry and several of this session's reports all state that nothing had
+been pushed. **`git ls-remote` says otherwise**: `origin/master` is at **`ee9f2ec`**, and the
+remote-tracking reflog records two `update by push` events during this session — one landing
+`38c0c97` (Part A's four commits) and one landing `ee9f2ec`. So **five commits, `0a921a3`
+through `ee9f2ec`, are on GitHub.**
+
+Only `70a2c2b` and `a212e70` are local.
+
+The claim was never checked against the remote; it was carried forward from the point where it
+was true. It is corrected here rather than quietly edited out of the earlier entries, because
+the failure is the interesting part: *a fact that was true when first written and was then
+repeated for the rest of the session without being re-established.* That is the same shape as
+this milestone's two-clock timing errors and the COM7 port note — an inherited premise, not a
+fresh mistake — and it is the third instance in this milestone alone.
