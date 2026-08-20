@@ -66,10 +66,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-
-#include <depthcharge/anvil/anvil_frame.hpp>
+#include <string_view>
 
 #include "gap_histogram.hpp"  // append_truncating
+#include "venue_build.hpp"     // the selected venue's ParseStatus and its names
 
 namespace depthcharge::fw {
 
@@ -119,25 +119,27 @@ inline constexpr std::size_t kRejectTailBytes = 48;
 // `head[]`/`tail[]` brackets.
 inline constexpr std::size_t kRejectLineChars = kRejectHeadBytes + kRejectTailBytes + 96;
 
-// The tally is indexed by ParseStatus, so it must cover every value of it. The
-// assert is the point: a status added to the engine enum without a slot here
-// would otherwise write past the array, and it would do so on the error path,
-// which is where it would be found last.
-inline constexpr std::size_t kParseStatusCount = 6;
-static_assert(static_cast<std::size_t>(anvil::ParseStatus::OtherTicker) + 1 == kParseStatusCount,
-              "ParseStatus gained a value; widen the reject tally to match");
+// THE STATUS TYPE IS THE SELECTED VENUE'S, since M4 stage D item A3. This log
+// captures what the parser threw away, and which parser that is, is a build-time
+// fact — so the enum, its names and the width of the tally all come from
+// `venue_build.hpp` rather than being spelled for Anvil here. The two venues'
+// enums happen to have six values each, which is exactly the sort of agreement
+// this project has learned to distrust: the count is asserted per venue at its
+// own declaration, so a status added to either engine enum fails to compile
+// instead of writing past the array on the error path, which is where it would
+// be found last.
+//
+// The first non-Ok value is likewise the venue's, and it is spelled `Ok + 1`
+// rather than by name because `NotJson` is Anvil's name for it and there is no
+// promise the next venue uses that word. Both current enums pin `Ok = 0` and
+// list their failures after it.
+using ParseStatus = venue::ParseStatus;
+inline constexpr std::size_t kParseStatusCount = venue::kParseStatusCount;
+inline constexpr std::size_t kFirstRejectStatus = static_cast<std::size_t>(ParseStatus::Ok) + 1;
+static_assert(static_cast<std::size_t>(ParseStatus::Ok) == 0,
+              "the tally indexes from Ok = 0 and prints from the value after it");
 
-inline const char* parse_status_name(anvil::ParseStatus st) noexcept {
-    switch (st) {
-        case anvil::ParseStatus::Ok:          return "ok";
-        case anvil::ParseStatus::NotJson:     return "not-json";
-        case anvil::ParseStatus::MissingType: return "no-type";
-        case anvil::ParseStatus::BadShape:    return "bad-shape";
-        case anvil::ParseStatus::BadPrice:    return "bad-price";
-        case anvil::ParseStatus::OtherTicker: return "other-ticker";
-    }
-    return "?";
-}
+using venue::parse_status_name;
 
 // Copy `n` bytes of a network buffer into a fixed, NUL-terminated, printable
 // destination. Returns how many bytes were taken.
@@ -176,14 +178,29 @@ inline std::uint8_t copy_printable(char* dst, std::size_t cap, const char* src,
 // ends like a valid frame, so head and tail both look right and the reject reads
 // as inexplicable.
 //
+// THE PREFIX IS THE VENUE'S, AND IT WAS ANVIL'S ONLY UNTIL M4 STAGE D FOUND IT.
+// A3 put this file on the Kraken build; review then pointed out that no Kraken
+// v2 frame starts `{"type":` at all — they start `{"channel":` or `{"method":` —
+// so this scan returned 0 for every payload while the renderer went on printing
+// as though it had looked. `SPLIT@nnnnn` is the field that diagnosed the entire
+// 2026-08-13 corruption; an instrument that silently cannot see is worse than
+// one that is absent, which is the rule this project keeps re-learning.
+//
+// Two prefixes because Kraken has two frame openings and the splice that matters
+// can be either. At Anvil both spell the same thing, so the scan degenerates to
+// what it always was.
+//
 // The search starts at 1 rather than 0 so the payload's own header is never the
 // answer.
 inline std::uint32_t find_second_frame_header(const char* payload, std::uint32_t len) noexcept {
-    static constexpr char kPrefix[] = {'{', '"', 't', 'y', 'p', 'e', '"', ':'};
-    constexpr std::uint32_t kN = static_cast<std::uint32_t>(sizeof kPrefix);
-    if (payload == nullptr || len <= kN) { return 0; }
-    for (std::uint32_t i = 1; i + kN <= len; ++i) {
-        if (payload[i] == '{' && std::memcmp(payload + i, kPrefix, kN) == 0) { return i; }
+    const std::string_view a = venue::kFrameHeadPrefix;
+    const std::string_view b = venue::kFrameHeadPrefixAlt;
+    if (payload == nullptr || a.empty()) { return 0; }
+    for (std::uint32_t i = 1; i < len; ++i) {
+        if (payload[i] != '{') { continue; }
+        const std::size_t left = static_cast<std::size_t>(len - i);
+        if (left >= a.size() && std::memcmp(payload + i, a.data(), a.size()) == 0) { return i; }
+        if (left >= b.size() && std::memcmp(payload + i, b.data(), b.size()) == 0) { return i; }
     }
     return 0;
 }
@@ -197,7 +214,7 @@ struct RejectRecord {
     std::uint32_t len = 0;               // the WHOLE payload, not what was kept
     std::uint32_t second_header_at = 0;  // 0 when the payload holds one frame
 
-    anvil::ParseStatus status = anvil::ParseStatus::Ok;
+    ParseStatus status = ParseStatus::Ok;
     std::uint8_t head_n = 0;
     std::uint8_t tail_n = 0;
 
@@ -224,7 +241,7 @@ public:
     // One frame was rejected. `payload` is the verbatim bytes the parser saw and
     // is borrowed for the duration of this call only — the caller still owns the
     // slot, which is why this must run before the slot is recycled.
-    void note(anvil::ParseStatus status, const char* payload, std::uint32_t len,
+    void note(ParseStatus status, const char* payload, std::uint32_t len,
               std::int64_t at_us) noexcept {
         ++total_;
         const std::size_t slot = static_cast<std::size_t>(status);
@@ -285,7 +302,7 @@ public:
     // --- what the console reads ---------------------------------------------
 
     std::uint32_t total() const noexcept { return total_; }
-    std::uint32_t count(anvil::ParseStatus st) const noexcept {
+    std::uint32_t count(ParseStatus st) const noexcept {
         const std::size_t slot = static_cast<std::size_t>(st);
         return (slot < kParseStatusCount) ? by_status_[slot] : 0u;
     }
@@ -320,10 +337,9 @@ public:
         if (append_truncating(n, cap, at)) { return at; }
         // From NotJson, not from Ok: an Ok frame is not a reject and a column of
         // permanent zeroes in the one line a bench session greps is noise.
-        for (std::size_t i = static_cast<std::size_t>(anvil::ParseStatus::NotJson);
-             i < kParseStatusCount; ++i) {
+        for (std::size_t i = kFirstRejectStatus; i < kParseStatusCount; ++i) {
             n = std::snprintf(out + at, cap - at, " %s=%u",
-                              parse_status_name(static_cast<anvil::ParseStatus>(i)),
+                              parse_status_name(static_cast<ParseStatus>(i)),
                               static_cast<unsigned>(by_status_[i]));
             if (append_truncating(n, cap, at)) { return at; }
         }

@@ -66,6 +66,62 @@ namespace depthcharge::fw {
 // what bounds the one buffer this class owns.
 inline constexpr std::uint32_t kMaxControlPayload = 125;
 
+// ---------------------------------------------------------------------------
+// THE CLIENT SEND SIDE, WHICH IS FOUR BYTES OF HEADER AND ONE PLACE TO GET IT
+// WRONG
+// ---------------------------------------------------------------------------
+//
+// M4 stage D, after review. Kraken's depth is not in the URL, so this firmware
+// had to learn to SEND a text frame for the first time — a subscribe, and an
+// unsubscribe to heal a checksum failure. That code was written inline in
+// `ws_transport.cpp`, which no host build compiles, so the only proof it was
+// right would have been a bench evening.
+//
+// The frame builder therefore lives here instead, beside the parser that can
+// read it back. `test_ws_frame.cpp` round-trips the output through
+// `WsFrameParser` and checks opcode, MASK bit and payload — so a `0x82` for
+// `0x81`, a forgotten mask bit, or a `2u + len` copied from the six-byte ping
+// literal is a red test rather than a socket Kraken closes without saying why.
+//
+// 125 IS THE SAME NUMBER AS `kMaxControlPayload` AND A DIFFERENT FACT, which is
+// why it is named separately rather than shared. That one is a rule about
+// CONTROL frames; this one is the largest payload the two-byte header form can
+// encode, which is what makes `0x80 | (len & 0x7F)` a correct length field. A
+// data frame may legally be longer — it simply needs the extended form this
+// builder deliberately does not have, because every payload it sends is a
+// compile-time constant asserted against this bound where it is declared, and a
+// branch that exists but never runs on a device that must not stall is code that
+// rots.
+inline constexpr std::size_t kMaxShortPayload = 125;
+
+// Bytes a masked frame of `len` payload occupies: 2 header + 4 mask key.
+inline constexpr std::size_t masked_frame_bytes(std::size_t len) noexcept { return 6 + len; }
+
+// Build one masked client frame. Returns the number of bytes written, or 0 if
+// the payload does not fit the short header or the destination.
+//
+// AN ALL-ZERO MASK KEY, which is legal and leaves the payload unchanged. A
+// client MUST mask (§5.3); the randomness §5.3 asks for defends against cache
+// poisoning by an intermediary, and this client speaks TLS to one pinned host
+// with a pinned root CA, so there is no intermediary to fool. The same choice,
+// for the same reason, as the ping and the pong this file's transport already
+// sends.
+inline std::size_t build_masked_frame(std::uint8_t* out, std::size_t cap, std::uint8_t opcode,
+                                      const char* payload, std::size_t len) noexcept {
+    if (out == nullptr || len > kMaxShortPayload || cap < masked_frame_bytes(len)) { return 0; }
+    out[0] = static_cast<std::uint8_t>(0x80u | (opcode & 0x0Fu));   // FIN + opcode
+    out[1] = static_cast<std::uint8_t>(0x80u | (len & 0x7Fu));      // MASK + length
+    std::memset(out + 2, 0, 4);
+    if (len > 0 && payload != nullptr) { std::memcpy(out + 6, payload, len); }
+    return masked_frame_bytes(len);
+}
+
+// The one opcode this firmware sends a payload with.
+inline std::size_t build_masked_text(std::uint8_t* out, std::size_t cap,
+                                     const char* text, std::size_t len) noexcept {
+    return build_masked_frame(out, cap, 0x1, text, len);
+}
+
 // The largest data frame this parser will accept before it declares the byte
 // stream lost.
 //

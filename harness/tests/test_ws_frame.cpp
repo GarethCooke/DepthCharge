@@ -182,6 +182,111 @@ constexpr std::size_t kBookFrameBytes = 8726;
 
 // --- the shape of one frame --------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// THE SEND SIDE (M4 stage D, after review)
+// ---------------------------------------------------------------------------
+//
+// Kraken's depth is not in the URL, so this firmware had to learn to SEND a text
+// frame for the first time: a subscribe, and an unsubscribe to heal a checksum
+// failure. That code was written inline in `ws_transport.cpp`, which no host
+// build compiles — so a `0x82` for `0x81`, a forgotten mask bit, or a `2u + len`
+// copied from the six-byte ping literal would have compiled, linked, passed all
+// 33 ctest cases, and been found by a socket Kraken closes without saying why.
+//
+// The builder moved into ws_frame.hpp for exactly this: the parser that reads
+// frames is right here, so the output can be read back rather than eyeballed.
+
+TEST_CASE("a built client frame is FIN + text + MASK, and the parser says so itself") {
+    using depthcharge::fw::build_masked_text;
+    using depthcharge::fw::kMaxShortPayload;
+    using depthcharge::fw::masked_frame_bytes;
+
+    const std::string payload = R"({"method":"subscribe","params":{"channel":"book"}})";
+    std::uint8_t out[masked_frame_bytes(kMaxShortPayload)];
+    const std::size_t n = build_masked_text(out, sizeof out, payload.data(), payload.size());
+
+    REQUIRE(n == masked_frame_bytes(payload.size()));
+    CHECK(out[0] == 0x81);                                    // FIN | text
+    CHECK(out[1] == (0x80u | payload.size()));                // MASK | 7-bit length
+    for (int i = 2; i < 6; ++i) { CHECK(out[i] == 0); }       // the all-zero key
+    CHECK(std::string(reinterpret_cast<const char*>(out + 6), payload.size()) == payload);
+
+    // THE MASK BIT, PROVED BY THE PARSER RATHER THAN BY READING BYTE 1. RFC 6455
+    // §5.1 forbids a masked frame server->client, and this parser enforces it —
+    // so feeding it a correctly built CLIENT frame must be rejected for exactly
+    // that reason. A builder that forgot to mask would sail through here, which
+    // is the failure Kraken would answer by closing the socket.
+    Chain c;
+    c.feed(std::vector<std::uint8_t>(out, out + n));
+    CHECK(c.parser.failed());
+    CHECK(c.parser.error() == WsProtocolError::MaskedFrame);
+}
+
+TEST_CASE("the built frame decodes to exactly the payload once the mask is taken off") {
+    using depthcharge::fw::build_masked_text;
+    using depthcharge::fw::kMaxShortPayload;
+    using depthcharge::fw::masked_frame_bytes;
+
+    // Both real payloads, and a boundary one. The two Kraken frames are the
+    // bytes `test_venue_build.cpp` pins against the committed corpus, so this
+    // closes the loop: the right text, in the right frame.
+    const std::string cases[] = {
+        R"({"method":"subscribe","params":{"channel":"book","symbol":["MINA/GBP"],"depth":25,"snapshot":true}})",
+        R"({"method":"unsubscribe","params":{"channel":"book","symbol":["MINA/GBP"],"depth":25}})",
+        std::string(kMaxShortPayload, 'x'),
+        std::string(1, '{'),
+    };
+
+    for (const std::string& payload : cases) {
+        std::uint8_t out[masked_frame_bytes(kMaxShortPayload)];
+        const std::size_t n = build_masked_text(out, sizeof out, payload.data(), payload.size());
+        REQUIRE(n == masked_frame_bytes(payload.size()));
+
+        // Strip the mask the way a server would: clear the bit, drop the key.
+        // With an all-zero key the payload is unchanged, which is the whole
+        // reason that key is legal to use.
+        std::vector<std::uint8_t> unmasked;
+        unmasked.push_back(out[0]);
+        unmasked.push_back(static_cast<std::uint8_t>(out[1] & 0x7Fu));
+        unmasked.insert(unmasked.end(), out + 6, out + n);
+
+        Chain c;
+        c.feed(unmasked);
+        CHECK_FALSE(c.parser.failed());
+        REQUIRE(c.rec.chunks.size() == 1);
+        CHECK(c.rec.chunks[0].op == kOpText);
+        CHECK(c.rec.chunks[0].fin);
+        REQUIRE(c.pipe.published.size() == 1);
+        CHECK(c.pipe.published[0] == payload);
+    }
+}
+
+TEST_CASE("a payload the short header cannot encode is refused rather than truncated") {
+    using depthcharge::fw::build_masked_text;
+    using depthcharge::fw::kMaxShortPayload;
+    using depthcharge::fw::masked_frame_bytes;
+
+    // THE FAILURE THIS GUARD EXISTS FOR. `0x80 | (len & 0x7F)` is a correct
+    // length field only below 126: at 138 bytes it announces ten and the venue
+    // reads ten bytes of JSON followed by garbage. Returning 0 makes the caller
+    // say so on the log instead.
+    std::uint8_t out[masked_frame_bytes(kMaxShortPayload) + 64];
+    const std::string too_long(kMaxShortPayload + 1, 'x');
+    CHECK(build_masked_text(out, sizeof out, too_long.data(), too_long.size()) == 0);
+
+    // Exactly at the bound still works, so the refusal is not off by one.
+    const std::string at_bound(kMaxShortPayload, 'x');
+    CHECK(build_masked_text(out, sizeof out, at_bound.data(), at_bound.size()) ==
+          masked_frame_bytes(kMaxShortPayload));
+
+    // And a destination too small is refused rather than overrun — the one that
+    // would be a stack smash on the RX task, whose 6 KiB also has to hold an
+    // mbedtls handshake.
+    CHECK(build_masked_text(out, masked_frame_bytes(at_bound.size()) - 1, at_bound.data(),
+                            at_bound.size()) == 0);
+    CHECK(build_masked_text(nullptr, 1024, at_bound.data(), at_bound.size()) == 0);
+}
+
 TEST_CASE("a whole text frame becomes one chunk carrying what the reassembler needs") {
     Chain c;
     const std::string msg = R"({"type":"book","seq":1})";
