@@ -257,13 +257,21 @@ TEST_CASE("invariant #5: the stale palette is entirely grey, and never black") {
         const auto c = kStalePalette.ink[i];
         CHECK(c.grey());
         // Grey, never blank: a dark panel is ambiguous with "powered off".
+        // HeaderBed is the one exception, taken deliberately at the 2026-08-24
+        // bench because the stale reason could not be read head-on against the
+        // 64-grey wash. It is six rows; the other 58 still carry the signal.
+        if (i == static_cast<std::size_t>(Ink::HeaderBed)) {
+            CHECK(c.black());
+            continue;
+        }
         CHECK_FALSE(c.black());
     }
 
-    // Only the live background may be pure black; anything else black would be
-    // an Ink somebody added and forgot to give a colour.
+    // Only the live background and the header bed may be pure black; anything
+    // else black would be an Ink somebody added and forgot to give a colour.
     for (std::size_t i = 0; i < kInkCount; ++i) {
         if (i == static_cast<std::size_t>(Ink::Background)) { continue; }
+        if (i == static_cast<std::size_t>(Ink::HeaderBed)) { continue; }
         CHECK_FALSE(kLivePalette.ink[i].black());
     }
 
@@ -357,7 +365,7 @@ TEST_CASE("the boot frame is an honest grey empty panel, not a black screen") {
     // ...the header says something...
     int header_lit = 0;
     for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
-        header_lit += kPanelWidth - c.count_in_row(y, Ink::Background);
+        header_lit += kPanelWidth - c.count_in_row(y, Ink::HeaderBed);
     }
     CHECK(header_lit > 0);
 
@@ -367,14 +375,23 @@ TEST_CASE("the boot frame is an honest grey empty panel, not a black screen") {
         CHECK(c.count_in_row(kBidTop + i, Ink::Background) == kPanelWidth);
     }
 
-    // The whole frame is grey, and none of it is black.
+    // The whole frame is grey, and none of it below the header is black —
+    // the header band is deliberately black so the stale reason can be read
+    // head-on (2026-08-24 bench). Everything else still has to glow.
     const auto pal = palette_for(s.status);
     for (int y = 0; y < kPanelHeight; ++y) {
         for (int x = 0; x < kPanelWidth; ++x) {
             const auto rgb = pal[c.ink[y][x]];
             CHECK(rgb.grey());
-            CHECK_FALSE(rgb.black());
+            if (y >= kHeaderTop + kHeaderRows) { CHECK_FALSE(rgb.black()); }
         }
+    }
+
+    // ...and the header band really is the black one, so this exception cannot
+    // silently widen into the ladder.
+    for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+        CHECK(pal[Ink::HeaderBed].black());
+        CHECK(c.count_in_row(y, Ink::HeaderBed) > 0);
     }
 }
 
@@ -470,7 +487,7 @@ TEST_CASE("the header shows the last price when live and the reason when not") {
         v.draw(s, c);
         int lit = 0;
         for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
-            lit += kPanelWidth - c.count_in_row(y, Ink::Background);
+            lit += kPanelWidth - c.count_in_row(y, Ink::HeaderBed);
         }
         return lit;
     };
@@ -612,7 +629,7 @@ TEST_CASE("the age is drawn, and it yields to the value exactly as the symbol do
         // And the yield actually happened: the id is gone, not merely shifted.
         // Columns 0..3 carry no glyph ink at all.
         for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
-            for (int x = 0; x < 4; ++x) { CHECK(c.ink[y][x] == Ink::Background); }
+            for (int x = 0; x < 4; ++x) { CHECK(c.ink[y][x] == Ink::HeaderBed); }
         }
     }
 
@@ -1008,7 +1025,17 @@ TEST_CASE("property: 3,000 random books all render inside the frame and never li
             for (std::size_t k = 0; k < kInkCount; ++k) {
                 if (!used[k]) { continue; }
                 REQUIRE(pal.ink[k].grey());
+                // HeaderBed is black by decision (2026-08-24) and only ever
+                // reaches the six header rows; every other ink a stale frame
+                // touches must still glow.
+                if (k == static_cast<std::size_t>(Ink::HeaderBed)) { continue; }
                 REQUIRE_FALSE(pal.ink[k].black());
+            }
+            // ...and the bed really did stay inside the header band.
+            for (int y = kHeaderTop + kHeaderRows; y < kPanelHeight; ++y) {
+                for (int x = 0; x < kPanelWidth; ++x) {
+                    REQUIRE(c.ink[y][x] != Ink::HeaderBed);
+                }
             }
         }
 

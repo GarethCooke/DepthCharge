@@ -78,6 +78,7 @@ namespace depthcharge::fw {
 
 enum class Ink : std::uint8_t {
     Background = 0,  // every pixel the ladder does not claim
+    HeaderBed,       // the wash under the header text — black in BOTH palettes
     Chrome,          // the two rules above and below the ladder
     Symbol,          // header: which instrument
     Value,           // header: last price when live, stale reason when not
@@ -132,6 +133,7 @@ namespace detail {
 constexpr Palette make_live_palette() noexcept {
     Palette p{};
     p.ink[ink_index(Ink::Background)] = {0, 0, 0};
+    p.ink[ink_index(Ink::HeaderBed)] = {0, 0, 0};
     p.ink[ink_index(Ink::Chrome)] = {30, 30, 45};
     p.ink[ink_index(Ink::Symbol)] = {0, 160, 200};
     p.ink[ink_index(Ink::Value)] = {255, 255, 255};
@@ -182,16 +184,36 @@ constexpr Palette make_live_palette() noexcept {
 // It is what makes the boot frame — header, chrome, no ladder at all — read as
 // an honest empty panel rather than a dead one. The bars sit well above it, so
 // the ladder's shape stays readable through the wash.
-// The wash stays where it is and EVERYTHING ELSE MOVES UP, which is the other
-// half of the six-bit correction. The bench could not read the stale reason
-// against the background: the whole ramp had been chosen at eight bits, where
-// 215 against 64 is ample, and at six bits the gap closes enough that a 3x5 glyph
-// stops carrying. Lowering the background would have been the wrong fix — it is
-// the "this panel is ON, and not to be trusted" signal, and the boot frame has
-// nothing else — so the text goes to full white and the ladder inks lift instead.
+//
+// THE WASH WAS 64 UNTIL 2026-08-24, AND THE ARGUMENT FOR 64 IS NOW SPENT.
+// The bench could not read the stale reason against the background — twice. The
+// first correction (2026-08-11) held the wash and moved everything else up: text
+// to full white, ladder inks lifted. It was not enough at six bits, where a 4x6
+// glyph at 255 against a 64 wash still had no contrast to spare. The second
+// correction gave the header its own black bed (`Ink::HeaderBed`), which removes
+// the wash from the legibility argument entirely — nothing is read against it any
+// more — and the owner then took it to 8, because 64 was unpleasant to sit beside
+// for an evening at the brightness this panel actually runs.
+//
+// WHAT 8 STILL HAS TO DO, AND THE LIMIT OF THE CHECK BELOW. It remains the whole
+// of invariant #5's "this panel is ON and not to be trusted" signal on a boot
+// frame that has no ladder and no price. `none_black_except` proves it is not
+// literally {0,0,0}; it CANNOT prove it is visible, and at six bits under the
+// driver's CIE1931 curve 8 is well under a percent of full scale. That gap is a
+// bench judgement, not a compile-time one, and it was made by eye on 2026-08-24.
+// If this is ever lowered again, look at the boot frame in a lit room first — the
+// static_assert will not stop you turning the signal off.
 constexpr Palette make_stale_palette() noexcept {
     Palette p{};
-    p.ink[ink_index(Ink::Background)] = {64, 64, 64};
+    p.ink[ink_index(Ink::Background)] = {8, 8, 8};
+    // BLACK, AND IT IS THE ONE HOLE IN "GREY, NEVER BLANK" (2026-08-24 bench).
+    // The stale reason could only be read at an oblique angle: a 4x6 glyph at 255
+    // against a 64 wash has no contrast to spare once six-bit quantisation and the
+    // CIE curve have had it. Dimming the wash globally was the owner's first
+    // instinct and would have worked, but the wash IS invariant #5's "this panel is
+    // ON and not to be trusted" signal and the boot frame has nothing else. So the
+    // black is confined to the six header rows; the other 58 keep the grey.
+    p.ink[ink_index(Ink::HeaderBed)] = {0, 0, 0};
     p.ink[ink_index(Ink::Chrome)] = {130, 130, 130};
     p.ink[ink_index(Ink::Symbol)] = {175, 175, 175};
     p.ink[ink_index(Ink::Value)] = {255, 255, 255};
@@ -218,12 +240,14 @@ constexpr bool all_grey(const Palette& p) noexcept {
     return true;
 }
 
-// `allowed` names the one Ink permitted to be pure black; pass Ink::Count for
-// "none". Doubles as the check that no Ink was left unassigned, since an
-// unassigned entry is {0,0,0}.
-constexpr bool none_black_except(const Palette& p, Ink allowed) noexcept {
+// `allowed` and `also_allowed` name the Inks permitted to be pure black; pass
+// Ink::Count for "none" (its index is one past the end, so it matches nothing).
+// Doubles as the check that no Ink was left unassigned, since an unassigned entry
+// is {0,0,0} — which is why the exceptions are named rather than the rule relaxed.
+constexpr bool none_black_except(const Palette& p, Ink allowed,
+                                 Ink also_allowed = Ink::Count) noexcept {
     for (std::size_t i = 0; i < kInkCount; ++i) {
-        if (i == ink_index(allowed)) { continue; }
+        if (i == ink_index(allowed) || i == ink_index(also_allowed)) { continue; }
         if (p.ink[i].black()) { return false; }
     }
     return true;
@@ -234,9 +258,10 @@ static_assert(all_grey(kStalePalette),
               "invariant #5: a stale panel carries no hue anywhere. Geometry stays, hue goes.");
 static_assert(!all_grey(kLivePalette),
               "the live palette must actually carry hue, or Live and Stale look the same");
-static_assert(none_black_except(kStalePalette, Ink::Count),
-              "grey, NEVER blank: every stale Ink must be visible, background included");
-static_assert(none_black_except(kLivePalette, Ink::Background),
+static_assert(none_black_except(kStalePalette, Ink::HeaderBed),
+              "grey, NEVER blank: every stale Ink must be visible, background included. "
+              "HeaderBed is the single exception, and it is six rows wide.");
+static_assert(none_black_except(kLivePalette, Ink::Background, Ink::HeaderBed),
               "an Ink left unassigned in the live palette would draw as invisible black");
 
 // THE ONE PALETTE SELECTION. Every colour on the panel comes through here, and
@@ -504,7 +529,7 @@ private:
 
     template <class Canvas>
     void draw_header(const DisplaySnapshot& snap, Canvas& c) noexcept {
-        fill_rows(c, kHeaderTop, kHeaderRows, Ink::Background);
+        fill_rows(c, kHeaderTop, kHeaderRows, Ink::HeaderBed);
 
         // The value slot carries the ONE thing worth 27 pixels of header: the
         // last price while the book is live, and why it is not while it is not.
