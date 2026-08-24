@@ -1,0 +1,44 @@
+---
+# Matches the hand-written style already in engine/ and firmware/src/.
+# 4-space, flat namespaces, attached braces, left-aligned pointers.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+NamespaceIndentation: None
+ColumnLimit: 100
+
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+SpacesBeforeTrailingComments: 2
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AlwaysBreakTemplateDeclarations: Yes
+IndentCaseLabels: true
+AlignConsecutiveShortCaseStatements:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+  AlignCaseColons: false
+
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+AllowShortEnumsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+
+SpaceBeforeParens: ControlStatements
+SpacesInAngles: false
+SpaceAfterTemplateKeyword: true
+
+SortIncludes: false
+IncludeBlocks: Preserve

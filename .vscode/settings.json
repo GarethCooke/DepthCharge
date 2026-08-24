@@ -1,0 +1,14 @@
+{
+  // The C/C++ extension is set to "vcFormat" in user settings, which uses Visual
+  // Studio rules and ignores .clang-format entirely -- that is what was indenting
+  // namespace bodies on save. Scoped here so other projects keep vcFormat.
+  "C_Cpp.formatting": "clangFormat",
+  "C_Cpp.clang_format_style": "file",
+  "C_Cpp.clang_format_path": "C:/Program Files/LLVM/bin/clang-format.exe",
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  }
+}
