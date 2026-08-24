@@ -853,3 +853,73 @@ the failure is the interesting part: *a fact that was true when first written an
 repeated for the rest of the session without being re-established.* That is the same shape as
 this milestone's two-clock timing errors and the COM7 port note — an inherited premise, not a
 fresh mistake — and it is the third instance in this milestone alone.
+
+---
+
+### 2026-08-22/23 · owner at the bench + Opus 5 (1M) · **B3 ran: 25.39 hours, and it found three things a short run cannot**
+
+Full evidence and every figure: **`hardware/bench-2026-08-22-kraken-b3-soak.md`**, with the raw
+capture committed at `hardware/bench-2026-08-22-kraken-b3-soak.log.gz` (raw sha256
+`6a9139f6…fa8`, 33,481,892 B, 259,195 lines) and every number emitted by `tools/soak_report.py`
+from a frozen, read-only copy. This is the first bench record in this project to commit the raw
+log rather than quote it; three of its findings are statistical, and a reader who cannot re-run
+the arithmetic cannot check them.
+
+**Parity met: 25.39 h uptime, no reboots, `live=1` at the end, 0 capture gaps, 1 continuous port
+open.** M3's soak was 23.6 h.
+
+#### The three findings
+
+1. **The half-open case is real and happened twice** — `wd` fired 141 s and 291 s before the
+   transport noticed the socket was dead, both read off the same clock. This is the condition B1
+   could not stage from the network side. **It is not universal**: the window after the capture
+   produced a third socket loss with `wd` unmoved, so the pattern is 2 of 3.
+2. **"193 CRC failures, all healed" is not benign.** P(next failure within 10 s of a heal) is
+   **17.30% against a 2.07% Poisson baseline — 8.36×**, the inter-arrival histogram is bimodal,
+   and `no_slot` reached **1,594** (8.57 per STALE(checksum), against A5's 10 in 31 minutes). The
+   heal/drop loop the four-slot pipe was suspected of is real and turning over slowly.
+3. **Both outages were DNS, not Kraken and not the firmware.** 105 resolution failures, all at
+   14,000 ms, and **both successful reconnects also paid the full 14,000 ms** — a dead primary
+   resolver, not general flakiness. `assoc=1` on all 108 autopsy lines and **zero** Wi-Fi events
+   in 25.39 h: the association never dropped once.
+
+#### Two corrections to figures reported from this session before the script existed
+
+**A heap-exhaustion alarm was raised and retracted within the hour.** It came from the first and
+last samples of the free-heap series; the 3-hour medians are 61,132 / 61,128 / 61,164 — flat.
+The series never changed, the reading did. **The same error nearly recurred on the largest free
+block**, whose endpoints (47,092 → 31,732) read as a ratchet: the full plateau series shows exact
+2,048 B steps during a retry storm, recovery to 49,140 for 19.5 h, a second drop, and — confirmed
+on the live board afterwards — **recovery again. It is a sawtooth.** `tools/soak_report.py` exists
+so that no figure reaching §9 is hand-read again. Recorded in §9 as an instance under the
+2026-08-18 coincidence-class row, not as a new finding.
+
+The script also disagreed with two reported counts and the discrepancies are recorded rather than
+resolved silently: `grey_n=195` against 194 `grey for` lines — **resolved**: `grey_n` was already 1 at
+the attach, so the boot grey predates the capture and 195 − 1 = 194 exactly. And `crc_fail=193`
+against 187 `STALE (checksum)` lines — **six remain unexplained**, one of the seven being a
+UART interleaving artefact. The two gaps looked alike and had different answers.
+
+#### M4's definition of done is now fully observed
+
+All five clauses: renders a Kraken book off the wire (A5); greys within the calibrated threshold
+when the heartbeat stops (B1 clause 3, and now twice unprovoked); holds colour through 26 s of
+legitimate book silence (A5, 160,373 ms); heals from a checksum failure rather than greying
+permanently (193/193 here, `refused=0`); and shows a book age that is a lag estimate (A1/A4,
+`worst_age=5.0s`). Two recorded defects stand against the last clause — the age is silently
+dropped on 8-character stale reasons, and it is one publish behind.
+
+#### Nothing was fixed, and that was the instruction
+
+The DNS fallback and the pipe overrun are both priced and parked. §9 carries the cached-IP
+fallback with **both** guards it needs to not be a downgrade — a TTL with fresh-resolution-first,
+and the hostname retained for SNI and certificate validation, because connecting to a cached
+address with the address as the name is how certificate validation gets silently disabled on a
+board that pins GTS Root R4 specifically so it is not.
+
+#### Exact next step
+
+**B2's three decisions** — still the owner's, still undecided, recommendations delivered
+2026-08-22 — then **B4's M3 residues**. The board is still running and a second 48 h capture is
+open at `firmware/logs/kraken-b3-soak2-20260824.log`, because the largest-block sawtooth needs
+more than two reconnect events and the board is producing them for free.

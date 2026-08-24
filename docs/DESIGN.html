@@ -3204,6 +3204,39 @@ classDiagram
   </div>
 
   <div class="strain">
+    <h4>27 &middot; The four-slot pipe is not merely overrun by heals &mdash; it feeds them</h4>
+    <p>
+      Opened 2026-08-23 (M4 stage D, B3), and it <b>reverses</b> a reading A5 made correctly on
+      less evidence. A5 saw three checksum failures and ten pipe drops, checked the timeline, and
+      recorded the drops as a <i>consequence</i> of each heal's snapshot burst &mdash;
+      <code>no_slot</code> was 0 at the first failure and rose only during the heals. That was
+      right at thirty-one minutes.
+    </p>
+    <p>
+      <b>At 25.39 hours the direction reverses.</b> Against a Poisson baseline of 2.07% implied by
+      193 failures in the run, the probability that the next checksum failure lands within ten
+      seconds of a completed heal is <b>17.30% &mdash; 32 of 185, a ratio of 8.36&times;</b>. The
+      inter-arrival histogram is bimodal where a venue artefact would be flat: 58 of 185 inter-arrivals fall
+      under thirty seconds against a mean gap of 478 s. <code>no_slot</code> reached <b>1,594</b>,
+      or 8.57 drops per STALE(checksum), 8.26 per counted failure.
+    </p>
+    <p>
+      <b>The loop closes:</b> a drop corrupts the book &rarr; the CRC catches it &rarr; the heal
+      re-subscribes &rarr; the snapshot burst overruns the four slots &rarr; the next failure
+      follows within seconds. It turned over 193 times in 25 hours <b>without running away, and
+      nothing measured says it cannot</b>.
+    </p>
+    <p>
+      <b>Not fixed, and the reason is the stage's own constraint.</b> The remedy is a venue-sized
+      pipe &mdash; Kraken's largest message is 1,970 B against a 16,384 B slot, so more slots cost
+      less RAM, not more &mdash; and it must not be built in the sitting that measured it.
+      <b>The general form, at this milestone's ninth instance:</b> a rate that is a consequence at
+      one timescale can be a cause at another, and only a run long enough for the loop to close
+      separates them.
+    </p>
+  </div>
+
+  <div class="strain">
     <h4>26 &middot; The liveness watchdog fires exactly once, because only an arrival re-arms it</h4>
     <p>
       Opened 2026-08-20 (M4 stage D, B1 clause 3), and found by the run that closed the clause
@@ -3454,8 +3487,13 @@ classDiagram
   review's critical finding on silicon</b> &mdash; the watchdog firing over a live socket, loss
   path #4, recovered by the resync LEVEL in 3,497 ms where the edge design would have stayed grey
   until a power cycle &mdash; and opened a new one: <b>the watchdog re-arms only on a liveness
-  arrival</b>, so a permanently dead heartbeat fires it exactly once. <b>No soak has been run;
-  B2's decisions and B3's soak are what remain.</b><br>
+  arrival</b>, so a permanently dead heartbeat fires it exactly once. <b>B3 HAS NOW RUN &mdash; 25.39 h, parity met, no reboots</b>, and it found three things a
+  short run cannot: the <b>half-open case is real and happened twice</b> (the watchdog beat the
+  transport by 141 s and 291 s); <b>the heal/drop loop is real at 8.36&times; baseline</b> with
+  <code>no_slot</code> at 1,594, so &ldquo;193 CRC failures, all healed&rdquo; is not the benign
+  sentence it reads as (strain 27); and <b>both outages were DNS</b>, not the venue and not the
+  firmware, with the association never dropping. <b>M4's five DoD clauses are all observed.
+  B2's three decisions and B4's residues are what remain.</b><br>
   Constitution: <code>ARCHITECTURE.md</code> · schedule: <code>ROADMAP.md</code> ·
   last work order: <code>docs/briefs/M4-stage-D-the-bench.md</code>.<br>
   Every claim here is checkable against a named file; where it is not, treat it as a bug in
