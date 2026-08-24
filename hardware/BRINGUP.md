@@ -45,6 +45,61 @@ Four lines surveyed, each against its own failure mode — all pass:
 Common, benign: minor CLK crosstalk on the baselines (within margin); edge softening
 partly attributable to the 1× probe. Jumper interconnect **characterised and proven for M3**.
 
+## Diagnosing a wrong picture
+
+**Read the dark rows before touching a constant.** The `FM6126A` fallback above is the first
+thing this file offers for a bad picture, and on 2026-08-24 that cost an evening: the driver
+enum and `clkphase` were both tried and both reverted, because neither can reach the fault.
+The address bus is not covered anywhere else here, and it is the more likely failure on a
+bare-jumper interconnect.
+
+### Signature: a dead address line
+
+This panel is 1/32 scan. Five bits A–E select one of 32 row-pairs, and address *k* drives
+physical row *k* on R1/G1/B1 and row *k+32* on R2/G2/B2. Lose one address bit of weight *w*
+and two things follow mechanically:
+
+1. Half the addresses are never selected, so **two dark bands of *w* rows each** appear —
+   at rows *w*…2*w*−1 and *w*+32…2*w*+31.
+2. The data for the unreachable addresses lands *w* rows earlier, so **every lit row shows
+   two logical rows superimposed**: physical row *j* displays logical *j* and logical *j+w*.
+
+**The width of the dark band names the bit.** E is the MSB, so a dead E gives *w* = 16:
+rows 16–31 and 48–63 go dark, and the picture reads as "everything shifted up".
+
+Observed 2026-08-24 with E (GPIO 10) loose, against the M4 ladder:
+
+| physical | shows | reads as |
+|---|---|---|
+| 0–5 | header **+** asks 16–21 | red bars over the ticker symbol |
+| **16–31** | nothing | black band |
+| 32–34 | asks[0], spread, bids[0] — **unshifted**, addresses 0–2 are below 16 | correct-looking centre |
+| 45–47 | bids **+** the cyan tape strip (logical 61–63) | a stray blue line mid-panel |
+| **48–63** | nothing | black bottom quarter |
+
+The fastest confirmation is the **heartbeat pixel**, which the renderer pins at (63, 63):
+with E dead it sits at (63, 47), displaced by exactly one E-bit. If it is not in the
+bottom-right corner, the address bus is the fault and no timing constant will fix it.
+
+### What cannot cause it
+
+- **`clkphase`** reaches only `invert_pclk` on the CLK pin.
+- **`cfg.driver`** changes the power-on register sequence; `fm6124init()` resets only
+  R1/R2/G1/G2/B1/B2/CLK/LAT/OE and never touches A–E.
+
+Neither goes near the address bus. Both are dead ends for this symptom — check them off the
+list rather than trying them.
+
+### Checks, cheapest first
+
+1. **Reseat the address jumpers** — A=17, B=18, C=8, D=9, **E=10**. This was the 2026-08-24
+   cause: a bare jumper on E worked loose while the board was out on the bench.
+2. **Continuity** GPIO → panel pin for the bit the band width named.
+3. **Scope it.** A live address line is a square wave at the row-scan rate; flat or floating
+   is the proof. Worth adding to the four-line survey above, which never covered A–E.
+4. **From firmware, without touching the hardware:** set `cfg.gpio.e = -1` and flash. If the
+   picture is identical to the fault, the panel is definitively receiving no E.
+
 ## Forward notes
 - **Interconnect:** bare jumpers are bench-proven and adequate for M3. The enclosed
   standalone object wants a tidier interconnect (shorter leads / ground plane / carrier)
