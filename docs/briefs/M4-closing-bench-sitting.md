@@ -191,8 +191,24 @@ The 48-hour soak capture started 08:50 was killed at 15:28 to free COM7 (6.5 h, 
 `firmware/logs/kraken-b3-soak2-20260824.log`, which is gitignored). Nothing in the repo ever
 asked for 48 hours; the only unattended run M4 owes is D2's **one** hour.
 
-#### Exact next step
+#### M4 IS CLOSED
 
-Flash the grey = 8 build and confirm at the panel, then run D2 (weak-node one-hour soak) and
-write up. `ARCHITECTURE.md` §9 needs an entry for the black header bed — it is a deliberate,
-bounded exception to invariant #5's "grey, never blank" and should not live only in a brief.
+Grey = 8 is flashed and confirmed on the panel. With items 1 and 2 decided, every clause of
+"Closing M4" above is evidenced: the panel renders a Kraken book off the wire, greys within the
+calibrated liveness threshold, holds colour through 26 s of legitimate book silence, heals from
+a checksum failure, and shows a book age that is a lag estimate. Ticked in `ROADMAP.md`;
+**M5 (Binance) is now Next**. The black header bed is recorded in `ARCHITECTURE.md` §9 as a
+named, bounded exception to invariant #5 rather than living only here.
+
+#### Carried forward — owed, and none of it blocked this tick
+
+- **Item 3 — D7's scope trace.** No capture. It answers whether power sequencing is a
+  requirement at M7, not anything M4 claims.
+- **D1** — rejoin re-rolls the mesh lottery. Needs the far node (a Deco sibling at −7x dBm;
+  the term enters the project at `hardware/bench-2026-08-09-ws-reconnect.md`).
+- **D2** — weak-node **one**-hour soak, the M3 transport brief's last unticked bar. Needs the
+  board associated at −7x dBm, not a second device. Bar is *socket survives every fade the
+  watchdog reports*; greys allowed, deaths are not.
+- **The stale row-budget comments** in `ladder_render.hpp` — four of seven row constants are
+  documented wrong, describing the pre-4×6-font layout. This evening walked straight into that
+  trap: it is the table a person reads to decide "is the panel shifted?".
