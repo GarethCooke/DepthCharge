@@ -82,13 +82,13 @@ enum class Ink : std::uint8_t {
     Symbol,          // header: which instrument
     Value,           // header: last price when live, stale reason when not
     Bid,
-    BidBest,         // bids[0], hard against the spread
+    BidBest,  // bids[0], hard against the spread
     Ask,
-    AskBest,         // asks[0], hard against the spread
-    Spread,          // the one-row gap between the two sides
-    Tape,            // the last-price sparkline
-    Flash,           // a level a trade just printed at
-    Beat,            // the render heartbeat pixel
+    AskBest,  // asks[0], hard against the spread
+    Spread,   // the one-row gap between the two sides
+    Tape,     // the last-price sparkline
+    Flash,    // a level a trade just printed at
+    Beat,     // the render heartbeat pixel
     Count
 };
 
@@ -261,25 +261,27 @@ inline constexpr int kMinStripRows = 2;  // the tape strip must survive the budg
 // book actually publishes. 27 today, from (64 - 5 - 2 - 1 - 2) / 2.
 inline constexpr int kLevelBudget =
     (kPanelHeight - kHeaderRows - 2 * kRuleRows - kSpreadRows - kMinStripRows) / 2;
-inline constexpr int kLevels =
-    kLevelBudget < static_cast<int>(kDisplayLevels) ? kLevelBudget
-                                                    : static_cast<int>(kDisplayLevels);
+inline constexpr int kLevels = kLevelBudget < static_cast<int>(kDisplayLevels)
+                                   ? kLevelBudget
+                                   : static_cast<int>(kDisplayLevels);
 
 inline constexpr int kHeaderTop = 0;
-inline constexpr int kTopRuleRow = kHeaderTop + kHeaderRows;    // 5
-inline constexpr int kAskTop = kTopRuleRow + kRuleRows;         // 6
-inline constexpr int kSpreadRow = kAskTop + kLevels;            // 33
-inline constexpr int kBidTop = kSpreadRow + kSpreadRows;        // 34
-inline constexpr int kBottomRuleRow = kBidTop + kLevels;        // 61
-inline constexpr int kStripTop = kBottomRuleRow + kRuleRows;    // 62
-inline constexpr int kStripRows = kPanelHeight - kStripTop;     // 2
+inline constexpr int kTopRuleRow = kHeaderTop + kHeaderRows;  // 5
+inline constexpr int kAskTop = kTopRuleRow + kRuleRows;       // 6
+inline constexpr int kSpreadRow = kAskTop + kLevels;          // 33
+inline constexpr int kBidTop = kSpreadRow + kSpreadRows;      // 34
+inline constexpr int kBottomRuleRow = kBidTop + kLevels;      // 61
+inline constexpr int kStripTop = kBottomRuleRow + kRuleRows;  // 62
+inline constexpr int kStripRows = kPanelHeight - kStripTop;   // 2
 
 static_assert(kLevels >= 1, "the row budget leaves no ladder at all");
 static_assert(kStripRows >= kMinStripRows,
               "the header/chrome no longer fit above 2 x kLevels — draw fewer levels here, "
               "never change kDisplayLevels (that is engine/, ARCHITECTURE §5)");
-static_assert(kStripTop + kStripRows == kPanelHeight, "the row budget must consume exactly 64 rows");
-static_assert(kLevels <= static_cast<int>(kDisplayLevels), "cannot draw levels the book never fills");
+static_assert(kStripTop + kStripRows == kPanelHeight,
+              "the row budget must consume exactly 64 rows");
+static_assert(kLevels <= static_cast<int>(kDisplayLevels),
+              "cannot draw levels the book never fills");
 
 // The heartbeat owns the bottom-right pixel; the sparkline stops two columns
 // short of it so a moving tape can never be confused with a stalled renderer.
@@ -464,11 +466,12 @@ public:
 
         draw_header(snap, c);
         c.hline(0, kTopRuleRow, kPanelWidth, Ink::Chrome);
-        draw_side(c, SidePlan{snap.asks, snap.ask_count, kSpreadRow - 1, -1,
-                              Ink::AskBest, Ink::Ask}, max_qty);
+        draw_side(c,
+                  SidePlan{snap.asks, snap.ask_count, kSpreadRow - 1, -1, Ink::AskBest, Ink::Ask},
+                  max_qty);
         c.hline(0, kSpreadRow, kPanelWidth, Ink::Spread);
-        draw_side(c, SidePlan{snap.bids, snap.bid_count, kBidTop, +1,
-                              Ink::BidBest, Ink::Bid}, max_qty);
+        draw_side(c, SidePlan{snap.bids, snap.bid_count, kBidTop, +1, Ink::BidBest, Ink::Bid},
+                  max_qty);
         c.hline(0, kBottomRuleRow, kPanelWidth, Ink::Chrome);
         draw_strip(c);
 
@@ -508,8 +511,8 @@ private:
         // A stale panel showing a price it cannot vouch for and no reason would
         // be the wrong half of the payload on screen.
         const TextField last = TextField::scaled(snap.last_px, snap.symbol.price_decimals);
-        const char* value = snap.live() ? (snap.has_last ? last.buf : "-")
-                                        : reason_text(snap.stale_reason);
+        const char* value =
+            snap.live() ? (snap.has_last ? last.buf : "-") : reason_text(snap.stale_reason);
         const int value_w = text_width(value);
         int value_x = kPanelWidth - value_w;
         if (value_x < 0) { value_x = 0; }
@@ -652,9 +655,7 @@ private:
                 for (int col = 0; col < kGlyphWidth; ++col) {
                     const int px = gx + col;
                     if (px < 0 || px >= kPanelWidth) { continue; }
-                    if ((bits >> (kGlyphWidth - 1 - col)) & 1u) {
-                        c.pixel(px, py, ink);
-                    }
+                    if ((bits >> (kGlyphWidth - 1 - col)) & 1u) { c.pixel(px, py, ink); }
                 }
             }
         }
