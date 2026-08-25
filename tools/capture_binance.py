@@ -150,6 +150,11 @@ def depth_weight(limit: int) -> int:
     return 250
 
 
+# How long the capture waits, at the end, for an outstanding REST fetch.
+# Generous: the fetch itself is capped at 15 s by urlopen, and losing the
+# record is worse than waiting for it.
+REST_DRAIN_TIMEOUT_S = 20.0
+
 OP_NAMES = {OP_PING: "ping", OP_PONG: "pong", OP_CLOSE: "close"}
 
 
@@ -190,6 +195,29 @@ class RestFetcher:
             return False
         threading.Thread(target=self._run, daemon=True).start()
         return True
+
+    def in_flight(self) -> bool:
+        """Is a fetch outstanding? Non-blocking."""
+        if self._busy.acquire(blocking=False):
+            self._busy.release()
+            return False
+        return True
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Block until no fetch is outstanding, or `timeout` elapses.
+
+        The capture used to end with a FIXED `time.sleep(0.3)` under a comment
+        promising that "anything still in flight belongs in the file". It did not
+        deliver that: a /api/v3/depth round trip measures ~1.0-1.5 s from this
+        box and a refused one 2.1 s, so a fetch outstanding when the deadline hit
+        was silently dropped -- the record the tool exists to guarantee, lost
+        exactly at the end of every capture that requested one late. Found by
+        `--selfcheck` on its first run, which is what that check is for.
+        """
+        deadline = time.monotonic() + timeout
+        while self.in_flight() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not self.in_flight()
 
     def _run(self) -> None:
         sent_ns = self.clock()
@@ -280,6 +308,34 @@ def capture(args) -> int:
         })
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as out:
+        def drain_queue(q, handler) -> None:
+            """Empty one side channel, in arrival order. ONE loop, two callers.
+
+            Extracted at review: the control queue and the REST queue were
+            drained by two near-identical `while True / get_nowait / except
+            Empty: break` loops that differed only in what they did with the
+            item.
+            """
+            while True:
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    return
+                handler(item)
+
+        def write_record(now_ns: int, kind: str, wrapper_key: str,
+                         wrapper: dict, frame_text: str | None) -> None:
+            """Write one non-frame record. ONE spelling of the line shape.
+
+            The REST branch previously had two nearly identical `out.write`
+            calls differing only in whether the body was present, which is two
+            places for the record format to drift.
+            """
+            out.write('{"rx_ns": %d, "kind": "%s", "%s": %s, "frame": %s}\n'
+                      % (now_ns, kind, wrapper_key, json.dumps(wrapper),
+                         frame_text if frame_text is not None else "null"))
+            out.flush()
+
         def drain(now_ns: int) -> None:
             """Write everything the side channels have produced, in arrival order.
 
@@ -288,38 +344,34 @@ def capture(args) -> int:
             the instant it landed.
             """
             nonlocal rest_count, last_used_weight
-            while True:
-                try:
-                    ctl = controls.get_nowait()
-                except queue.Empty:
-                    break
+
+            def on_control(ctl: dict) -> None:
                 control_counts[ctl["op"]] += 1
-                out.write('{"rx_ns": %d, "kind": "control", "ctl": %s, "frame": null}\n'
-                          % (now_ns, json.dumps(ctl)))
-                out.flush()
+                write_record(now_ns, "control", "ctl", ctl, None)
                 if ctl["op"] == "ping":
+                    latency = ((ctl["pong_ns"] - ctl["recv_ns"]) / 1e6
+                               if ctl["pong_ns"] else float("nan"))
                     sys.stderr.write(
-                        "\n[capture] server PING (%d payload bytes); pong sent %.3f ms later\n"
-                        % (ctl["payload_len"],
-                           (ctl["pong_ns"] - ctl["recv_ns"]) / 1e6
-                           if ctl["pong_ns"] else float("nan")))
-            while True:
-                try:
-                    req, body = fetcher.results.get_nowait()
-                except queue.Empty:
-                    break
+                        "\n[capture] server PING (%d payload bytes); pong sent "
+                        "%.3f ms later\n" % (ctl["payload_len"], latency))
+
+            def on_rest(result) -> None:
+                nonlocal rest_count, last_used_weight
+                req, body = result
                 if "used_weight_1m" in req:
                     last_used_weight = req["used_weight_1m"]
-                if body is None or "\n" in body or "\r" in body:
-                    # A failed fetch is recorded, not dropped: "the snapshot did
-                    # not arrive" is a fact about the capture window.
-                    out.write('{"rx_ns": %d, "kind": "rest", "req": %s, "frame": null}\n'
-                              % (now_ns, json.dumps(req)))
-                else:
-                    out.write('{"rx_ns": %d, "kind": "rest", "req": %s, "frame": %s}\n'
-                              % (now_ns, json.dumps(req), body))
+                # A failed fetch is RECORDED, not dropped: "the snapshot did not
+                # arrive" is a fact about the capture window. So is a body this
+                # line shape cannot hold.
+                usable = (body is not None
+                          and "\n" not in body
+                          and "\r" not in body)
+                write_record(now_ns, "rest", "req", req, body if usable else None)
+                if usable:
                     rest_count += 1
-                out.flush()
+
+            drain_queue(controls, on_control)
+            drain_queue(fetcher.results, on_rest)
 
         client = WsClient(url, origin=args.origin, timeout=args.connect_timeout,
                           user_agent=USER_AGENT, clock=CAPTURE_CLOCK,
@@ -417,8 +469,12 @@ def capture(args) -> int:
         except KeyboardInterrupt:
             pass
         finally:
-            # Anything still in flight when the deadline hit belongs in the file.
-            time.sleep(0.3)
+            # Anything still in flight when the deadline hit belongs in the file,
+            # so WAIT for it rather than sleeping a guessed interval.
+            if not fetcher.wait_idle(REST_DRAIN_TIMEOUT_S):
+                sys.stderr.write(
+                    "\n[capture] WARNING: a REST fetch was still in flight "
+                    f"after {REST_DRAIN_TIMEOUT_S:g}s and is NOT in the trace.\n")
             drain(CAPTURE_CLOCK())
             out.flush()
 
@@ -437,6 +493,111 @@ def capture(args) -> int:
     return 0
 
 
+def selfcheck() -> int:
+    """Exercise the capture loop against a loopback server, with no network.
+
+    This tool had NO test of any kind until M5 stage 0's review, and it is the
+    tool that writes ground truth -- everything downstream is a measurement of
+    what it produced. It takes no trace argument for the reason
+    `slice_trace.py --selfcheck` takes none: the cases that matter are the ones a
+    live capture cannot be asked to produce on demand.
+
+    Three of them, all previously unreachable without a venue:
+
+      * a server PING mid-stream, answered, and recorded as a `control` record
+        with the pong's own timestamp;
+      * a REST fetch that FAILS, recorded rather than dropped, because "the
+        snapshot did not arrive" is a fact about the capture window;
+      * `rx_ns` monotonicity across interleaved frame / control / rest records,
+        which is the invariant `TraceReader` rejects a whole file for breaking
+        and the one `capture_kraken.py` shipped a bug against.
+    """
+    import tempfile
+    import threading
+    from pathlib import Path
+
+    import tracefile
+    import ws_loopback
+
+    repo = Path(__file__).resolve().parent.parent
+    source = repo / "harness/replay/binance_btcusdt_d100ms_20260824.ndjson"
+    if not source.exists():
+        print(f"selfcheck: missing {source.name}; cannot replay")
+        return 1
+    frames = ws_loopback.frames_of(str(source))
+    port = 8799
+    seen: list = []
+
+    def serve():
+        seen.extend(ws_loopback.serve_once(frames[:40], port, ping_after=10))
+
+    server = threading.Thread(target=serve, daemon=True)
+    server.start()
+    time.sleep(0.6)
+
+    out = Path(tempfile.mkdtemp()) / "selfcheck.ndjson"
+    # A REST host that cannot resolve: the failure path is the point.
+    rc = main(["--ws-host", f"ws://127.0.0.1:{port}", "--rest-host",
+               "http://127.0.0.1:9", "--symbol", "BTCUSDT", "--streams", "depth@100ms",
+               "--duration", "20", "--snapshot-every", "0", "--out", str(out)])
+    server.join(timeout=10)
+
+    failures = []
+    if rc != 0:
+        failures.append(f"capture returned {rc}, expected 0")
+
+    meta = tracefile.read_meta(out, validate=True)
+    if meta.get("venue") != "binance":
+        failures.append(f"metadata venue is {meta.get('venue')!r}")
+
+    records = list(tracefile.read_capture(out, kinds=("rest", "control")))
+    kinds = collections.Counter(r.kind or "frame" for r in records)
+
+    if kinds["frame"] == 0:
+        failures.append("no venue frames recorded")
+    if kinds["control"] == 0:
+        failures.append("the server PING produced no `control` record")
+    if kinds["rest"] == 0:
+        failures.append("the failed REST fetch was dropped instead of recorded")
+
+    for a, b in zip(records, records[1:]):
+        if b.rx_ns < a.rx_ns:
+            failures.append(f"rx_ns goes backwards at line {b.lineno} "
+                            f"({a.rx_ns} -> {b.rx_ns})")
+            break
+
+    for r in records:
+        if r.kind == "control":
+            ctl = r.wrapper["ctl"]
+            if ctl["op"] != "ping":
+                continue
+            if not ctl.get("pong_ns"):
+                failures.append("a ping was recorded with no pong timestamp")
+            if base64.b64decode(ctl["payload_b64"]) != b"dc-ping":
+                failures.append("the recorded ping payload is not what was sent")
+        if r.kind == "rest":
+            if r.frame is not None:
+                failures.append("a failed fetch recorded a body")
+            if "error" not in r.wrapper["req"]:
+                failures.append("a failed fetch recorded no error")
+
+    # The pong must have gone back with the ping's own payload, observed at the
+    # server rather than inferred from our own record.
+    if ws_loopback.pongs(seen) != [b"dc-ping"]:
+        failures.append(f"server saw pongs {ws_loopback.pongs(seen)}, expected [b'dc-ping']")
+
+    # Frames are verbatim: what was served is what was written.
+    written = [r.raw for r in records if not r.kind]
+    if written and written != frames[:len(written)]:
+        failures.append("recorded frames are not byte-identical to those served")
+
+    for f in failures:
+        print(f"  FAIL {f}")
+    print(f"capture_binance selfcheck: {len(records)} records, "
+          f"{dict(kinds)}, {'FAILED' if failures else 'OK'}")
+    return 1 if failures else 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--ws-host", default=DEFAULT_WS_HOST,
@@ -450,7 +611,7 @@ def main(argv=None) -> int:
     p.add_argument("--combined", action="store_true",
                    help="force the /stream?streams= wrapper even for one stream, so the "
                         "wrapper's cost can be measured against the bare shape")
-    p.add_argument("--out", required=True, help="output NDJSON path")
+    p.add_argument("--out", help="output NDJSON path (required unless --selfcheck)")
     p.add_argument("--duration", type=float, default=90.0, help="capture seconds")
     p.add_argument("--snapshot-every", type=float, default=0.0,
                    help="seconds between REST depth snapshots (0 = opening one only). "
@@ -467,7 +628,14 @@ def main(argv=None) -> int:
     p.add_argument("--origin", default=None, help="Origin header to send (default: none)")
     p.add_argument("--max-frames", type=int, default=0, help="stop after N frames")
     p.add_argument("--connect-timeout", type=float, default=20.0)
+    p.add_argument("--selfcheck", action="store_true",
+                   help="exercise the capture loop against a loopback server "
+                        "and exit. No network, no venue, no arguments needed.")
     args = p.parse_args(argv)
+    if args.selfcheck:
+        return selfcheck()
+    if not args.out:
+        p.error("--out is required (or pass --selfcheck)")
     try:
         return capture(args)
     except HandshakeRejected as exc:
