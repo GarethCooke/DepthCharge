@@ -49,7 +49,7 @@ import zlib
 from collections import defaultdict
 from pathlib import Path
 
-from tracefile import read_capture, read_meta
+from tracefile import read_capture, read_meta, ticks
 
 SIDES = ("bids", "asks")
 
@@ -252,22 +252,6 @@ def frame_kind(frame) -> str:
         failed = frame.get("success") is False or frame.get("error") is not None
         return "ack:" + str(frame["method"]) + (" REFUSED" if failed else "")
     return "error" if frame.get("error") is not None else "?"
-
-
-def ticks(text: str) -> tuple[int, int]:
-    """(scaled integer, fractional digits) for a decimal token, without floats.
-
-    The adapter will have to do exactly this on the hot path, from the token
-    text, which is why it is spelled out here rather than hidden behind
-    `Decimal`: the digits are shifted, never rounded.
-    """
-    neg = text.startswith("-")
-    body = text[1:] if neg else text
-    if "e" in body or "E" in body:
-        raise ValueError(f"exponent notation on the wire: {text!r}")
-    whole, _, frac = body.partition(".")
-    value = int(whole + frac) if (whole + frac) else 0
-    return (-value if neg else value), len(frac)
 
 
 def crc_token(text: str) -> str:

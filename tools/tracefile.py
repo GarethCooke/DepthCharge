@@ -95,6 +95,40 @@ VENUES: dict[str, tuple[str, ...]] = {
 UNDECLARED_CLOCK = "undeclared"
 
 
+def decimals_of(text: str) -> int:
+    """Fractional digit count of a decimal token. Never raises, never floats.
+
+    Deliberately tolerant where `ticks` is strict: a caller COUNTING precision
+    across a capture must be able to look at an exponent token and record it,
+    not die on it. `ticks` is the one that refuses.
+    """
+    _, _, frac = text.partition(".")
+    return len(frac)
+
+
+def ticks(text: str) -> tuple[int, int]:
+    """(scaled integer, fractional digits) for a decimal token, without floats.
+
+    ONE implementation, shared by all three venues' tools (M5 stage 0 review).
+    It had drifted into three: `kraken_frame_economics.ticks` and
+    `binance_frame_economics.ticks` were character-identical, and
+    `binance_oracle.ticks` was the same arithmetic returning only the value.
+    Three copies of the routine that invariant #3 rests on is three places for
+    the rounding to come back.
+
+    The digits are SHIFTED, never rounded, and exponent notation is refused
+    rather than parsed -- an adapter must do exactly this from the token text on
+    the hot path, and a float here is the whole thing invariant #3 forbids.
+    """
+    neg = text.startswith("-")
+    body = text[1:] if neg else text
+    if "e" in body or "E" in body:
+        raise ValueError(f"exponent notation on the wire: {text!r}")
+    whole, _, frac = body.partition(".")
+    value = int(whole + frac) if (whole + frac) else 0
+    return (-value if neg else value), len(frac)
+
+
 def venue_of(meta: dict) -> str:
     """The trace's venue. An absent tag is `anvil` -- that is the rule."""
     return meta.get("venue") or DEFAULT_VENUE
@@ -113,6 +147,25 @@ def binance_payload(frame):
     if isinstance(frame, dict) and "stream" in frame and "data" in frame:
         return frame["data"]
     return frame
+
+
+def binance_stream_name(frame, meta: dict | None = None) -> str:
+    """Which stream a Binance frame belongs to.
+
+    From the combined-stream envelope when there is one, otherwise from the
+    metadata header -- a capture without the envelope is single-stream by
+    construction. Lives beside `binance_payload` because it is the same piece of
+    knowledge (what the wrapper is) read for the other half; review found that
+    knowledge open-coded in three files.
+
+    NOTE the wrapper is never stripped from a byte count by any caller: whether
+    it is worth its bytes is a measured question, and a reader that discarded it
+    would have destroyed the evidence.
+    """
+    if isinstance(frame, dict) and "stream" in frame:
+        return str(frame["stream"]).split("@", 1)[-1]
+    streams = (meta or {}).get("streams") or ["?"]
+    return streams[0]
 
 
 def is_book_event(venue: str, frame) -> bool:
@@ -447,3 +500,178 @@ def read_meta(path, *, validate: bool = False) -> dict:
     if validate:
         check_meta(meta)
     return meta
+
+
+# --- the module's own tests (M5 stage 0, at review) -------------------------
+# `tracefile.py` is the ONE definition of how a capture line is read, shared by
+# every Python tool and mirroring the C++ reader -- and until this point it had
+# no test of its own. Its venue predicates are the sharpest reason it needed
+# one: each was written `if venue == "anvil": ... else: <the previous venue's
+# answer>`, so a venue added without an explicit branch does not fail, it
+# returns a CONFIDENT WRONG ANSWER. That is strain 22's real cost, and nothing
+# was checking for it.
+
+
+def _decimal_samples():
+    """Decimal tokens spanning the shapes the three venues actually send."""
+    out = []
+    for whole in ("0", "1", "78564", "9" * 12):
+        for frac in ("", "0", "5", "00000000", "10000000", "12345678"):
+            out.append(whole if not frac else whole + "." + frac)
+    return out + ["-1.5", "-0.00000001", "0.0", "000.100"]
+
+
+def selfcheck() -> int:
+    """Properties and shapes, not a corpus.
+
+    Deliberately takes no trace argument, for the reason `slice_trace.py`'s
+    selfcheck takes none: the cases that matter are the ones no committed
+    capture contains. Every committed capture is well-formed, so a corpus-driven
+    test here would be eleven copies of one observation.
+    """
+    checks = 0
+    fails = []
+
+    def check(cond, why):
+        nonlocal checks
+        checks += 1
+        if not cond:
+            fails.append(why)
+
+    # -- ticks: properties, not examples ----------------------------------
+    for text in _decimal_samples():
+        value, decs = ticks(text)
+        # Round-trip: the scaled integer is exactly the digits with the point
+        # removed, sign preserved. Stated without a float anywhere in it.
+        neg = text.startswith("-")
+        digits = (text[1:] if neg else text).replace(".", "")
+        expect = -int(digits) if neg else int(digits)
+        check(value == expect, f"ticks({text!r}) value {value} != {expect}")
+        check(decs == decimals_of(text),
+              f"ticks({text!r}) decimals {decs} != decimals_of {decimals_of(text)}")
+
+    # Monotonicity at a common scale: the ordering of scaled values must follow
+    # the ordering of the numbers they came from.
+    ordered = ("1.0", "1.00000001", "1.5", "2", "78564.00000000")
+    scaled = [ticks(t)[0] * 10 ** (8 - ticks(t)[1]) for t in ordered]
+    check(scaled == sorted(scaled), f"ticks is not monotonic: {scaled}")
+
+    # Exponent notation is REFUSED by ticks and TOLERATED by decimals_of: a
+    # caller counting precision across a capture must be able to see one
+    # without dying on it, and the adapter path must never accept one.
+    try:
+        ticks("1e5")
+        check(False, "ticks accepted exponent notation")
+    except ValueError:
+        check(True, "")
+    check(decimals_of("1e5") == 0, "decimals_of raised or mis-counted on 1e5")
+
+    # -- binance_payload / binance_stream_name ----------------------------
+    wrapped = {"stream": "btcusdt@depth@100ms", "data": {"e": "depthUpdate"}}
+    bare = {"e": "depthUpdate"}
+    check(binance_payload(wrapped) == bare, "envelope not unwrapped")
+    check(binance_payload(binance_payload(wrapped)) == bare,
+          "binance_payload is not idempotent")
+    check(binance_payload(bare) == bare, "a bare payload was altered")
+    check(binance_stream_name(wrapped) == "depth@100ms",
+          "stream name not read from the envelope")
+    check(binance_stream_name(bare, {"streams": ["depth20"]}) == "depth20",
+          "stream name not read from the metadata")
+
+    # -- the venue predicates, INCLUDING the fallthrough hazard ------------
+    diff = {"e": "depthUpdate", "U": 1, "u": 2, "b": [], "a": []}
+    partial = {"lastUpdateId": 7, "bids": [], "asks": []}
+    kraken_book = {"channel": "book", "type": "update"}
+    anvil_book = {"type": "book", "ticker": 101}
+
+    check(is_book_event("binance", diff), "binance diff is not a book event")
+    check(is_book_event("binance", {"stream": "x@depth", "data": diff}),
+          "a wrapped binance diff is not a book event")
+    check(is_book_event("binance", partial), "binance partial is not a book event")
+    # THE FALLTHROUGH TEST. Kraken's answer for a Binance frame is False, so a
+    # venue added without its own branch reports an EMPTY capture rather than an
+    # error -- the confident wrong answer, caught here rather than in a figure.
+    check(is_book_event("kraken", diff) is False,
+          "a Binance frame reads as a Kraken book event")
+    check(is_snapshot("binance", partial), "a partial does not replace the top-N")
+    check(is_snapshot("binance", diff) is False, "a diff is not a snapshot")
+    check(rebaselines("binance", partial) is False,
+          "a WS frame must never re-baseline at Binance")
+    check(rebaselines("binance", partial, "rest") is True,
+          "a REST record is the only thing that re-baselines at Binance")
+    check(is_liveness("binance", diff) is False
+          and is_liveness("binance", partial) is False,
+          "Binance declares no liveness record -- this must stay False")
+    check(is_liveness("kraken", {"channel": "heartbeat"}), "kraken heartbeat")
+    check(is_liveness("anvil", {"type": "summary"}), "anvil summary")
+    check(is_trade("binance", {"e": "aggTrade"}), "binance aggTrade")
+    check(record_kind("binance", diff) == "depthUpdate", "record_kind binance diff")
+    check(record_kind("binance", partial) == "partialDepth",
+          "record_kind binance partial")
+    check(record_kind("kraken", kraken_book) == "book/update", "record_kind kraken")
+    check(record_kind("anvil", anvil_book) == "book", "record_kind anvil")
+
+    # Every declared venue must ANSWER for every shape, including junk, rather
+    # than raising -- these predicates run over whatever a venue actually sent.
+    for venue in VENUES:
+        for frame in (diff, partial, kraken_book, anvil_book, None, [], "x", 3):
+            for fn in (is_book_event, is_snapshot, is_trade, is_liveness,
+                       rebaselines):
+                check(isinstance(fn(venue, frame), bool),
+                      f"{fn.__name__}({venue!r}, {frame!r}) is not a bool")
+
+    # -- the record line shape, against the spellings the writers emit -----
+    lines = [
+        '{"rx_ns": 5, "frame": {"e":"depthUpdate"}}',
+        '{"rx_ns": 6, "dir": "tx", "frame": {"method":"subscribe"}}',
+        '{"rx_ns": 7, "kind": "rest", "req": {"limit": 100}, "frame": {"lastUpdateId":1}}',
+        '{"rx_ns": 8, "kind": "control", "ctl": {"op": "ping"}, "frame": null}',
+    ]
+    for line, want in zip(lines, ("", "", "rest", "control")):
+        check(kind_of_line(line, line.find(FRAME_KEY)) == want,
+              f"kind_of_line got {kind_of_line(line, line.find(FRAME_KEY))!r}, want {want!r}")
+
+    # A frame body containing the kind marker must not be able to describe the
+    # record that carries it -- which is why the search is bounded by `upto`.
+    sneaky = json.dumps({"rx_ns": 9})[:-1] + ', "frame": ' + json.dumps(
+        {"note": '"kind": "rest"'}) + "}"
+    check(kind_of_line(sneaky, sneaky.find(FRAME_KEY)) == "",
+          "a frame body was allowed to describe its own record kind")
+
+    import os
+    import tempfile
+    header = ('{"captured_at": "X", "url": "ws://x", "venue": "binance", '
+              '"symbol": "BTCUSDT", "tool_version": "0.1.0"}')
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "t.ndjson")
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(header + "\n")
+            for line in lines:
+                fh.write(line + "\n")
+        plain = list(read_capture(path))
+        check(len(plain) == 1, f"default read yielded {len(plain)} records, want 1")
+        check(plain[0].kind == "", "a plain frame reported a kind")
+        opted = list(read_capture(path, kinds=("rest", "control")))
+        check(len(opted) == 3, f"opted-in read yielded {len(opted)}, want 3")
+        rest = [r for r in opted if r.kind == "rest"][0]
+        check(rest.wrapper["req"]["limit"] == 100, "rest wrapper not parsed")
+        check(rest.frame["lastUpdateId"] == 1, "rest body not parsed")
+        ctl = [r for r in opted if r.kind == "control"][0]
+        check(ctl.frame is None, "a control record must carry no frame")
+        check(ctl.wrapper["ctl"]["op"] == "ping", "control wrapper not parsed")
+        withtx = list(read_capture(path, skip_tx=False))
+        check(sum(1 for r in withtx if r.is_tx) == 1, "the tx record was not surfaced")
+        check(check_meta(read_meta(path)) == "binance", "check_meta did not say binance")
+
+    for why in fails:
+        print("  FAIL " + why)
+    print(f"[tracefile] selfcheck {'FAILED' if fails else 'OK'}: {checks} checks")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    if "--selfcheck" in _sys.argv:
+        raise SystemExit(selfcheck())
+    _sys.stderr.write("tracefile.py is a library; pass --selfcheck to test it.\n")
+    raise SystemExit(2)
