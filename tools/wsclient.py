@@ -32,6 +32,18 @@ trace:
     the cure for exactly this; measured 2026-08-16, ``timeBeginPeriod(1)`` does
     **not** move ``monotonic_ns`` on Python 3.12 / Windows 11 -- still 15.0 ms.
     A different clock does: ``perf_counter_ns`` steps at 0.2 us.)
+  * ``on_control`` is NEW at M5 stage 0 and is the second one. It is an optional
+    callback, defaulted to ``None``, invoked for every PING/PONG/CLOSE frame with
+    ``(opcode, payload, recv_ns, replied_ns)``. Anvil and Kraken pass nothing, so
+    their code path is `if self.on_control is not None` and no byte they write can
+    move; Binance passes one because that venue pings every 20 s, enforces a 60 s
+    pong deadline, and **no committed trace in this repository has ever contained a
+    control frame** -- which is B2's third blind-spot class (a corpus that has never
+    held a frame kind) sitting on the one path that closes a socket when it is
+    wrong. The client already answered pings correctly; what did not exist was any
+    way for a capture to record that it did. Re-verified byte-identical by the same
+    loopback replay described below, run again on 2026-08-24.
+
   * ``send_text()`` is NEW and is the one genuinely new capability at M4 stage 0
     -- ``capture_anvil.py`` is a pure consumer, while Kraken has to *send* a
     subscribe. It reuses the existing masking path that ``close()`` already
@@ -121,7 +133,7 @@ class WsClient:
 
     def __init__(self, url: str, origin: str | None, timeout: float = 20.0,
                  user_agent: str = "depthcharge-capture",
-                 clock=time.monotonic_ns):
+                 clock=time.monotonic_ns, on_control=None):
         parts = urlsplit(url)
         if parts.scheme not in ("ws", "wss"):
             raise WsError(f"unsupported scheme {parts.scheme!r} (want ws/wss)")
@@ -141,6 +153,12 @@ class WsClient:
         # time.monotonic_ns() advances in 15.0 ms steps, which is coarser than
         # Kraken's own inter-message gaps.
         self.clock = clock
+        # Optional observer for control frames (M5 stage 0). None for every
+        # caller that predates Binance, and the call site below is guarded, so
+        # the Anvil and Kraken paths execute exactly the instructions they did.
+        # Signature: (opcode, payload, recv_ns, replied_ns) -- replied_ns is the
+        # instant our pong left, or None for a frame we do not answer.
+        self.on_control = on_control
         self.sock: socket.socket | None = None
         self._buf = bytearray()
         # Recorded from the handshake so the caller can answer the Origin
@@ -319,11 +337,22 @@ class WsClient:
             opcode = header & 0x0F
 
             if opcode == OP_PING:
+                # The pong goes back FIRST and the observer is told afterwards.
+                # A venue that enforces a pong deadline is not owed a callback's
+                # latency, and an exception raised by a recording callback must
+                # not be what loses the connection.
+                recv_ns = self.clock()
                 self._send_frame(OP_PONG, payload)
+                if self.on_control is not None:
+                    self.on_control(OP_PING, payload, recv_ns, self.clock())
                 continue
             if opcode == OP_PONG:
+                if self.on_control is not None:
+                    self.on_control(OP_PONG, payload, self.clock(), None)
                 continue
             if opcode == OP_CLOSE:
+                if self.on_control is not None:
+                    self.on_control(OP_CLOSE, payload, self.clock(), None)
                 try:
                     self._send_frame(OP_CLOSE, payload[:2])
                 except OSError:
