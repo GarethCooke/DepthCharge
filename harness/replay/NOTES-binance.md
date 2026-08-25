@@ -562,3 +562,91 @@ figures move in the same commit. Never the third thing.
 | `binance_btcusdt_reconnect_20260824.ndjson` | 60 s | the deliberate reconnect and the one `U`/`u` break. **Not a clean window; never use as a guard.** |
 
 Full captures stay untracked in `_local/`.
+
+---
+
+## Addendum — M5 stage A, 2026-08-25: what the reader found when it was built
+
+Everything above was measured by the Python tools. This section is what the **C++ reader**
+found when it was given the same seven committed slices, and it is where this document and
+the stage-A brief disagree. Same rule as the header: **where these notes and a brief
+disagree, the notes win** — they were measured.
+
+### The proposed record shape is accepted, with one correction the wire made
+
+[§ The record shape for a REST fetch](#the-record-shape-for-a-rest-fetch--proposed-and-the-reader-deliberately-not-built)
+proposed the `kind` discriminator and M5 stage A implements it unchanged, in both readers,
+with `RecordForm { Frame, Rest, Control }` and an absent key meaning `frame`. All eleven
+pre-existing traces are byte-identical through the change and no golden moved.
+
+**The one correction: a `rest` record's `frame` may be `null`.** The first draft of
+`TraceReader` required an object, and `capture_binance --selfcheck` refused a trace its own
+capture loop had just written — `on_rest` **records** a failed fetch rather than dropping it,
+because *the snapshot did not arrive* is a fact about the capture window, and so is a body
+this line shape cannot hold. `req.status` and `req.error` say which. Both readers now accept
+object-or-null, and both name a bodyless one **`rest:no-body`** rather than folding it into
+the fetch count — the same rule, and the same reason, as Kraken's `ack:subscribe REFUSED`.
+
+The reader was wrong and the wire was right, which is the whole reason the reader was built
+before the adapter.
+
+### The ping, counted in committed files for the first time
+
+**17 pings survive into the seven committed slices** — 5, 5, 3, 0, 1, 1, 2. The figure of
+**11** in [§ The server pings](#the-server-pings-it-is-answered-and-there-is-now-a-trace-that-proves-it)
+is the count across the **original five** slices and is unchanged; the two later ones
+(`atomeur_deepseed`, `deepseed2`) add 6. **Every one of the 17 carries a `pong_ns`**, which
+is the evidence the 2026-08-25 ruling rests on — the path was exercised, not merely present.
+
+Three slices are long enough to measure the cadence, and they reproduce stage 0's figure from
+the committed files independently, through the C++ reader:
+
+| slice | pings | median interval |
+| --- | ---: | ---: |
+| `binance_atomeur_d100ms` | 5 | 19,951.7 ms |
+| `binance_atomeur_deepseed` | 5 | 20,011.6 ms |
+| `binance_btcusdt_d1000ms` | 3 | 20,013.3 ms |
+| `binance_btcusdt_reconnect` | 2 | 20,054.2 ms |
+
+against the **19,970 ms** median over 23 intervals recorded above. The four are within
+0.1–0.4% of it.
+
+**These medians are only obtainable from `ctl.recv_ns`.** A ping's record is written when the
+main loop next flushes, so `binance_atomeur_deepseed`'s three pings share **one** `rx_ns` —
+they were flushed together after a 28.5 s silence. `TraceRecord::event_ns` is the field that
+separates the two (ARCHITECTURE §9, 2026-08-25).
+
+### The ~80 s threshold is not the number the code produces
+
+`liveness_clock.hpp` clamps at `kThresholdCeilingMs = 30,000 ms`, so `4 × 19,970 = 79,880`
+caps to **30 s**. And `kMinSamples = 8` intervals is **~160 s of wall clock** at this cadence,
+which **no committed slice reaches** — the longest is 88 s carrying 5 pings, i.e. 4 intervals
+— so all seven replay on the *uncalibrated* default, which is also 30,000 ms. Calibrated and
+uncalibrated coincide here, so `liveness_firings = 0` on every slice and nothing misbehaves;
+what is inert is the self-calibration itself. **Owned by C**, with the multiplier. Full
+reasoning in ARCHITECTURE §9.
+
+This is the one figure in this document that a longer capture would change, and it is a
+second reason B2's soak matters: **no artefact in this repository is long enough to watch
+this venue's liveness clock calibrate.**
+
+### The pre-`48ba299` trailing snapshot: one of the seven lost one
+
+`48ba299` fixed `capture_binance` losing an in-flight REST fetch at the end of a capture; the
+seven slices predate it. A fetch is launched only when a **message** arrives at or after
+`last send + snapshot_every_s`, and the old `finally` slept a fixed 0.3 s against a ~1.0–1.5 s
+round trip. So the question is answerable from the artefacts, and the answer is:
+
+| slice | verdict |
+| --- | --- |
+| `binance_atomeur_d100ms` | **LOST ONE.** Last fetch sent at +71.60 s, next due at +86.60 s, and a message arrived at +87.90 s — the last record in the file. The fetch fired and its record never landed. |
+| `binance_atomeur_deepseed` | No. The capture's last message is at +18.50 s and the next fetch was not due until +20.00 s, so none was ever launched. The file ends with the `finally` drain writing two queued pings at +46.97 s. |
+| the other five | Not applicable. Each is a **window that ends well before its capture's last record**, so a fetch lost at the capture's end falls outside the slice entirely. Each capture also ended with less than one fetch interval elapsed since its last send. |
+
+Both ATOMEUR files are the whole capture rather than a window — their `_local/` copies are
+byte-identical to the committed ones — which is exactly why they are the only two exposed.
+
+**It costs nothing.** `binance_atomeur_d100ms` is the quiet-pair-and-silence witness, not an
+oracle golden; both deep-seed goldens are unaffected, and their `U`/`u` bracketing and 235/235
+GREEN results do not involve the missing record. **This adds no reason to re-capture** — that
+is B2's, with the rest of the pin work.

@@ -51,6 +51,14 @@ main tree is one of the three failures behind the mutation-verification rule in 
 §9 (2026-08-18) — it passed, and it was measuring the wrong tree. Delete stale worktrees when done:
 a stale one is precisely where a green build comes from the wrong source.
 
+**Run the verification loop INLINE. `powershell -File <script>` fails at `CMakeTestCXXCompiler`** —
+the compiler check dies during configure, for reasons nobody has rooted out, so a loop written as a
+script and launched that way reports a red build that has nothing to do with the commit under test.
+Issue the commands directly instead. Tooling rather than architecture, so no §9 row; recorded here
+because it has cost an hour more than once. (This desk is configured with the **`host-mingw`**
+presets — `build/host` holds a *MinGW Makefiles* cache, so `cmake --preset host` fails with a
+generator mismatch. Use `--preset host-mingw` for configure and ctest.)
+
 ## Hand-off protocol (end of every session)
 
 1. Append to the brief's **Session log**: date · model · done · decisions **with why** ·
