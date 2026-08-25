@@ -65,6 +65,22 @@ FRAME_KEY = '"frame": '
 # The marker capture_kraken.py puts on a line it sent rather than received.
 TX_KEY = '"dir": "tx"'
 
+# The marker capture_binance.py puts on a line that is NOT a WebSocket text
+# frame from the venue (M5 stage 0). Two exist so far: `rest`, a
+# /api/v3/depth fetch this client chose to make, and `control`, a WebSocket
+# ping/pong/close. Both sit before `"frame"`, exactly where `dir` already sits.
+#
+# AN ABSENT `kind` MEANS WHAT EVERY EXISTING RECORD ALREADY IS -- a JSON text
+# frame the venue sent over the WebSocket -- which is what keeps the four Anvil
+# traces and the six Kraken ones byte-identical: nothing in them acquires a key.
+# Same additivity rule the `venue` tag was granted at M4 stage A.
+#
+# `read_capture` SKIPS these by default, and the default is the point. Every
+# caller that exists today is pricing a venue's wire or measuring inter-message
+# gaps, and a REST body counted as a WS frame would inflate both by the largest
+# single payload in the file. A caller that wants them says so.
+KIND_KEY = '"kind": "'
+
 # --- the venue-conditional metadata contract (M4 stage A) --------------------
 # One table, mirroring kVenueTable in harness/include/dc_harness/venue.hpp.
 # Adding a venue means adding a row in BOTH, and `check_meta` below is what
@@ -74,6 +90,7 @@ COMMON_REQUIRED = ("captured_at", "url", "tool_version")
 VENUES: dict[str, tuple[str, ...]] = {
     "anvil": ("ticker",),
     "kraken": ("symbol",),
+    "binance": ("symbol",),
 }
 UNDECLARED_CLOCK = "undeclared"
 
@@ -81,6 +98,21 @@ UNDECLARED_CLOCK = "undeclared"
 def venue_of(meta: dict) -> str:
     """The trace's venue. An absent tag is `anvil` -- that is the rule."""
     return meta.get("venue") or DEFAULT_VENUE
+
+
+def binance_payload(frame):
+    """Unwrap Binance's combined-stream envelope, or return the frame unchanged.
+
+    `/ws/<stream>` delivers the bare payload; `/stream?streams=a/b` wraps it as
+    `{"stream": "<name>", "data": {...}}` because one socket carries several
+    streams and the payload alone does not say which. Every predicate below has
+    to see through it, and NONE of them may strip it from the record -- whether
+    the wrapper is worth its bytes is a measured question (M5 stage 0) and a
+    reader that discarded it would have destroyed the evidence.
+    """
+    if isinstance(frame, dict) and "stream" in frame and "data" in frame:
+        return frame["data"]
+    return frame
 
 
 def is_book_event(venue: str, frame) -> bool:
@@ -94,6 +126,13 @@ def is_book_event(venue: str, frame) -> bool:
         return False
     if venue == "anvil":
         return frame.get("type") in ("snapshot", "book", "trade")
+    if venue == "binance":
+        p = binance_payload(frame)
+        if not isinstance(p, dict):
+            return False
+        # A diff event, or a partial-depth payload (which has no event type at
+        # all -- it is identified by carrying `lastUpdateId` and nothing else).
+        return p.get("e") == "depthUpdate" or "lastUpdateId" in p
     return frame.get("channel") == "book"
 
 
@@ -103,11 +142,20 @@ def is_snapshot(venue: str, frame) -> bool:
         return False
     if venue == "anvil":
         return frame.get("type") == "snapshot"
+    if venue == "binance":
+        # A partial-depth payload (`@depth20`) replaces the top 20 outright.
+        # NOTE what this deliberately does NOT cover: at this venue the record a
+        # RESYNC arrives as is a REST /api/v3/depth fetch, which is a
+        # `kind: "rest"` record and not a WS frame at all -- the first venue where
+        # the healing event does not come down the socket. That asymmetry is M5's
+        # to resolve; this predicate answers only for frames.
+        p = binance_payload(frame)
+        return isinstance(p, dict) and "lastUpdateId" in p and "e" not in p
     return frame.get("channel") == "book" and frame.get("type") == "snapshot"
 
 
-def rebaselines(venue: str, frame) -> bool:
-    """After this frame, is the book FULLY KNOWN — no earlier record required?
+def rebaselines(venue: str, frame, kind: str = "") -> bool:
+    """After this record, is the book FULLY KNOWN — no earlier record required?
 
     NOT the same question as `is_snapshot`, and the difference is Anvil's
     (added M4 stage B2, for `slice_trace`'s self-containment rule).
@@ -137,8 +185,32 @@ def rebaselines(venue: str, frame) -> bool:
     """
     if not isinstance(frame, dict):
         return False
+    if venue == "binance" and kind == "rest":
+        # THE ONLY THING AT THIS VENUE THAT RE-BASELINES (M5 stage 0). A
+        # /api/v3/depth body is a complete book to its `limit`, stamped with the
+        # `lastUpdateId` the diff stream is bracketed against -- so a window that
+        # begins here is replayable and one that begins anywhere else is not.
+        # `kind` is a parameter rather than something sniffed out of the frame
+        # because a REST body and a `@depth20` payload are the same SHAPE
+        # (`bids`/`asks`/`lastUpdateId`) and only the record that carries them
+        # says which is which.
+        return "lastUpdateId" in frame
     if venue == "anvil":
         return frame.get("type") in ("snapshot", "book")
+    if venue == "binance":
+        # ALWAYS FALSE FOR ANY WS FRAME, and this is not an oversight.
+        #
+        # A `@depth20` partial payload fully determines the top 20 and nothing
+        # below it, so a book maintained from the diff stream is NOT fully known
+        # after one: the levels outside the window keep whatever they had, and a
+        # window cut here would replay a book with an unknown tail. Anvil and
+        # Kraken both have a frame that makes the whole subscribed book known;
+        # Binance does not, because its baseline arrives out of band over REST.
+        #
+        # The consequence for slicing is the branch above: a Binance diff
+        # capture can only be cut at a `kind: "rest"` record, which is what
+        # `slice_trace.py --from-baseline` exists for.
+        return False
     return is_snapshot(venue, frame)
 
 
@@ -158,6 +230,13 @@ def is_trade(venue: str, frame) -> bool:
         return False
     if venue == "anvil":
         return frame.get("type") == "trade"
+    if venue == "binance":
+        p = binance_payload(frame)
+        # Same shape of coincidence as Kraken's, and stated for the same reason:
+        # trades live on `@trade`/`@aggTrade`, which DepthCharge does not
+        # subscribe to, so this is a property of the subscription and not of the
+        # venue.
+        return isinstance(p, dict) and p.get("e") in ("trade", "aggTrade")
     return frame.get("channel") == "trade"
 
 
@@ -180,6 +259,22 @@ def is_liveness(venue: str, frame) -> bool:
         return False
     if venue == "anvil":
         return frame.get("type") == "summary"
+    if venue == "binance":
+        # **ALWAYS FALSE, AND THAT IS THE FINDING** (M5 stage 0, measured).
+        #
+        # Anvil declares liveness with `summary`, Kraken with `heartbeat`, and the
+        # 2026-08-17 ruling arms the panel's grey state on that record and on
+        # nothing else. Binance's depth streams publish no such record: there is
+        # no frame whose arrival proves the feed is alive without claiming the
+        # book moved.
+        #
+        # What this venue has instead is a **WebSocket PING control frame every
+        # ~20 s**, which is a liveness signal in every respect except that it is
+        # not JSON, is not a record, and -- before the `kind` proposal above --
+        # could not appear in a DepthCharge trace at all. So Binance's row in the
+        # venue table cannot be filled in by copying either predecessor's, and the
+        # thing that would fill it lives one layer down, in the transport.
+        return False
     return frame.get("channel") == "heartbeat"
 
 
@@ -196,6 +291,17 @@ def record_kind(venue: str, frame, is_tx: bool = False) -> str:
         return "?"
     if venue == "anvil":
         return frame.get("type") or "?"
+    if venue == "binance":
+        p = binance_payload(frame)
+        if not isinstance(p, dict):
+            return "?"
+        if p.get("e") is not None:
+            return str(p["e"])            # `depthUpdate`
+        if "lastUpdateId" in p:
+            return "partialDepth"         # `@depth20` -- no event type on the wire
+        if "result" in p or "id" in p:
+            return "ack"
+        return "?"
     channel = frame.get("channel")
     if channel is not None:
         kind = frame.get("type")
@@ -235,6 +341,22 @@ def check_meta(meta: dict) -> str:
     return venue
 
 
+def kind_of_line(line: str, upto: int) -> str:
+    """The record's `kind`, or `""` for a plain venue WS text frame.
+
+    Read off the raw line rather than the parsed object, because the parsed
+    object is the FRAME and the kind is a property of the wrapper. Bounded to the
+    text before `"frame"` for the same reason `is_tx` is: a REST body is the
+    venue's text and must never be able to describe the record that carries it.
+    """
+    at = line.find(KIND_KEY, 0, upto)
+    if at < 0:
+        return ""
+    at += len(KIND_KEY)
+    end = line.find('"', at)
+    return line[at:end] if end > at else ""
+
+
 class Record(NamedTuple):
     """One capture line."""
 
@@ -243,14 +365,23 @@ class Record(NamedTuple):
     rx_ns: int      # monotonic ns at arrival (or at send, for a tx record)
     is_tx: bool     # True only for a frame this side sent
     lineno: int
+    kind: str = ""  # "" = a venue WS text frame; "rest"/"control" (M5 stage 0)
+    wrapper: dict | None = None  # the non-frame half of a kinded record
 
 
-def read_capture(path, *, skip_tx: bool = True):
+def read_capture(path, *, skip_tx: bool = True, kinds: tuple[str, ...] = ()):
     """Yield a Record per frame line. Raises ValueError with a line number.
 
     `skip_tx` defaults to True because every existing caller is measuring the
     venue, and a caller that wants the subscribe back has to say so.
+
+    `kinds` names the non-frame record kinds to ALSO yield (M5 stage 0); the
+    default of none means a caller written before Binance existed sees exactly
+    what it always saw -- the venue's WS text frames -- even when handed a trace
+    full of REST fetches and control frames. A caller that wants them opts in,
+    and gets `Record.kind` and `Record.wrapper` filled in.
     """
+    want = frozenset(kinds)
     with open(path, encoding="utf-8") as fh:
         header = fh.readline()
         if not header.strip():
@@ -266,6 +397,9 @@ def read_capture(path, *, skip_tx: bool = True):
             is_tx = TX_KEY in line[:start]
             if is_tx and skip_tx:
                 continue
+            kind = kind_of_line(line, start)
+            if kind and kind not in want:
+                continue
             raw = line[start + len(FRAME_KEY):].rstrip()
             if raw.endswith("}"):
                 raw = raw[:-1]  # the capture wrapper's own closing brace
@@ -280,7 +414,19 @@ def read_capture(path, *, skip_tx: bool = True):
                 rx_ns = int(line[len('{"rx_ns": '):line.index(",")])
             except ValueError as exc:
                 raise ValueError(f"line {lineno}: no readable rx_ns ({exc})") from exc
-            yield Record(raw, frame, rx_ns, is_tx, lineno)
+            wrapper = None
+            if kind:
+                # The wrapper is this tool's own output and therefore safely
+                # re-parsable; only the frame is the venue's.
+                head = line[:start].rstrip()
+                if head.endswith(","):
+                    head = head[:-1]
+                try:
+                    wrapper = json.loads(head + "}")
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"line {lineno}: unreadable {kind!r} wrapper ({exc})") from exc
+            yield Record(raw, frame, rx_ns, is_tx, lineno, kind, wrapper)
 
 
 def read_meta(path, *, validate: bool = False) -> dict:
