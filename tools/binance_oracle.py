@@ -60,26 +60,19 @@ Python 3 stdlib only. Lives in tools/.
 from __future__ import annotations
 
 import argparse
+import enum
 from pathlib import Path
 
 from tracefile import binance_payload, read_capture, read_meta
+from tracefile import ticks as _ticks
 
 
 def ticks(text: str) -> int:
-    """A quoted decimal as a scaled integer. Digits shifted, never rounded.
-
-    Both sides of every comparison in this file go through here, so a level is
-    compared as an integer and never as a float (invariant #3). Binance quotes
-    every price and quantity to a fixed precision, so a common scale is safe --
-    and section 7 counts, over the captures, whether that is actually true.
-    """
-    if "e" in text or "E" in text:
-        raise ValueError(f"exponent notation on the wire: {text!r}")
-    neg = text.startswith("-")
-    body = text[1:] if neg else text
-    whole, _, frac = body.partition(".")
-    value = int(whole + frac) if (whole + frac) else 0
-    return -value if neg else value
+    """The scaled integer alone. `tracefile.ticks` is the one implementation;
+    this file only ever wants the value, and both sides of every comparison
+    here go through it so a level is compared as an integer and never as a
+    float (invariant #3)."""
+    return _ticks(text)[0]
 
 
 # --- the implementations under test -----------------------------------------
@@ -203,179 +196,248 @@ class Outcome:
                 f"{self.unverifiable:>5}   {self.reasons or ''}")
 
 
+class Replay:
+    """One replay of one capture against one implementation of the book.
+
+    A class rather than a 127-line function with a dozen closures (review, M5
+    stage 0). The state below was being closed over by five nested helpers, and
+    `_apply` took NINE parameters to carry it between them -- which is the
+    missing-abstraction signal in its plainest form. Nothing about the grading
+    changed in the move; the pinned figures are identical, which is what
+    `--check` and `binance_tool_selfcheck` are for.
+    """
+
+    def __init__(self, trace: Path, mutation: str = HONEST, window: int = 0,
+                 depth: int = 20) -> None:
+        self.trace = trace
+        self.depth = depth
+        self.meta = read_meta(trace, validate=True)
+        self.book = RefBook(mutation, window)
+        self.a_out = Outcome()          # oracle (a), the partial-depth stream
+        self.b_out = Outcome()          # oracle (b), the REST re-snapshot
+        self.uu = {"tested": 0, "ok": 0, "break": 0, "breaks": []}
+        self.buffered: list[dict] = []
+        self.graded: list = []
+        # top-N book images keyed by the `u` that produced them, so a REST body
+        # that arrives a second late can still be graded against the instant it
+        # names.
+        self.history: dict[int, tuple[list, list]] = {}
+        self.pending: dict[int, dict] = {}   # partials awaiting their diff
+        self.brackets: list[tuple[int, int]] = []
+        self.seeded = False
+        self.first_seed_id = None
+
+    # -- grading ----------------------------------------------------------
+
+    def grade_against(self, payload: dict, got, out: Outcome, tag: str,
+                      detail: bool) -> None:
+        """Grade one venue-published top-N against a book image.
+
+        ONE routine. It was two -- `compare` and `compare_image` -- sharing four
+        of their six lines and differing only in where the book came from and
+        how much detail a failure carried.
+
+        `got` is the image to grade against: the LIVE book for a partial
+        payload, and the image AS OF the snapshot's id for a REST body, because
+        a REST body is a statement about a past instant.
+        """
+        want_b, want_a = partial_top(payload, self.depth)
+        got_b, got_a = got
+        keep_b = min(len(want_b), len(got_b))
+        keep_a = min(len(want_a), len(got_a))
+        bids_ok = got_b[:keep_b] == want_b[:keep_b]
+        asks_ok = got_a[:keep_a] == want_a[:keep_a]
+        why = ()
+        if detail:
+            why = ((("bids", want_b[:3], got_b[:3]) if not bids_ok
+                    else ("asks", want_a[:3], got_a[:3])),)
+        out.note(bids_ok and asks_ok,
+                 detail=(tag, payload["lastUpdateId"]) + why)
+
+    def compare(self, payload: dict, tag: str) -> None:
+        """Grade a partial payload against the LIVE book (oracle (a))."""
+        image = self.book.top(self.depth)
+        # The book AS GRADED, kept so that "this mutation changed nothing
+        # observable on this trace" is a comparison rather than a heuristic.
+        self.graded.append(image)
+        self.grade_against(payload, image, self.a_out, tag, detail=True)
+
+    # -- the two REST paths -----------------------------------------------
+
+    def seed_from(self, body: dict) -> None:
+        """THE DOCUMENTED PROCEDURE, once, where it can be read.
+
+        Buffer the diffs, fetch the snapshot, drop everything it already
+        contains, and require the first surviving event to bracket L + 1.
+        """
+        L = body["lastUpdateId"]
+        self.first_seed_id = L
+        self.book.seed(body)
+        self.history[L] = self.book.top(self.depth)
+        survivors = [e for e in self.buffered if e["u"] > L]
+        self.buffered = []
+        self.seeded = True
+        if survivors:
+            first = survivors[0]
+            self.uu["bracket_ok"] = first["U"] <= L + 1 <= first["u"]
+            self.uu["bracket_first_U"] = first["U"]
+            self.uu["bracket_first_u"] = first["u"]
+            self.uu["bracket_snapshot_id"] = L
+        for event in survivors:
+            self.apply_event(event)
+
+    def grade_resnapshot(self, body: dict) -> None:
+        """ORACLE (b): a re-snapshot graded against the book AS OF its own id.
+
+        NOT against the live book, and getting that wrong is the first thing
+        this tool did. A /api/v3/depth round trip measured ~1.0-1.5 s from this
+        box, so by the time the body is in hand the stream has moved 10-15
+        events past the id it is stamped with. Comparing against the live book
+        fails every time and -- worse -- fails in a way that looks like "the
+        venue's ids never line up", which is the opposite of what the wire does
+        (measured: they line up exactly, 23/23 and 5/5). A snapshot is a
+        statement about a PAST instant and must be graded against that instant.
+        """
+        L = body["lastUpdateId"]
+        image = self.history.get(L)
+        if image is not None:
+            self.grade_against(body, image, self.b_out, "rest", detail=False)
+        elif any(U < L < u for U, u in self.brackets):
+            self.b_out.note_unverifiable("inside-a-coalesced-bracket")
+        elif L > (self.book.last_u or 0):
+            self.b_out.note_unverifiable("ahead-of-applied-stream")
+        elif L < (self.first_seed_id or 0):
+            self.b_out.note_unverifiable("before-the-baseline")
+        else:
+            self.b_out.note_unverifiable("no-event-ends-on-this-id")
+
+    # -- the diff stream ---------------------------------------------------
+
+    def apply_event(self, event: dict) -> None:
+        """Apply one diff event, count its `U`/`u` continuity, grade what it unblocks."""
+        prev_u = self.book.last_u
+        if prev_u is not None and self.brackets:
+            self.uu["tested"] += 1
+            if event["U"] == prev_u + 1:
+                self.uu["ok"] += 1
+            else:
+                self.uu["break"] += 1
+                if len(self.uu["breaks"]) < 5:
+                    self.uu["breaks"].append((prev_u, event["U"]))
+        self.brackets.append((event["U"], event["u"]))
+        self.book.apply(event)
+        self.history[event["u"]] = self.book.top(self.depth)
+        if len(self.history) > 4000:   # a capture is 90 s; never trims in practice
+            for key in sorted(self.history)[:1000]:
+                del self.history[key]
+        held = self.pending.pop(event["u"], None)
+        if held is not None:
+            self.compare(held, "partial(deferred)")
+        # Anything still pending that this event has overshot can never be graded.
+        for L in [k for k in self.pending if k < event["u"]]:
+            self.pending.pop(L)
+            inside = any(U < L < u for U, u in self.brackets)
+            self.a_out.note_unverifiable("inside-a-coalesced-bracket" if inside
+                                         else "overshot-by-a-coalesced-event")
+
+    def on_partial(self, payload: dict) -> None:
+        """ORACLE (a): the venue's own top-N, on the same socket."""
+        L = payload["lastUpdateId"]
+        if L == self.book.last_u:
+            self.compare(payload, "partial")
+        elif L > (self.book.last_u or 0):
+            # Arrived before the diff that ends on it. Hold and grade when that
+            # diff lands -- the two streams are interleaved on one socket and
+            # neither is owed the other's ordering.
+            self.pending[L] = payload
+        else:
+            inside = any(U < L < u for U, u in self.brackets)
+            self.a_out.note_unverifiable("inside-a-coalesced-bracket" if inside
+                                         else "no-event-ends-on-this-id")
+
+    # -- the driver --------------------------------------------------------
+
+    def execute(self):
+        for rec in read_capture(self.trace, kinds=("rest",)):
+            if rec.kind == "rest":
+                if rec.frame is None or "lastUpdateId" not in rec.frame:
+                    continue
+                if not self.seeded:
+                    self.seed_from(rec.frame)
+                else:
+                    self.grade_resnapshot(rec.frame)
+                continue
+            payload = binance_payload(rec.frame)
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("e") == "depthUpdate":
+                if not self.seeded:
+                    self.buffered.append(payload)
+                else:
+                    self.apply_event(payload)
+            elif "lastUpdateId" in payload and self.seeded:
+                self.on_partial(payload)
+
+        # Partials still waiting when the capture ended never got their diff.
+        for L in self.pending:
+            inside = any(U < L < u for U, u in self.brackets)
+            self.a_out.note_unverifiable("inside-a-coalesced-bracket" if inside
+                                         else "never-reached-before-capture-ended")
+
+        self.uu["seeded_from"] = self.first_seed_id
+        self.uu["high_water"] = self.book.high_water
+        self.uu["graded"] = self.graded
+        return self.a_out, self.b_out, self.uu
+
+
 def run(trace: Path, mutation: str = HONEST, window: int = 0, depth: int = 20,
         verbose: bool = False):
     """Replay a capture and grade the book at every opportunity the venue gives.
 
     Returns (oracle_a, oracle_b, uu) where the first two are `Outcome`s and the
-    third is the `U`/`u` continuity tally.
+    third is the `U`/`u` continuity tally. Kept as a function because every
+    caller wants exactly this triple.
     """
-    meta = read_meta(trace, validate=True)
-    book = RefBook(mutation, window)
-    a_out, b_out = Outcome(), Outcome()
-    uu = {"tested": 0, "ok": 0, "break": 0, "breaks": []}
-
-    buffered: list[dict] = []
-    graded: list = []
-    # top-N book images keyed by the `u` that produced them, so a REST body that
-    # arrives a second late can still be graded against the instant it names.
-    history: dict[int, tuple[list, list]] = {}
-    seeded = False
-    pending_partials: dict[int, dict] = {}   # lastUpdateId -> payload, awaiting its u
-    brackets: list[tuple[int, int]] = []
-    first_seed_id = None
-
-    def compare_image(payload: dict, image, out: Outcome, tag: str) -> None:
-        want_b, want_a = partial_top(payload, depth)
-        got_b, got_a = image
-        n = min(len(want_b), len(got_b)), min(len(want_a), len(got_a))
-        ok = (got_b[:n[0]] == want_b[:n[0]]) and (got_a[:n[1]] == want_a[:n[1]])
-        out.note(ok, detail=(tag, payload["lastUpdateId"]))
-
-    def compare(payload: dict, out: Outcome, tag: str) -> None:
-        want_b, want_a = partial_top(payload, depth)
-        got_b, got_a = book.top(depth)
-        # The book AS GRADED, kept so that "this mutation changed nothing
-        # observable on this trace" is a comparison rather than a heuristic.
-        graded.append((got_b, got_a))
-        n = min(len(want_b), len(got_b)), min(len(want_a), len(got_a))
-        ok = (got_b[:n[0]] == want_b[:n[0]]) and (got_a[:n[1]] == want_a[:n[1]])
-        out.note(ok, detail=(tag, payload["lastUpdateId"],
-                             ("bids", want_b[:3], got_b[:3]) if got_b[:n[0]] != want_b[:n[0]]
-                             else ("asks", want_a[:3], got_a[:3])))
-
-    for rec in read_capture(trace, kinds=("rest",)):
-        if rec.kind == "rest":
-            if rec.frame is None or "lastUpdateId" not in rec.frame:
-                continue
-            L = rec.frame["lastUpdateId"]
-            if not seeded:
-                # THE DOCUMENTED PROCEDURE. Drop buffered events wholly at or
-                # before the snapshot, then require the first surviving event to
-                # bracket L + 1.
-                first_seed_id = L
-                book.seed(rec.frame)
-                history[L] = book.top(depth)
-                survivors = [e for e in buffered if e["u"] > L]
-                buffered = []
-                seeded = True
-                if survivors:
-                    e0 = survivors[0]
-                    uu["bracket_ok"] = e0["U"] <= L + 1 <= e0["u"]
-                    uu["bracket_first_U"] = e0["U"]
-                    uu["bracket_first_u"] = e0["u"]
-                    uu["bracket_snapshot_id"] = L
-                for e in survivors:
-                    _apply(e, book, uu, brackets, pending_partials, a_out, compare, depth,
-                           history)
-            else:
-                # ORACLE (b): a re-snapshot compared against the streamed book.
-                #
-                # **COMPARED AGAINST THE BOOK AS OF `L`, NOT THE CURRENT BOOK**,
-                # and getting this wrong is the first thing this tool did. A
-                # /api/v3/depth round trip measured ~1.0-1.5 s from this box, so
-                # by the time the body is in hand the diff stream has moved 10-15
-                # events past the id the body is stamped with. Comparing against
-                # the live book therefore fails every time and -- worse -- fails
-                # in a way that looks like "the venue's ids never line up", which
-                # is the opposite of what the wire actually does (measured: they
-                # line up exactly, 23/23 and 5/5). A snapshot is a statement
-                # about a PAST instant and has to be graded against that instant.
-                img = history.get(L)
-                if img is not None:
-                    compare_image(rec.frame, img, b_out, "rest")
-                elif any(U < L < u for U, u in brackets):
-                    b_out.note_unverifiable("inside-a-coalesced-bracket")
-                elif L > (book.last_u or 0):
-                    b_out.note_unverifiable("ahead-of-applied-stream")
-                elif L < (first_seed_id or 0):
-                    b_out.note_unverifiable("before-the-baseline")
-                else:
-                    b_out.note_unverifiable("no-event-ends-on-this-id")
-            continue
-
-        payload = binance_payload(rec.frame)
-        if not isinstance(payload, dict):
-            continue
-
-        if payload.get("e") == "depthUpdate":
-            if not seeded:
-                buffered.append(payload)
-                continue
-            _apply(payload, book, uu, brackets, pending_partials, a_out, compare, depth,
-                   history)
-        elif "lastUpdateId" in payload:
-            # ORACLE (a): the venue's own top-20, on the same socket.
-            if not seeded:
-                continue
-            L = payload["lastUpdateId"]
-            if L == book.last_u:
-                compare(payload, a_out, "partial")
-            elif L > (book.last_u or 0):
-                # Arrived before the diff that ends on it. Hold and grade when
-                # that diff lands -- the two streams are interleaved on one
-                # socket and neither is owed the other's ordering.
-                pending_partials[L] = payload
-            else:
-                inside = any(U < L < u for U, u in brackets)
-                a_out.note_unverifiable("inside-a-coalesced-bracket" if inside
-                                        else "no-event-ends-on-this-id")
-
-    # Partials still waiting when the capture ended never got their diff.
-    for L in pending_partials:
-        inside = any(U < L < u for U, u in brackets)
-        a_out.note_unverifiable("inside-a-coalesced-bracket" if inside
-                                else "never-reached-before-capture-ended")
-
-    uu["seeded_from"] = first_seed_id
-    uu["high_water"] = book.high_water
-    uu["graded"] = graded
-    return a_out, b_out, uu
+    return Replay(trace, mutation, window, depth).execute()
 
 
-def _apply(event, book, uu, brackets, pending, a_out, compare, depth,
-           history=None) -> None:
-    prev_u = book.last_u
-    if prev_u is not None and brackets:
-        uu["tested"] += 1
-        if event["U"] == prev_u + 1:
-            uu["ok"] += 1
-        else:
-            uu["break"] += 1
-            if len(uu["breaks"]) < 5:
-                uu["breaks"].append((prev_u, event["U"]))
-    brackets.append((event["U"], event["u"]))
-    book.apply(event)
-    if history is not None:
-        history[event["u"]] = book.top(depth)
-        if len(history) > 4000:      # a capture is 90 s; this never trims in practice
-            for k in sorted(history)[:1000]:
-                del history[k]
-    held = pending.pop(event["u"], None)
-    if held is not None:
-        compare(held, a_out, "partial(deferred)")
-    # Anything still pending that this event has now overshot can never be graded.
-    for L in [k for k in pending if k < event["u"]]:
-        payload = pending.pop(L)
-        inside = any(U < L < u for U, u in brackets)
-        a_out.note_unverifiable("inside-a-coalesced-bracket" if inside
-                                else "overshot-by-a-coalesced-event")
+class Verdict(enum.Enum):
+    """GREEN / RED / **VACUOUS**, and the third one is the point.
+
+    An enum rather than a string (review, M5 stage 0): `check` used to branch on
+    `.startswith("RED")`, so a typo in a comparison string would silently turn a
+    failure into a pass -- in the one file whose whole thesis is that a pass and
+    an unchecked thing must never look alike.
+    """
+
+    GREEN = "GREEN"
+    RED = "RED"
+    VACUOUS = "VACUOUS"
+
+
+def grade(failed: int, matched: int) -> Verdict:
+    """A detector that made no comparison is VACUOUS, not GREEN.
+
+    `failed == 0` is true both of a detector that checked everything and passed
+    and of one that checked nothing. This tool printed the second as GREEN on its
+    first run against the deep-seed capture -- oracle (b) graded nothing while
+    reporting green against every mutant, because it compared a REST body against
+    the LIVE book instead of the instant the body names. The bug is fixed; the
+    state it hid behind is named so the next one cannot hide there.
+    """
+    if failed:
+        return Verdict.RED
+    return Verdict.GREEN if matched else Verdict.VACUOUS
 
 
 def verdict(failed: int, matched: int) -> str:
-    """GREEN / RED / **VACUOUS**, and the third one is the point.
-
-    A detector that made no comparison at all has `failed == 0`, and reporting
-    that as GREEN is precisely the "oracle that cannot fail" ARCHITECTURE §9
-    (2026-08-16) forbids pinning. This tool printed exactly that on its first run
-    against the deep-seed capture: oracle (b) scored GREEN against every mutant
-    while grading nothing, because it was comparing a snapshot against the LIVE
-    book instead of against the instant the snapshot names. The bug is fixed; the
-    state it hid behind is now named, so the next one cannot hide there.
-    """
-    if failed:
+    """The printable form of `grade`."""
+    v = grade(failed, matched)
+    if v is Verdict.RED:
         return f"RED ({failed})"
-    return "GREEN" if matched else "VACUOUS (0 graded)"
+    if v is Verdict.VACUOUS:
+        return "VACUOUS (0 graded)"
+    return "GREEN"
 
 
 def coincidence_report(trace: Path, depth: int) -> None:
@@ -402,6 +464,78 @@ def coincidence_report(trace: Path, depth: int) -> None:
           f"neither: {len(partial_ids) - exact - inside:,}")
 
 
+def _check_trace(t, depth: int) -> tuple[list, bool]:
+    """Assert the mutation contract for ONE trace.
+
+    Returns (failures, exercised_all_three). Split out at review: `check` was
+    ninety lines carrying both the per-trace assertions and the across-the-set
+    coverage rule, which are two different claims.
+    """
+    failures = []
+    # The honest baseline is deliberately UNBOUNDED (window 0) whatever
+    # `--window` says: the pin means "a correct client grades clean", and a
+    # correct client at this venue does not truncate its book. `main` refuses
+    # `--window` alongside `--check` rather than ignoring it silently.
+    honest, honest_b, uu = run(t, HONEST, 0, depth)
+    if grade(honest.failed, honest.matched) is not Verdict.GREEN:
+        failures.append(f"{t.name}: honest control is "
+                        f"{verdict(honest.failed, honest.matched)}, expected GREEN")
+    # Oracle (b) is computed anyway, so it is ASSERTED rather than discarded
+    # (review). It may legitimately be VACUOUS -- a short slice holds few REST
+    # records -- but it must never be RED against an honest client.
+    if grade(honest_b.failed, honest_b.matched) is Verdict.RED:
+        failures.append(f"{t.name}: oracle (b) is "
+                        f"{verdict(honest_b.failed, honest_b.matched)} against the "
+                        "honest control, expected GREEN or VACUOUS")
+    # How deep the honest book ever got. A trace whose book never exceeds the
+    # bounded window cannot exercise the bounded-window mutant AT ALL -- the
+    # truncation step never removes anything, so the "mutant" is the honest
+    # implementation. Measured, not inferred from a green.
+    honest_books = uu.get("graded", [])
+    inert = []
+    for mut, win in ((M_ZERO_QTY, 0), (M_SWAP_SIDES, 0), (M_BOUNDED_WINDOW, depth + 5)):
+        mm = HONEST if mut == M_BOUNDED_WINDOW else mut
+        out, out_b, u2 = run(t, mm, win, depth)
+        v = grade(out.failed, out.matched)
+        if u2.get("graded", []) == honest_books:
+            # NOT a pass and NOT a failure: on THIS trace the mutation
+            # produced no observable difference at any graded tick, so the
+            # trace cannot ask the question. Detected by comparing the graded
+            # books rather than by a per-mutant heuristic -- a first attempt
+            # asked "did the book exceed the window", which said EXERCISABLE
+            # for a quiet pair whose deep levels never rise into the top 20.
+            #
+            # Reported loudly, because a capture too quiet to break is
+            # indistinguishable from an oracle too weak to notice, and the
+            # whole point of this file is that those must never look alike.
+            inert.append(f"{mut} NOT EXERCISABLE (its book is identical to the "
+                         f"honest one at all {len(honest_books)} graded ticks)")
+            continue
+        if v is not Verdict.RED:
+            failures.append(f"{t.name}: mutant {mut} is "
+                            f"{verdict(out.failed, out.matched)}, expected RED -- "
+                            "the oracle no longer catches it")
+        # (b) is weaker and may grade nothing; when it DID grade, it must agree.
+        if grade(out_b.failed, out_b.matched) is Verdict.GREEN:
+            failures.append(f"{t.name}: mutant {mut} is GREEN under oracle (b), "
+                            "which graded and did not catch it")
+    for line in inert:
+        print(f"  {t.name}: {line}")
+    noop, _, _ = run(t, M_NO_TRUNCATE, 0, depth)
+    if grade(noop.failed, noop.matched) is not Verdict.GREEN:
+        failures.append(
+            f"{t.name}: {M_NO_TRUNCATE} is now caught. That mutant is asserted "
+            "to be a NO-OP at this venue because the diff stream carries every "
+            "removal explicitly. If it has started failing, the wire changed "
+            "or the reference book did -- read NOTES-binance.md before editing "
+            "this expectation.")
+    exercised = 3 - len(inert)
+    print(f"  {t.name}: honest GREEN ({honest.matched} graded), "
+          f"{exercised}/3 mutants exercised and RED, no-truncation asserted no-op")
+
+    return failures, exercised == 3
+
+
 def check(traces, depth: int) -> int:
     """The mutation clause as a build product. Non-zero unless it all holds.
 
@@ -423,51 +557,9 @@ def check(traces, depth: int) -> int:
     failures = []
     full_coverage = False
     for t in traces:
-        honest, _, uu = run(t, HONEST, 0, depth)
-        if verdict(honest.failed, honest.matched) != "GREEN":
-            failures.append(f"{t.name}: honest control is "
-                            f"{verdict(honest.failed, honest.matched)}, expected GREEN")
-        # How deep the honest book ever got. A trace whose book never exceeds the
-        # bounded window cannot exercise the bounded-window mutant AT ALL -- the
-        # truncation step never removes anything, so the "mutant" is the honest
-        # implementation. Measured, not inferred from a green.
-        honest_books = uu.get("graded", [])
-        inert = []
-        for mut, win in ((M_ZERO_QTY, 0), (M_SWAP_SIDES, 0), (M_BOUNDED_WINDOW, depth + 5)):
-            mm = HONEST if mut == M_BOUNDED_WINDOW else mut
-            out, _, u2 = run(t, mm, win, depth)
-            v = verdict(out.failed, out.matched)
-            if u2.get("graded", []) == honest_books:
-                # NOT a pass and NOT a failure: on THIS trace the mutation
-                # produced no observable difference at any graded tick, so the
-                # trace cannot ask the question. Detected by comparing the graded
-                # books rather than by a per-mutant heuristic -- a first attempt
-                # asked "did the book exceed the window", which said EXERCISABLE
-                # for a quiet pair whose deep levels never rise into the top 20.
-                #
-                # Reported loudly, because a capture too quiet to break is
-                # indistinguishable from an oracle too weak to notice, and the
-                # whole point of this file is that those must never look alike.
-                inert.append(f"{mut} NOT EXERCISABLE (its book is identical to the "
-                             f"honest one at all {len(honest_books)} graded ticks)")
-                continue
-            if not v.startswith("RED"):
-                failures.append(f"{t.name}: mutant {mut} is {v}, expected RED -- "
-                                "the oracle no longer catches it")
-        for line in inert:
-            print(f"  {t.name}: {line}")
-        noop, _, _ = run(t, M_NO_TRUNCATE, 0, depth)
-        if verdict(noop.failed, noop.matched) != "GREEN":
-            failures.append(
-                f"{t.name}: {M_NO_TRUNCATE} is now caught. That mutant is asserted "
-                "to be a NO-OP at this venue because the diff stream carries every "
-                "removal explicitly. If it has started failing, the wire changed "
-                "or the reference book did -- read NOTES-binance.md before editing "
-                "this expectation.")
-        exercised = 3 - len(inert)
-        full_coverage = full_coverage or exercised == 3
-        print(f"  {t.name}: honest GREEN ({honest.matched} graded), "
-              f"{exercised}/3 mutants exercised and RED, no-truncation asserted no-op")
+        trace_failures, full = _check_trace(t, depth)
+        failures.extend(trace_failures)
+        full_coverage = full_coverage or full
     if not full_coverage:
         failures.append(
             "NO trace in this set exercised all three mutants. At least one must: "
@@ -495,6 +587,11 @@ def main(argv=None) -> int:
                          "and all three transferring mutants are RED")
     args = ap.parse_args(argv)
     if args.check:
+        if args.window:
+            ap.error("--window cannot be combined with --check: the pinned honest "
+                     "baseline is unbounded by definition, and silently ignoring "
+                     "the flag would make the check mean something other than it "
+                     "says.")
         return check(args.trace, args.depth)
 
     for t in args.trace:
