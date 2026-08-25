@@ -482,6 +482,40 @@ def selfcheck() -> int:
         assert len(out_lines) == 1 + 1 + 63 + 1 + 10, len(out_lines)
         checks += 2
 
+    # --- --require-baseline, the guard M5 stage 0 added -------------------
+    #
+    # It had NO case here when it was written, in the tool whose own note above
+    # records that it "had no test of any kind until B2" and cut windows without
+    # checking they contained the event they were named for. This is exactly that
+    # class of guard, and these are exactly the cases no committed capture
+    # contains: every committed capture satisfies the rule.
+    #
+    # The FIRST case is the one that matters. `require_baseline` must be a GUARD
+    # and never an origin: at Binance the REST snapshot record lands ~1-1.5 s
+    # AFTER the instant it describes, so a window cut AT it loses the diffs that
+    # bring it forward -- measured, 884/884 green to 250/250 red on a slice of
+    # one capture. A window that merely CONTAINS a baseline is correct; one that
+    # starts at it is not.
+    baselined = [_frame(0.0, delta=True), _frame(1.0, delta=True),
+                 _frame(2.0, snap=True), _frame(3.0, delta=True)]
+    kept = slice_baseline(baselined, 10.0, 0.0, True)
+    assert len(kept) == 4, len(kept)
+    assert kept[0] == baselined[0].raw, "require_baseline moved the window origin"
+    checks += 2
+
+    no_baseline = [_frame(0.0, delta=True), _frame(1.0, delta=True)]
+    _refuses(lambda: slice_baseline(no_baseline, 10.0, 0.0, True),
+             "no record after which the book is fully known")
+    checks += 1
+
+    assert len(slice_baseline(no_baseline, 10.0, 0.0, False)) == 2
+    checks += 1
+
+    late = [_frame(0.0, delta=True), _frame(99.0, snap=True)]
+    _refuses(lambda: slice_baseline(late, 10.0, 0.0, True),
+             "no record after which the book is fully known")
+    checks += 1
+
     print(f"[slice] selfcheck OK: {checks} checks")
     return 0
 
