@@ -542,6 +542,83 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/slice_trace.py --selfcheck)
   set_tests_properties(slice_tool_selfcheck PROPERTIES TIMEOUT 120)
+
+  # The THIRD venue's measurement tool (M5 stage 0), pinned on arrival rather
+  # than after it has been believed — which is the whole lesson of the two
+  # paragraphs above, applied before the cost is paid a third time.
+  #
+  # THE SLICE LIST IS SPELLED OUT AND NOT GLOBBED, and the difference is the
+  # whole point of the block. `file(GLOB)` resolves at CONFIGURE time, so a
+  # fresh clone, a stale cache or a renamed trace silently drops the test and
+  # the suite still reports green — at a total that reads as full coverage to
+  # whoever quotes it. This repository already holds the rule, from the Kraken
+  # pin table: **an unpinned trace is a failure, not a skip.** A missing file
+  # here is a configure-time error naming the file, because the file list is
+  # part of what is being pinned.
+  set(DC_BINANCE_TRACES
+    binance_btcusdt_deepseed_20260824.ndjson
+    binance_btcusdt_deepseed2_20260824.ndjson
+    binance_atomeur_deepseed_20260824.ndjson
+    binance_btcusdt_d100ms_20260824.ndjson
+    binance_btcusdt_d1000ms_20260824.ndjson
+    binance_atomeur_d100ms_20260824.ndjson
+    binance_btcusdt_reconnect_20260824.ndjson)
+  set(DC_BINANCE_TRACE_PATHS "")
+  foreach(trace IN LISTS DC_BINANCE_TRACES)
+    set(path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${trace})
+    if(NOT EXISTS ${path})
+      message(FATAL_ERROR
+        "Committed Binance slice missing: ${trace}. It is named in CMakeLists.txt "
+        "because it is pinned by binance_tool_selfcheck and (for the deep-seed "
+        "ones) by binance_oracle_mutants. Restore it, or remove it from BOTH this "
+        "list and tools/binance_pins.py in the same commit — never from one.")
+    endif()
+    list(APPEND DC_BINANCE_TRACE_PATHS ${path})
+  endforeach()
+
+  add_test(NAME binance_tool_selfcheck
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/binance_frame_economics.py
+            ${DC_BINANCE_TRACE_PATHS} --selfcheck)
+  set_tests_properties(binance_tool_selfcheck PROPERTIES TIMEOUT 300)
+
+  # THE ORACLE ITSELF IS THE THING WORTH PINNING, and this is the test that
+  # says so. `--check` replays each deep-seed slice five times — once honestly,
+  # once per deliberate breakage, and once for the mutant asserted to be a no-op
+  # here — and fails unless the honest run is GREEN and all three mutants are
+  # RED. That is ARCHITECTURE §9's 2026-08-16 clause (prove the trace catches a
+  # broken implementation before pinning it) turned into a build product instead
+  # of an evening's claim.
+  #
+  # THREE SLICES, NOT ONE, added at review (2026-08-24). With one witness the
+  # exactness claim, the 884/884 and the whole mutant reach rested on one
+  # capture, one pair, one day — and the tool measuring the coincidence is the
+  # tool whose correctness that coincidence establishes.
+  #
+  # `deepseed2` is a SECOND BTCUSDT window taken later the same evening and is
+  # the one that genuinely de-single-sources the mutant suite: 901/901
+  # coincidence, 886/886 honest, all three mutants red, independently.
+  #
+  # The ATOMEUR one is a quiet-pair witness for the EXACTNESS claim only, and
+  # the tool says so out loud: on a book that never churns, the
+  # bounded-window mutant is byte-identical to the honest implementation at
+  # every graded tick, so that trace CANNOT ask that question. It reports
+  # NOT EXERCISABLE rather than passing, and `--check` additionally fails if
+  # NO trace in the set exercises all three — because a suite whose every
+  # witness is too quiet to break reports green for the same reason an empty
+  # one does.
+  #
+  # NOT run against the other four slices. They are RED for a REAL reason — a
+  # REST seed too shallow for their window — which is a finding recorded in
+  # NOTES-binance.md rather than a defect to be tuned away here.
+  add_test(NAME binance_oracle_mutants
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/binance_oracle.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_btcusdt_deepseed_20260824.ndjson
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_btcusdt_deepseed2_20260824.ndjson
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_atomeur_deepseed_20260824.ndjson
+            --check)
+  set_tests_properties(binance_oracle_mutants PROPERTIES TIMEOUT 300)
 else()
   message(STATUS
     "kraken_tool_selfcheck SKIPPED: no Python 3 interpreter found. The Python "
