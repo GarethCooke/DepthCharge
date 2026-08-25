@@ -549,11 +549,18 @@ unset(dc_trace_stem)
 # trace fails rather than skips (see dc_taxonomy_main.cpp): adding a committed
 # trace without recording its figures would otherwise leave a green test that
 # measures nothing about it.
+#
+# THE BINANCE SLICES JOIN IT AT M5 STAGE A, and they are appended from the named
+# list rather than by widening the glob: a globbed pin is a pin that goes quiet
+# when a file is renamed, which is the failure the Python-tool block below spells
+# out at length. The Anvil and Kraken halves stay globbed because their rows have
+# been in the table since M4 and a missing file there fails as "no pinned
+# taxonomy on record" rather than by vanishing.
 file(GLOB DC_COMMITTED_TRACES
   ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_*.ndjson
   ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_*.ndjson)
 add_test(NAME trace_taxonomy_selfcheck
-  COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES})
+  COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES} ${DC_BINANCE_TRACES})
 set_tests_properties(trace_taxonomy_selfcheck PROPERTIES TIMEOUT 300)
 
 # Explicit timeouts on the two targets that now run threads. A hand-off bug that

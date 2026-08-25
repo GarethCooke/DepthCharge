@@ -164,3 +164,87 @@
      /*liveness_events=*/73, /*liveness_firings=*/0,
      "ack:subscribe=2 ack:unsubscribe=1 book/snapshot=2 book/update=17 heartbeat=73 "
      "status/update=1 tx:subscribe=2 tx:unsubscribe=1"},
+
+// --- Binance (M5 stage A) ---------------------------------------------------
+// Measured 2026-08-25 by this program, over the seven committed slices, after
+// --selfcheck had shown all eleven pre-existing rows unchanged. That order is
+// the procedure in dc_taxonomy_main.cpp's header and it is what makes these
+// rows trustworthy: they came out of a reader that had just been proved not to
+// have moved what the other files mean.
+//
+// FOUR COLUMNS READ DIFFERENTLY AT THIS VENUE, and each is a fact about the
+// venue rather than a quirk of the table:
+//
+//   untyped     counts FRAME-BEARING records with no string `type`. Binance
+//               sends none anywhere, so it is `records` minus the control
+//               records, which have no frame to be untyped about.
+//   snapshots   is the REST fetch count and nothing else. `@depth20` replaces
+//               the top 20 outright and re-baselines nothing below it, and the
+//               venue publishes ten a second — counting those would report 151
+//               snapshots on a fifteen-second slice. `resyncs` is therefore the
+//               scheduled re-seed, which at this venue is the design and not an
+//               incident.
+//   wd_declared is 0 because this venue NEVER DECLARED a record-arrival
+//               constant: it arrived after the 2026-08-17 ruling withdrew the
+//               other two, so venue.hpp holds -1 and the column is not
+//               computed. It is not "zero firings".
+//   wd_anvil    is large and that is the finding, not a defect. Record arrival
+//               is not this venue's liveness clock: the quiet pair went 10.5 s
+//               between records on a socket whose pings never missed a beat.
+//
+// `ping=N` in the kinds string is the 2026-08-25 ruling's signal, counted in a
+// committed file for the first time — 17 across the seven slices. The three
+// with the longest windows measure its cadence independently of stage 0's
+// figure: medians of 19,951.7 / 20,011.6 / 20,013.3 ms against the 19,970 ms
+// NOTES-binance.md recorded. `liveness_firings` is 0 everywhere, and see
+// venue.hpp for why that is weaker evidence than it looks: no slice is long
+// enough to calibrate, so all seven ran on the uncalibrated 30,000 ms default.
+    {"binance_atomeur_d100ms_20260824.ndjson", "binance",
+     /*records=*/69, /*tx=*/0, /*untyped=*/64, /*book_events=*/64,
+     /*snapshots=*/5, /*resyncs=*/4,
+     /*wd_declared=*/0, /*wd_anvil=*/14, /*book_wd_declared=*/0, /*book_wd_anvil=*/14,
+     /*liveness_events=*/5, /*liveness_firings=*/0,
+     "depthUpdate=30 partialDepth=29 ping=5 rest=5"},
+    {"binance_atomeur_deepseed_20260824.ndjson", "binance",
+     /*records=*/23, /*tx=*/0, /*untyped=*/18, /*book_events=*/18,
+     /*snapshots=*/2, /*resyncs=*/1,
+     /*wd_declared=*/0, /*wd_anvil=*/3, /*book_wd_declared=*/0, /*book_wd_anvil=*/2,
+     /*liveness_events=*/5, /*liveness_firings=*/0,
+     "depthUpdate=8 partialDepth=8 ping=5 rest=2"},
+    {"binance_btcusdt_d1000ms_20260824.ndjson", "binance",
+     /*records=*/131, /*tx=*/0, /*untyped=*/128, /*book_events=*/128,
+     /*snapshots=*/6, /*resyncs=*/6,
+     /*wd_declared=*/0, /*wd_anvil=*/26, /*book_wd_declared=*/0, /*book_wd_anvil=*/26,
+     /*liveness_events=*/3, /*liveness_firings=*/0,
+     "depthUpdate=61 partialDepth=61 ping=3 rest=6"},
+// The 15 s candidate-configuration slice, and the ONE committed Binance trace
+// with no ping in it at all — expected at a 20 s cadence, and the reason
+// `liveness_events=0` here is evidence of the window rather than of the venue.
+    {"binance_btcusdt_d100ms_20260824.ndjson", "binance",
+     /*records=*/305, /*tx=*/0, /*untyped=*/305, /*book_events=*/305,
+     /*snapshots=*/4, /*resyncs=*/4,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/0, /*liveness_firings=*/0,
+     "depthUpdate=150 partialDepth=151 rest=4"},
+    {"binance_btcusdt_deepseed_20260824.ndjson", "binance",
+     /*records=*/503, /*tx=*/0, /*untyped=*/502, /*book_events=*/502,
+     /*snapshots=*/2, /*resyncs=*/2,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/1, /*liveness_firings=*/0,
+     "depthUpdate=250 partialDepth=250 ping=1 rest=2"},
+    {"binance_btcusdt_deepseed2_20260824.ndjson", "binance",
+     /*records=*/502, /*tx=*/0, /*untyped=*/501, /*book_events=*/501,
+     /*snapshots=*/1, /*resyncs=*/1,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/1, /*liveness_firings=*/0,
+     "depthUpdate=250 partialDepth=250 ping=1 rest=1"},
+// The single-stream capture (`/ws/btcusdt@depth@100ms`), which is why this is
+// the only Binance row with no `partialDepth` — there is no audit stream in it.
+// Its 5,401 ms record gap is the deliberate reconnect, and it is the only
+// Binance slice whose `wd_anvil` of 1 is a real event rather than a quiet pair.
+    {"binance_btcusdt_reconnect_20260824.ndjson", "binance",
+     /*records=*/556, /*tx=*/0, /*untyped=*/554, /*book_events=*/554,
+     /*snapshots=*/6, /*resyncs=*/6,
+     /*wd_declared=*/0, /*wd_anvil=*/1, /*book_wd_declared=*/0, /*book_wd_anvil=*/1,
+     /*liveness_events=*/2, /*liveness_firings=*/0,
+     "depthUpdate=548 ping=2 rest=6"},
