@@ -103,6 +103,10 @@ class RefBook:
         self.bids: dict[int, int] = {}   # price ticks -> qty ticks
         self.asks: dict[int, int] = {}
         self.last_u: int | None = None
+        # The deepest either side ever got BEFORE truncation. This is what makes
+        # "the bounded-window mutant could not fire on this trace" a measured
+        # statement rather than an inference from a green.
+        self.high_water = 0
 
     def seed(self, snapshot: dict) -> None:
         self.bids.clear()
@@ -136,6 +140,7 @@ class RefBook:
         self._post_update()
 
     def _post_update(self) -> None:
+        self.high_water = max(self.high_water, len(self.bids), len(self.asks))
         if self.mutation == M_NO_TRUNCATE or self.window <= 0:
             return
         # Keep only the best `window` levels a side. For a bounded-window client
@@ -211,6 +216,7 @@ def run(trace: Path, mutation: str = HONEST, window: int = 0, depth: int = 20,
     uu = {"tested": 0, "ok": 0, "break": 0, "breaks": []}
 
     buffered: list[dict] = []
+    graded: list = []
     # top-N book images keyed by the `u` that produced them, so a REST body that
     # arrives a second late can still be graded against the instant it names.
     history: dict[int, tuple[list, list]] = {}
@@ -229,6 +235,9 @@ def run(trace: Path, mutation: str = HONEST, window: int = 0, depth: int = 20,
     def compare(payload: dict, out: Outcome, tag: str) -> None:
         want_b, want_a = partial_top(payload, depth)
         got_b, got_a = book.top(depth)
+        # The book AS GRADED, kept so that "this mutation changed nothing
+        # observable on this trace" is a comparison rather than a heuristic.
+        graded.append((got_b, got_a))
         n = min(len(want_b), len(got_b)), min(len(want_a), len(got_a))
         ok = (got_b[:n[0]] == want_b[:n[0]]) and (got_a[:n[1]] == want_a[:n[1]])
         out.note(ok, detail=(tag, payload["lastUpdateId"],
@@ -319,6 +328,8 @@ def run(trace: Path, mutation: str = HONEST, window: int = 0, depth: int = 20,
                                 else "never-reached-before-capture-ended")
 
     uu["seeded_from"] = first_seed_id
+    uu["high_water"] = book.high_water
+    uu["graded"] = graded
     return a_out, b_out, uu
 
 
@@ -410,18 +421,41 @@ def check(traces, depth: int) -> int:
     transplanted mutant genuinely does not apply.
     """
     failures = []
+    full_coverage = False
     for t in traces:
-        honest, _, _ = run(t, HONEST, 0, depth)
+        honest, _, uu = run(t, HONEST, 0, depth)
         if verdict(honest.failed, honest.matched) != "GREEN":
             failures.append(f"{t.name}: honest control is "
                             f"{verdict(honest.failed, honest.matched)}, expected GREEN")
+        # How deep the honest book ever got. A trace whose book never exceeds the
+        # bounded window cannot exercise the bounded-window mutant AT ALL -- the
+        # truncation step never removes anything, so the "mutant" is the honest
+        # implementation. Measured, not inferred from a green.
+        honest_books = uu.get("graded", [])
+        inert = []
         for mut, win in ((M_ZERO_QTY, 0), (M_SWAP_SIDES, 0), (M_BOUNDED_WINDOW, depth + 5)):
             mm = HONEST if mut == M_BOUNDED_WINDOW else mut
-            out, _, _ = run(t, mm, win, depth)
+            out, _, u2 = run(t, mm, win, depth)
             v = verdict(out.failed, out.matched)
+            if u2.get("graded", []) == honest_books:
+                # NOT a pass and NOT a failure: on THIS trace the mutation
+                # produced no observable difference at any graded tick, so the
+                # trace cannot ask the question. Detected by comparing the graded
+                # books rather than by a per-mutant heuristic -- a first attempt
+                # asked "did the book exceed the window", which said EXERCISABLE
+                # for a quiet pair whose deep levels never rise into the top 20.
+                #
+                # Reported loudly, because a capture too quiet to break is
+                # indistinguishable from an oracle too weak to notice, and the
+                # whole point of this file is that those must never look alike.
+                inert.append(f"{mut} NOT EXERCISABLE (its book is identical to the "
+                             f"honest one at all {len(honest_books)} graded ticks)")
+                continue
             if not v.startswith("RED"):
                 failures.append(f"{t.name}: mutant {mut} is {v}, expected RED -- "
                                 "the oracle no longer catches it")
+        for line in inert:
+            print(f"  {t.name}: {line}")
         noop, _, _ = run(t, M_NO_TRUNCATE, 0, depth)
         if verdict(noop.failed, noop.matched) != "GREEN":
             failures.append(
@@ -430,8 +464,15 @@ def check(traces, depth: int) -> int:
                 "removal explicitly. If it has started failing, the wire changed "
                 "or the reference book did -- read NOTES-binance.md before editing "
                 "this expectation.")
+        exercised = 3 - len(inert)
+        full_coverage = full_coverage or exercised == 3
         print(f"  {t.name}: honest GREEN ({honest.matched} graded), "
-              f"3 mutants RED, no-truncation asserted no-op")
+              f"{exercised}/3 mutants exercised and RED, no-truncation asserted no-op")
+    if not full_coverage:
+        failures.append(
+            "NO trace in this set exercised all three mutants. At least one must: "
+            "a suite whose every witness is too quiet to ask the hardest question "
+            "reports green for the same reason an empty one does.")
     for f in failures:
         print(f"  FAIL {f}")
     print(f"binance_oracle --check: {'FAILED' if failures else 'OK'}")
