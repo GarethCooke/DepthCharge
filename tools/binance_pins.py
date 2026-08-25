@@ -1,6 +1,15 @@
 """Pinned figures for the committed Binance slices (M5 stage 0).
 
 Regenerate with:  python tools/binance_frame_economics.py <slices> --pin
+
+ADD ROWS ONLY. A figure here moving means either a tooling regression or a
+deliberate re-capture -- and in the second case this table and the figures in
+harness/replay/NOTES-binance.md move in the SAME commit. Never the third thing.
+
+Every name here must also appear in DC_BINANCE_TRACE_NAMES in CMakeLists.txt.
+The two are checked against each other: --selfcheck fails on a trace that is
+pinned here and not passed to it, and the configure fails on a name there whose
+file is missing. Neither list may be edited without the other.
 """
 KNOWN_ANSWERS = {
     "binance_atomeur_d100ms_20260824.ndjson": dict(

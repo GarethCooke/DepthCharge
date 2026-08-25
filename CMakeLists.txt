@@ -516,6 +516,43 @@ set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_tests_kraken
 # Optional by design, exactly like dc_engine_target_check above — a contributor
 # without a Python 3 interpreter still gets a complete C++ build and a STATUS line
 # saying which check was skipped.
+# THE COMMITTED BINANCE SLICES ARE NAMED, NOT GLOBBED, AND CHECKED BEFORE THE
+# PYTHON GUARD — because whether a committed artefact is present is a question
+# about this repository, not about whether a Python interpreter is installed.
+#
+# `file(GLOB)` resolves at CONFIGURE time, so a fresh clone, a stale cache or a
+# renamed trace silently drops the test and the suite still reports green — at a
+# total that reads as full coverage to whoever quotes it. This repository already
+# holds the rule, from the Kraken pin table: an unpinned trace is a FAILURE, not a
+# skip. A missing file here is a configure-time error naming the file, because the
+# file list is part of what is being pinned.
+#
+# It sits outside `if(Python3_Interpreter_FOUND)` deliberately: review found that
+# inside it, a machine without Python tolerated a missing committed slice in
+# silence — the exact hole the rule exists to close.
+set(DC_BINANCE_TRACE_NAMES
+  binance_btcusdt_deepseed_20260824.ndjson
+  binance_btcusdt_deepseed2_20260824.ndjson
+  binance_atomeur_deepseed_20260824.ndjson
+  binance_btcusdt_d100ms_20260824.ndjson
+  binance_btcusdt_d1000ms_20260824.ndjson
+  binance_atomeur_d100ms_20260824.ndjson
+  binance_btcusdt_reconnect_20260824.ndjson)
+set(DC_BINANCE_TRACES "")
+foreach(dc_trace IN LISTS DC_BINANCE_TRACE_NAMES)
+  set(dc_trace_path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${dc_trace})
+  if(NOT EXISTS ${dc_trace_path})
+    message(FATAL_ERROR
+      "Committed Binance slice missing: ${dc_trace}. It is named in CMakeLists.txt "
+      "because it is pinned by binance_tool_selfcheck and (for the deep-seed ones) "
+      "by binance_oracle_mutants. Restore it, or remove it from BOTH this list and "
+      "tools/binance_pins.py in the same commit — never from one.")
+  endif()
+  list(APPEND DC_BINANCE_TRACES ${dc_trace_path})
+endforeach()
+unset(dc_trace)
+unset(dc_trace_path)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
   file(GLOB DC_KRAKEN_TRACES
@@ -547,39 +584,35 @@ if(Python3_Interpreter_FOUND)
   # than after it has been believed — which is the whole lesson of the two
   # paragraphs above, applied before the cost is paid a third time.
   #
-  # THE SLICE LIST IS SPELLED OUT AND NOT GLOBBED, and the difference is the
-  # whole point of the block. `file(GLOB)` resolves at CONFIGURE time, so a
-  # fresh clone, a stale cache or a renamed trace silently drops the test and
-  # the suite still reports green — at a total that reads as full coverage to
-  # whoever quotes it. This repository already holds the rule, from the Kraken
-  # pin table: **an unpinned trace is a failure, not a skip.** A missing file
-  # here is a configure-time error naming the file, because the file list is
-  # part of what is being pinned.
-  set(DC_BINANCE_TRACES
-    binance_btcusdt_deepseed_20260824.ndjson
-    binance_btcusdt_deepseed2_20260824.ndjson
-    binance_atomeur_deepseed_20260824.ndjson
-    binance_btcusdt_d100ms_20260824.ndjson
-    binance_btcusdt_d1000ms_20260824.ndjson
-    binance_atomeur_d100ms_20260824.ndjson
-    binance_btcusdt_reconnect_20260824.ndjson)
-  set(DC_BINANCE_TRACE_PATHS "")
-  foreach(trace IN LISTS DC_BINANCE_TRACES)
-    set(path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${trace})
-    if(NOT EXISTS ${path})
-      message(FATAL_ERROR
-        "Committed Binance slice missing: ${trace}. It is named in CMakeLists.txt "
-        "because it is pinned by binance_tool_selfcheck and (for the deep-seed "
-        "ones) by binance_oracle_mutants. Restore it, or remove it from BOTH this "
-        "list and tools/binance_pins.py in the same commit — never from one.")
-    endif()
-    list(APPEND DC_BINANCE_TRACE_PATHS ${path})
-  endforeach()
+  # The reader every Python tool shares, tested for the first time (M5 stage 0,
+  # at review). `tracefile.py` is the ONE definition of how a capture line is
+  # read and it had no test of its own -- while its venue predicates each fall
+  # through to the PREVIOUS venue's answer, so a venue added without an explicit
+  # branch returns a confident wrong answer instead of failing. Mutation-verified:
+  # deleting the binance branch from is_book_event turns three checks red.
+  add_test(NAME tracefile_selfcheck
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tracefile.py --selfcheck)
+  set_tests_properties(tracefile_selfcheck PROPERTIES TIMEOUT 120)
+
+  # The tool that WRITES ground truth, tested for the first time. It drives the
+  # real capture loop against tools/ws_loopback.py -- no network, no venue -- and
+  # covers the three paths a live capture cannot be asked for on demand: a server
+  # PING answered and recorded, a REST fetch that FAILS and is recorded rather
+  # than dropped, and rx_ns monotonicity across interleaved record kinds.
+  #
+  # It found two real defects on its first run: an in-flight REST fetch was
+  # silently lost at end of capture (a fixed 0.3 s sleep against a 1.0-2.1 s
+  # round trip), and the loopback was replaying REST bodies as WS text frames.
+  add_test(NAME capture_binance_selfcheck
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/capture_binance.py --selfcheck)
+  set_tests_properties(capture_binance_selfcheck PROPERTIES TIMEOUT 180)
 
   add_test(NAME binance_tool_selfcheck
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/binance_frame_economics.py
-            ${DC_BINANCE_TRACE_PATHS} --selfcheck)
+            ${DC_BINANCE_TRACES} --selfcheck)
   set_tests_properties(binance_tool_selfcheck PROPERTIES TIMEOUT 300)
 
   # THE ORACLE ITSELF IS THE THING WORTH PINNING, and this is the test that
@@ -621,6 +654,8 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(binance_oracle_mutants PROPERTIES TIMEOUT 300)
 else()
   message(STATUS
-    "kraken_tool_selfcheck SKIPPED: no Python 3 interpreter found. The Python "
-    "measurement tools are unpinned in this configuration.")
+    "SKIPPED (no Python 3 interpreter): kraken_tool_selfcheck, slice_tool_selfcheck, "
+    "tracefile_selfcheck, capture_binance_selfcheck, binance_tool_selfcheck and "
+    "binance_oracle_mutants. The Python measurement tools are unpinned in this "
+    "configuration; the committed-slice existence check above still ran.")
 endif()
