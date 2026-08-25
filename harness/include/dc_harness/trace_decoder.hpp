@@ -1,9 +1,25 @@
 // dc_harness/trace_decoder.hpp — the per-venue half of reading a trace.
 //
 // M4 stage A, deliverable 2. The reader (trace.hpp) owns the ENVELOPE: a line
-// is a JSON object with an integer rx_ns, an object `frame`, and a monotonic
-// clock. It hands on the VERBATIM frame text and knows nothing else. Everything
-// past that is dialect, and dialect lives here, one decoder per venue.
+// is a JSON object with an integer rx_ns, a `frame`, and a monotonic clock. It
+// hands on the VERBATIM frame text and knows nothing else. Everything past that
+// is dialect, and dialect lives here, one decoder per venue.
+//
+// M5 STAGE A WIDENED WHAT A DECODER MAY BE ASKED TO CLASSIFY, AND THAT IS THE
+// STAGE'S WHOLE MECHANISM (ARCHITECTURE §9, 2026-08-25, the ping row).
+//
+// `classify` took a `TraceFrame`. It now takes a `TraceRecord`, which may have
+// no frame at all: Binance's liveness signal is a WebSocket PING, and a control
+// frame is not JSON. The two things that forced it — a ping arrival and a REST
+// snapshot body — are one widening rather than two, which is why the rulings put
+// them in one stage.
+//
+// THE ASSERTION MOVED WITH THE CONTRACT. `dc_classifies` below probes
+// `classify(const TraceRecord&)`; a decoder still written against `TraceFrame`
+// does not merely fail the assertion, it fails to name a type. That is
+// deliberate: a widening that left the old assertion passing unchanged would
+// have widened nothing — it would have added a second, weaker path beside a
+// guard that no longer guarded it.
 //
 // TWO THINGS A DECODER DOES, and they are deliberately separate:
 //
@@ -57,7 +73,7 @@ namespace dc::harness {
 
 // What a decoder says about one record. `name` is borrowed from the decoder and
 // is valid until its next classify() call — the same lifetime rule
-// TraceFrame::frame_json already has, for the same reason (no allocation per
+// TraceRecord::frame_json already has, for the same reason (no allocation per
 // record on a 2,500-record trace).
 //
 // There is deliberately no `is_resync` here. Whether a snapshot is a RESYNC is
@@ -67,12 +83,30 @@ namespace dc::harness {
 // got it wrong at Kraken twice, in opposite directions.
 struct RecordKind {
     std::string_view name;
-    bool is_snapshot = false;    // a full replace: re-baselines the book
+    // A FULL REPLACE: after this record the book is fully known and no earlier
+    // record is required. `TraceStats` counts these and derives the resync rule
+    // from them, so it has to be the re-baselining question and not the looser
+    // "replaces something" one.
+    //
+    // AT BINANCE THAT IS A REST RECORD AND NOTHING ELSE, and it is the one place
+    // where this field and `tools/tracefile.py`'s `is_snapshot` deliberately
+    // give different answers — the Python twin to mirror is `rebaselines()`,
+    // whose own comment predicted this the evening before it happened. A
+    // `@depth20` partial payload replaces the top 20 outright and leaves
+    // everything below it at whatever it had, so a book maintained from the
+    // diff stream is NOT fully known after one; and the venue publishes ~10 of
+    // them a second, so counting them here would report a hundred and fifty
+    // resyncs on a fifteen-second slice.
+    bool is_snapshot = false;
     bool is_book_event = false;  // reaches the book — the AGE clock
     // The venue's declared liveness signal (venue.hpp): Anvil's `summary`,
-    // Kraken's `heartbeat`. This is what invariant #5's grey is armed on since
-    // the 2026-08-17 ruling — book silence is now age, and age is a number in
-    // the header rather than a colour.
+    // Kraken's `heartbeat`, Binance's `ping`. This is what invariant #5's grey
+    // is armed on since the 2026-08-17 ruling — book silence is now age, and age
+    // is a number in the header rather than a colour.
+    //
+    // Binance's is the first that is not a record the venue sent as JSON: it is
+    // a WebSocket control frame, reaching this function as a `TraceRecord` with
+    // no frame (ARCHITECTURE §9, 2026-08-25).
     bool is_liveness = false;
 };
 
@@ -122,7 +156,7 @@ struct dc_decodes_into_sink : std::false_type {};
 template <typename D>
 struct dc_decodes_into_sink<
     D, std::enable_if_t<std::is_void_v<decltype(std::declval<D&>().decode(
-           std::declval<const TraceFrame&>(), std::declval<ContractProbeSink&>()))>>>
+           std::declval<const TraceRecord&>(), std::declval<ContractProbeSink&>()))>>>
     : std::true_type {};
 
 template <typename D, typename = void>
@@ -138,7 +172,7 @@ struct dc_classifies : std::false_type {};
 template <typename D>
 struct dc_classifies<D, std::enable_if_t<std::is_same_v<
                             RecordKind, decltype(std::declval<D&>().classify(
-                                            std::declval<const TraceFrame&>()))>>>
+                                            std::declval<const TraceRecord&>()))>>>
     : std::true_type {};
 
 // A venue decoder. Instantiated once per decoder below, so adding a third venue
@@ -152,10 +186,10 @@ struct DecoderContract {
                   "the tag it is dispatched on, and, since B1, the identity that "
                   "travels with everything it produces (see `name()`)");
     static_assert(dc_classifies<Decoder>::value,
-                  "a venue decoder must provide RecordKind classify(const TraceFrame&)");
+                  "a venue decoder must provide RecordKind classify(const TraceRecord&)");
     static_assert(dc_decodes_into_sink<Decoder>::value,
                   "a venue decoder must provide a member template "
-                  "`void decode(const TraceFrame&, Sink&)`; a decoder that emits "
+                  "`void decode(const TraceRecord&, Sink&)`; a decoder that emits "
                   "nothing still takes the sink, because its signature is the one "
                   "the venue's adapter fills in later");
     static_assert(dc_reports_transport_gap<Decoder>::value,
@@ -177,7 +211,7 @@ struct DecoderContract {
 // Anvil puts its kind in `type` and the reader has already decoded it, so this
 // is a view onto the reader's buffer and costs nothing, and the classification
 // is stateless.
-inline RecordKind anvil_classify(const TraceFrame& f) noexcept {
+inline RecordKind anvil_classify(const TraceRecord& f) noexcept {
     RecordKind k;
     k.name = f.type;
     k.is_snapshot = f.type == "snapshot";
@@ -216,10 +250,10 @@ public:
         return venue_traits(kVenue).name;
     }
 
-    RecordKind classify(const TraceFrame& f) const noexcept { return anvil_classify(f); }
+    RecordKind classify(const TraceRecord& f) const noexcept { return anvil_classify(f); }
 
     template <typename Sink>
-    void decode(const TraceFrame& f, Sink&& sink) {
+    void decode(const TraceRecord& f, Sink&& sink) {
         static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
         adapter_.on_frame(f.frame_json, sink);
     }
@@ -250,7 +284,7 @@ private:
 // and declare a SymbolSpec it has no use for.
 //
 // `scratch` backs the returned `name` until the caller's next call — the same
-// lifetime rule TraceFrame::frame_json already has, for the same reason (no
+// lifetime rule TraceRecord::frame_json already has, for the same reason (no
 // allocation per record on a 2,500-record trace).
 //
 // The kind names are the SAME STRINGS tools/kraken_frame_economics.py's
@@ -263,7 +297,7 @@ private:
 // `ack:subscribe REFUSED` is not cosmetic. A failed subscribe carries `method`
 // and `success:false`, so filing it as an ordinary ack hides the exact trap
 // stage 0 found: a live socket, 1 Hz heartbeats, and a permanently empty book.
-RecordKind kraken_classify(const TraceFrame& f, std::string& scratch);
+RecordKind kraken_classify(const TraceRecord& f, std::string& scratch);
 
 // Kraken frames -> FeedEvents, through the real adapter.
 //
@@ -301,10 +335,10 @@ public:
         return venue_traits(kVenue).name;
     }
 
-    RecordKind classify(const TraceFrame& f) { return kraken_classify(f, kind_); }
+    RecordKind classify(const TraceRecord& f) { return kraken_classify(f, kind_); }
 
     template <typename Sink>
-    void decode(const TraceFrame& f, Sink&& sink) {
+    void decode(const TraceRecord& f, Sink&& sink) {
         static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
         // A record this side SENT is not the venue speaking. Feeding our own
         // subscribe to the adapter would file it as an Unknown frame and put a
@@ -324,8 +358,100 @@ private:
     std::string kind_;    // backs RecordKind::name until the next classify()
 };
 
+// ---------------------------------------------------------------------------
+// BINANCE — the classifier (M5 stage A). No adapter until B1.
+// ---------------------------------------------------------------------------
+
+// Naming a Binance record's kind, and answering the three questions the reader
+// asks about it. A FREE FUNCTION for the third time and the same reason:
+// `RecordClassifier` at the foot of this file needs it and so does the decoder,
+// and a second copy of a rule is how venues drift.
+//
+// THIS IS THE FIRST CLASSIFIER THAT IS HANDED RECORDS WITH NO FRAME, and the
+// three forms are answered in the order that makes the ruling legible:
+//
+//   control  `is_liveness` is TRUE for a `ping` arrival and false for every
+//            other opcode. The kind name is the opcode, so the venue table's
+//            `liveness_signal` of "ping" names a kind this function produces —
+//            the same relationship Anvil's "summary" and Kraken's "heartbeat"
+//            have to theirs.
+//   rest     the ONLY thing at this venue that re-baselines. It reaches the
+//            book and it is a snapshot.
+//   frame    a `depthUpdate` diff or a `@depth20` partial reaches the book;
+//            NEITHER is liveness, and that is the ruling as written rather than
+//            a simplification of it. Do not soften it into "true for anything
+//            unsolicited": the audit stream is unsolicited too, and it is
+//            change-driven, which is the entire reason this venue needs a
+//            control frame to prove it is alive.
+//
+// The kind strings are the ones tools/tracefile.py's `record_kind()` produces —
+// `depthUpdate`, `partialDepth`, `ack`, plus `rest` and the control opcodes —
+// so a histogram printed by a Python tool and one printed by `dc_taxonomy` are
+// counting the same buckets.
+//
+// `scratch` backs the returned `name` until the caller's next call, exactly as
+// Kraken's does.
+RecordKind binance_classify(const TraceRecord& r, std::string& scratch);
+
+// Binance records -> nothing, yet.
+//
+// THE SAME SHAPE KRAKEN'S DECODER HELD AT M4 STAGE A, and held deliberately: it
+// takes the sink, asserts the sink's contract, and emits no FeedEvent, because
+// the signature is the one B1's adapter fills in. A decoder written now without
+// a sink parameter is a decoder B1 has to reshape, and reshaping the seam is how
+// two adapters drift from a third.
+//
+// The counters are not decoration either. "This stage emits no FeedEvents" is a
+// claim, and `events_emitted()` is the difference between a claim and a test.
+class BinanceTraceDecoder {
+public:
+    static constexpr Venue kVenue = Venue::Binance;
+
+    // See AnvilTraceDecoder::name(). Derived from kVenue, never a second literal.
+    static constexpr std::string_view name() noexcept {
+        return venue_traits(kVenue).name;
+    }
+
+    // Not const only because it owns the scratch `name` borrows from; the
+    // classification itself carries no state, which is what lets the same
+    // record be classified twice and give the same answer.
+    RecordKind classify(const TraceRecord& r) { return binance_classify(r, kind_); }
+
+    template <typename Sink>
+    void decode(const TraceRecord& r, Sink&& sink) {
+        static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
+        (void)sink;  // no FeedEvent is emitted at stage A, by design
+        ++records_;
+        const RecordKind k = classify(r);
+        if (k.is_book_event) { ++book_events_; }
+        if (k.is_liveness) { ++liveness_records_; }
+    }
+
+    template <typename Sink>
+    void on_transport_gap(depthcharge::GapReason reason, Sink&& sink) {
+        static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
+        (void)reason;
+        (void)sink;
+        ++transport_gaps_;
+    }
+
+    std::size_t records() const noexcept { return records_; }
+    std::size_t book_events() const noexcept { return book_events_; }
+    std::size_t liveness_records() const noexcept { return liveness_records_; }
+    std::size_t transport_gaps() const noexcept { return transport_gaps_; }
+    std::size_t events_emitted() const noexcept { return 0; }
+
+private:
+    std::string kind_;  // backs RecordKind::name until the next classify()
+    std::size_t records_ = 0;
+    std::size_t book_events_ = 0;
+    std::size_t liveness_records_ = 0;
+    std::size_t transport_gaps_ = 0;
+};
+
 static_assert(DecoderContract<AnvilTraceDecoder>::ok);
 static_assert(DecoderContract<KrakenTraceDecoder>::ok);
+static_assert(DecoderContract<BinanceTraceDecoder>::ok);
 
 // ---------------------------------------------------------------------------
 // RUNTIME DISPATCH
@@ -344,18 +470,34 @@ public:
 
     Venue venue() const noexcept { return venue_; }
 
-    RecordKind classify(const TraceFrame& f) {
+    // NO `default:`, AND NO TRAILING `return {}` (M5 stage A, deliverable 3).
+    //
+    // This function used to end `return {};  // unreachable`, and the comment
+    // was true while the switch was exhaustive — but a `RecordKind{}` is not a
+    // refusal, it is "this record reaches nothing, snapshots nothing and proves
+    // nothing", which is a confident wrong answer indistinguishable from a real
+    // one. A fourth venue added without a branch here would have measured every
+    // record in its capture as inert and reported a plausible empty file.
+    //
+    // Now: the switch lists every enumerator with no default, so a new one is a
+    // -Wswitch error under -Werror; and the path past it throws instead of
+    // answering. That is the shape fix DESIGN strain 22 asked for — four edits
+    // of which only three failed loudly, and this was one of the quiet ones.
+    RecordKind classify(const TraceRecord& f) {
         switch (venue_) {
-            case Venue::Anvil:  return anvil_classify(f);
-            case Venue::Kraken: return kraken_classify(f, kind_);
+            case Venue::Anvil:   return anvil_classify(f);
+            case Venue::Kraken:  return kraken_classify(f, kind_);
+            case Venue::Binance: return binance_classify(f, kind_);
         }
-        return {};  // unreachable: venue_from_name rejects anything else
+        unhandled_venue(venue_, "RecordClassifier::classify");
     }
 
 private:
     Venue venue_;
-    // Both halves are free functions and hold no state; all this object owns is
-    // the scratch Kraken's kind name is built in. It deliberately does NOT hold
+    // All three halves are free functions and hold no state; all this object
+    // owns is the scratch Kraken's and Binance's kind names are built in — one
+    // buffer, because exactly one venue is live per classifier and a record is
+    // classified before the next one is read. It deliberately does NOT hold
     // a decoder: classification is the half that costs nothing, and a tool that
     // only counts records should not be constructing an adapter — nor requiring
     // a symbol whose scale this build may not declare.

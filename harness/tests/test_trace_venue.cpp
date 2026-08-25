@@ -115,8 +115,14 @@ TEST_CASE("an unknown venue is a different failure from a malformed trace") {
     // The known unknown named in the stage-A brief. Before this, a Kraken trace
     // failed as "metadata line missing a required field", which reads as a
     // corrupt file — and only one of these two is a bug.
+    //
+    // THE EXAMPLE MOVED AT M5 STAGE A, AND THAT IS THE CASE WORKING RATHER THAN
+    // ROTTING. It was `binance` — the venue this build could not read — and
+    // `binance` is now a row in kVenueTable. A test whose example has been
+    // implemented is a test that has stopped asking its question, so it gets the
+    // next venue nobody has written: `coinbase`.
     const std::string t =
-        R"({"captured_at":"t","url":"u","tool_version":"v","venue":"binance"})"
+        R"({"captured_at":"t","url":"u","tool_version":"v","venue":"coinbase"})"
         "\n";
     CHECK_THROWS_AS(read_trace_text(t), UnknownVenueError);
     CHECK_THROWS_AS(read_trace_text(t), TraceError);  // still a TraceError, so
@@ -125,7 +131,7 @@ TEST_CASE("an unknown venue is a different failure from a malformed trace") {
         read_trace_text(t);
         FAIL("expected UnknownVenueError");
     } catch (const UnknownVenueError& e) {
-        CHECK(e.venue_name == "binance");
+        CHECK(e.venue_name == "coinbase");
         CHECK(std::string(e.what()).find("well-formed") != std::string::npos);
     }
 }
@@ -627,7 +633,7 @@ TEST_CASE("kraken's decoder is an ADAPTER now, and the seam did not move") {
     auto sink = [&events](const depthcharge::FeedEvent& ev) { events.push_back(ev); };
 
     TraceReader reader(kKrakenTrace, in_memory, "kraken-synthetic");
-    TraceFrame frame;
+    TraceRecord frame;
     while (reader.next(frame)) { decoder.decode(frame, sink); }
 
     const auto& st = decoder.adapter().stats();
@@ -718,6 +724,11 @@ TEST_CASE("the venue tag round-trips through the name lookup") {
     CHECK(v == Venue::Anvil);
     CHECK(venue_from_name("kraken", v));
     CHECK(v == Venue::Kraken);
-    CHECK_FALSE(venue_from_name("binance", v));
+    // `binance` was this case's example of an UNKNOWN venue from M4 stage A
+    // until M5 stage A, when it became a row. The case keeps its shape and
+    // changes its example, which is the whole point of having had one.
+    CHECK(venue_from_name("binance", v));
+    CHECK(v == Venue::Binance);
+    CHECK_FALSE(venue_from_name("coinbase", v));
     CHECK_FALSE(venue_from_name("Anvil", v));  // the tag is the wire spelling
 }

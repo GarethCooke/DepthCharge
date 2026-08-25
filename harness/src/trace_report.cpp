@@ -29,10 +29,27 @@ void print_trace_findings(std::FILE* out, const TraceStats& s, const char* inden
     // apart, in the report a reader checks a watchdog against. It belongs with
     // the distribution it is part of, below.
     std::fprintf(out, "%sbook        : %zu event(s)\n", indent, s.book_events);
+    // THE PARENTHETICAL USED TO SAY "(=> trace spans a reconnect)" AND THAT WAS
+    // AN ANVIL-SHAPED INFERENCE (M5 stage A). It holds at the two venues whose
+    // only re-baseline arrives on reconnect; it is false at a venue that
+    // re-seeds its book from REST on a four-second schedule, where a mid-stream
+    // snapshot is the design rather than an incident. The COUNT is unchanged and
+    // still pinned — only the sentence drawn from it moves, to the thing the
+    // number actually says at all three venues.
     std::fprintf(out, "%ssnapshots   : %zu   resync %zu %s\n", indent, s.snapshot_count,
                  s.mid_stream_snapshots,
-                 s.mid_stream_snapshots > 0 ? "(=> trace spans a reconnect)"
-                                            : "(no reconnect in trace)");
+                 s.mid_stream_snapshots > 0
+                     ? "(a snapshot re-baselined a book that already had events)"
+                     : "(no mid-stream re-baseline)");
+    // The two forms that are not frames, printed only where they exist. A line
+    // of zeroes on every Anvil and Kraken report would be noise about a thing
+    // those venues do not have.
+    if (s.rest_records > 0 || s.control_records > 0) {
+        std::fprintf(out,
+                     "%snot frames  : %zu REST fetch(es), %zu control frame(s), %zu "
+                     "answered\n",
+                     indent, s.rest_records, s.control_records, s.control_replied);
+    }
 
     // TWO DISTRIBUTIONS, AND THEY MUST NOT BE CONFUSABLE (2026-08-17 ruling).
     // The first decides whether the panel greys. The second decides nothing at
@@ -67,13 +84,26 @@ void print_trace_findings(std::FILE* out, const TraceStats& s, const char* inden
 
     // The two withdrawn constants, kept visible only so the ruling reads as a
     // delta. Labelled WITHDRAWN so nobody quotes them as policy.
-    std::fprintf(out,
-                 "%s  withdrawn  : record-arrival %zu @ %.0f ms / %zu @ %.0f ms Anvil;"
-                 "  book-event %zu / %zu\n",
-                 indent, s.watchdog_firings_legacy, t.legacy_book_threshold_ms,
-                 s.watchdog_firings_at_anvil_threshold, anvil_ms,
-                 s.book_watchdog_firings_legacy,
-                 s.book_watchdog_firings_at_anvil_threshold);
+    //
+    // A VENUE MAY HAVE NEVER DECLARED ONE, and then the column says so instead
+    // of printing a sentinel. Binance was added after the ruling that withdrew
+    // the other two; `@ -1 ms` would read as a threshold, which is exactly what
+    // this block exists to stop anyone doing with these numbers.
+    if (t.has_legacy_threshold()) {
+        std::fprintf(out,
+                     "%s  withdrawn  : record-arrival %zu @ %.0f ms / %zu @ %.0f ms Anvil;"
+                     "  book-event %zu / %zu\n",
+                     indent, s.watchdog_firings_legacy, t.legacy_book_threshold_ms,
+                     s.watchdog_firings_at_anvil_threshold, anvil_ms,
+                     s.book_watchdog_firings_legacy,
+                     s.book_watchdog_firings_at_anvil_threshold);
+    } else {
+        std::fprintf(out,
+                     "%s  withdrawn  : this venue never declared one;  record-arrival "
+                     "%zu @ %.0f ms Anvil;  book-event %zu\n",
+                     indent, s.watchdog_firings_at_anvil_threshold, anvil_ms,
+                     s.book_watchdog_firings_at_anvil_threshold);
+    }
 
     std::fprintf(out, "%skinds       :", indent);
     for (const auto& [kind, n] : s.kind_counts) {

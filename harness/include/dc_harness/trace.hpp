@@ -9,7 +9,26 @@
 //
 // Trace format (one JSON object per line):
 //   line 1  metadata : {captured_at, url, tool_version, venue?, ticker?|symbol?, clock?, ...}
-//   line 2+ record   : {"rx_ns": <int>, "dir"?: "tx", "frame": { ... }}
+//   line 2+ record   : {"rx_ns": <int>, "dir"?: "tx", "kind"?: <form>, "frame": ...}
+//
+// THREE RECORD FORMS, AND TWO OF THEM ARE NOT FRAMES (M5 stage A). Until this
+// stage every record in every trace was one shape — a verbatim JSON object the
+// venue sent over the WebSocket — and `frame` was always an object. Binance
+// produces two things that shape cannot hold:
+//
+//   a REST fetch    {"rx_ns": N, "kind": "rest", "req": {...}, "frame": <body>}
+//   a control frame {"rx_ns": N, "kind": "control", "ctl": {...}, "frame": null}
+//
+// A REST body is not something the venue *said*: it is a fetch this client chose
+// to make, and its meaning is inseparable from the request, so the record
+// carries `req` as well. A ping payload is not JSON at all — arbitrary bytes,
+// carried base64 in `ctl` — so its record carries no frame whatsoever.
+//
+// AN ABSENT `kind` IS `frame`, which is what every record in every trace
+// committed before 2026-08-24 already is. That is the same additive rule the
+// `venue` tag was granted at M4 stage A, and it is what keeps the four Anvil
+// traces and the six Kraken ones byte-identical through this change: nothing in
+// them acquires a key, and no golden moves.
 //
 // TWO VENUES, ONE READER (M4 stage A, ARCHITECTURE §9 2026-08-17). The metadata
 // carries a `venue` tag; an ABSENT tag reads as `anvil`, which is what makes the
@@ -116,7 +135,25 @@ struct TraceStats {
     // whose traits say frames carry one, because the reader rejects those
     // traces. It is 61 of 1,599 in the committed Kraken depth-25 slice, and
     // that number is the whole reason M4 stage A exists.
+    //
+    // COUNTED OVER FRAME-BEARING RECORDS ONLY (M5 stage A). A control record has
+    // no frame, so "its frame carries no type" is not a statement about it; it
+    // is counted in `control_records` instead. Nothing moves at Anvil or Kraken,
+    // where no control record exists.
     std::size_t untyped_records = 0;
+
+    // --- the two forms that are not frames (M5 stage A) --------------------
+    // Both are included in `frame_count` and in every timing figure, because
+    // they ARE records of the session: a REST fetch is 100 KB of the byte
+    // budget and a ping is what the panel's grey is armed on. Zero at Anvil and
+    // at Kraken.
+    std::size_t rest_records = 0;
+    std::size_t control_records = 0;
+    // Control records that recorded a reply going back out. THE EVIDENCE THE
+    // 2026-08-25 RULING RESTS ON: a ping that is not answered ends the session
+    // 60 s later, so "the transport answers pings" has to be a number read off
+    // a committed file rather than a property of a code path nobody exercised.
+    std::size_t control_replied = 0;
 
     // std::less<> so count() can look up a string_view without materialising a
     // std::string for every probe. Keyed by the DECODER's name for the record's
@@ -242,11 +279,120 @@ TraceStats read_trace_text(std::string_view text, const std::string& name = "<te
 // or the harness would be validating a parser against its own output.
 // ---------------------------------------------------------------------------
 
-struct TraceFrame {
+// WHICH OF THE THREE SHAPES A RECORD IS (M5 stage A, deliverable 1).
+//
+// The wire spelling is the optional `kind` key; an ABSENT key is `Frame`. The
+// enum is called RecordForm and not RecordKind because `RecordKind` is already
+// the DECODER's answer about a record (trace_decoder.hpp) and the two are
+// different questions: the form is what the READER can see from the envelope
+// alone, the kind is what the venue's dialect makes of it. The near-collision is
+// the wire's, not this file's — the key was named `kind` at M5 stage 0 and the
+// committed slices cannot be renamed.
+enum class RecordForm : std::uint8_t { Frame, Rest, Control };
+
+// The wire spelling of a form, which is "" for Frame. These are the SAME
+// strings tools/tracefile.py's KIND_KEY scan produces, for the reason every
+// other cross-language string here is shared: two readers measuring one
+// committed file must agree on what they are counting.
+constexpr std::string_view record_form_name(RecordForm f) noexcept {
+    switch (f) {
+        case RecordForm::Frame:   return {};
+        case RecordForm::Rest:    return "rest";
+        case RecordForm::Control: return "control";
+    }
+    // NOT `return {}`, which is Frame's answer. A value outside the enumerators
+    // reaching this line would then be reported as the one form that means "an
+    // ordinary WebSocket text frame" — a confident wrong answer of exactly the
+    // kind `unhandled_venue` exists to stop one level up (venue.hpp). It is
+    // unreachable through `TraceReader::next`, which rejects any other spelling
+    // by name; this is what it looks like if it ever stops being.
+    return "?";
+}
+
+// THE FETCH THAT PRODUCED A REST BODY. Carried because a REST record is a
+// transcript PLUS A QUESTION: every other line in every other trace is
+// something the venue said unprompted, and a body whose URL and `limit` are
+// unknown cannot be reconciled against anything — a `limit=100` book and a
+// `limit=1000` book are different claims about the same instrument, and at
+// BTCUSDT the first is wrong within 90 seconds (NOTES-binance.md).
+struct RestRequest {
+    std::string method;          // "GET"
+    std::string url;             // the exact URL fetched, verbatim
+    std::int64_t limit = -1;     // the `limit` query parameter
+    std::int64_t weight = -1;    // the venue's declared request weight, -1 if absent
+    std::int64_t status = -1;    // HTTP status, -1 if the tool did not record one
+    std::string used_weight_1m;  // the venue's used-weight header, verbatim, "" if absent
+
+    // WHY THERE IS NO BODY, when there is none. A failed fetch is recorded
+    // rather than dropped, and a record that said only "no body" would be
+    // indistinguishable from a reader that lost one. Empty when the fetch
+    // succeeded.
+    std::string error;
+
+    // WHEN THE FETCH ACTUALLY HAPPENED, which is not the record's rx_ns.
+    // The fetch runs on a worker thread so it cannot punch a one-second hole in
+    // the gap distribution, and the record is stamped when the main loop writes
+    // it — so the record lands ~1-1.5 s AFTER the instant it describes. This is
+    // the true span, and `TraceRecord::event_ns` is `recv_ns`.
+    std::int64_t sent_ns = 0;
+    std::int64_t recv_ns = 0;
+};
+
+// A WEBSOCKET CONTROL FRAME. Not JSON, and therefore not a `frame` at all: the
+// record carries `"frame": null` and everything it knows is here.
+//
+// `replied_ns` IS NOT DECORATION. It is the evidence that the pong went back,
+// and the 2026-08-25 ruling that arms this venue's grey on the ping rests on
+// that path being *exercised* rather than merely present — a client that
+// answered nothing would look identical on this side of the socket until the
+// venue closed it 60 s later.
+struct ControlFrame {
+    std::string opcode;        // "ping" | "pong" | "close" — the wire `op`
+    std::string payload_b64;   // base64: the payload is arbitrary BYTES, not text
+    std::int64_t payload_len = 0;
+
+    // When the control frame ARRIVED — again not the record's rx_ns, and here
+    // the difference is not subtle: three pings 20 s apart share one rx_ns in
+    // `binance_atomeur_deepseed_20260824.ndjson`, because they were flushed
+    // together. A liveness clock stamped from rx_ns would see three arrivals
+    // separated by 0 ms and calibrate its threshold off a cadence that never
+    // happened. `TraceRecord::event_ns` is this field.
+    std::int64_t recv_ns = 0;
+
+    std::int64_t replied_ns = 0;  // the wire `pong_ns`
+    bool replied = false;         // whether the tool recorded a reply at all
+};
+
+// One record. Named for what it is: after M5 stage A a record need not be a
+// frame, and two of the three forms are not. It was `TraceFrame` until this
+// stage, and the rename is deliberately not a typedef — a decoder still written
+// against the old name must fail to build rather than quietly classify a
+// control record as though it had a frame.
+struct TraceRecord {
+    RecordForm form = RecordForm::Frame;
+
     std::size_t index = 0;      // 1-based record ordinal (metadata line excluded)
     std::size_t line_no = 0;    // 1-based line in the file
     std::int64_t rx_ns = 0;     // capture-tool monotonic clock; see TraceMeta::clock
+
+    // THE INSTANT THIS RECORD DESCRIBES, which is `rx_ns` for a WS frame and is
+    // NOT for the other two forms — see RestRequest::recv_ns and
+    // ControlFrame::recv_ns for why, with the file that proves it.
+    //
+    // `rx_ns` still orders the file, still bounds the span, and is still what
+    // every gap distribution and every pinned watchdog column is computed from;
+    // nothing about those moves, because at Anvil and Kraken the two are the
+    // same number. `event_ns` exists for the one consumer that must have the
+    // real instant: the liveness clock.
+    std::int64_t event_ns = 0;
+
+    // EMPTY when this record has no frame. That is always true of a Control
+    // record — a ping payload is not JSON — and it is SOMETIMES true of a Rest
+    // one: `capture_binance.py` records a failed fetch rather than dropping it,
+    // because "the snapshot did not arrive" is a fact about the capture window.
+    // `rest.status` and `rest.error` say why.
     std::string_view frame_json;  // borrowed; valid until the next next() call
+    bool has_frame() const noexcept { return !frame_json.empty(); }
 
     // The frame's wire "type", and its wire seq when it carries one. Both are
     // decoded here because the reader already holds the parsed line: without
@@ -254,8 +400,9 @@ struct TraceFrame {
     // seq statistics, which measured at roughly double the cost of reading the
     // trace at all.
     //
-    // `type` is EMPTY on a venue whose frames do not carry one. It is not a
-    // substitute for asking the decoder what kind of record this is.
+    // `type` is EMPTY on a venue whose frames do not carry one, and on every
+    // record that is not a frame. It is not a substitute for asking the decoder
+    // what kind of record this is.
     std::string_view type;      // borrowed; valid until the next next() call
     std::int64_t seq = 0;
     bool has_seq = false;
@@ -266,7 +413,18 @@ struct TraceFrame {
     // one and puts a bogus interval at the head of every gap distribution. The
     // Python reader has skipped these since stage 0; the C++ one could not see
     // them at all.
+    //
+    // A REST record is NOT tx, and the wire agrees: `capture_binance.py` writes
+    // no `dir` on one. `dir: tx` means a frame this side put on THIS socket; a
+    // REST fetch is a different conversation entirely, which is what `req`
+    // exists to describe.
     bool is_tx = false;
+
+    // Exactly the one matching `form` is populated. Held by value rather than as
+    // views into the reader, because both are rare (3 to 11 per committed slice)
+    // and a lifetime rule bought nothing on a path that is not hot.
+    RestRequest rest;
+    ControlFrame ctl;
 };
 
 class TraceReader {
@@ -283,18 +441,35 @@ public:
     // TraceError with the line number on a malformed line.
     //
     // Structural rules, which are the harness's single definition of a valid
-    // trace: the line is a JSON object carrying an integer rx_ns and an object
-    // `frame`; the frame carries a string `type` IF THE VENUE'S FRAMES DO
-    // (venue.hpp); and rx_ns never decreases, because it comes from a monotonic
-    // clock in the capture tool and a decrease is a corrupt trace rather than a
-    // market phenomenon.
+    // trace: the line is a JSON object carrying an integer rx_ns and a `frame`;
+    // the frame carries a string `type` IF THE VENUE'S FRAMES DO (venue.hpp);
+    // and rx_ns never decreases, because it comes from a monotonic clock in the
+    // capture tool and a decrease is a corrupt trace rather than a market
+    // phenomenon.
     //
     // The `type` rule going venue-conditional is the only relaxation M4 stage A
     // makes to the 2026-08-07 rule, and it is a relaxation for Kraken only:
     // Anvil traces are held to exactly the rule they were held to before, so a
     // frame that lost its `type` still fails on the venue where that means the
     // capture is broken.
-    bool next(TraceFrame& out);
+    //
+    // M5 STAGE A adds the `kind` discriminator and one rule per form. They are
+    // stated here because tools/tracefile.py implements the same list and the
+    // two are held to it by a shared corpus (harness/tests/record_shapes.json):
+    //
+    //   absent      `frame` is an object, and the `type` rule above applies.
+    //   "rest"      `frame` is an object — the response body. `req` is an object
+    //               carrying at least a string `url`, an integer `limit` and an
+    //               integer `recv_ns`. The `type` rule does NOT apply: a REST
+    //               body is not a frame the venue sent, so holding it to a
+    //               frame's contract would be the reader teaching the wire.
+    //   "control"   `frame` is present and NULL. `ctl` is an object carrying at
+    //               least a string `op` and an integer `recv_ns`.
+    //   anything else is refused by name. An unknown kind is a capture written
+    //               by a newer tool, and reading it as a plain frame would file
+    //               a thing this build does not understand in a counter that
+    //               claims to describe the venue's wire.
+    bool next(TraceRecord& out);
 
 private:
     void read_meta();
@@ -303,7 +478,7 @@ private:
     std::istream* in_ = nullptr;
     std::string name_;
     std::string line_;
-    std::string type_;          // backs TraceFrame::type across the next() call
+    std::string type_;          // backs TraceRecord::type across the next() call
     TraceMeta meta_;
     std::size_t line_no_ = 0;
     std::size_t frame_index_ = 0;

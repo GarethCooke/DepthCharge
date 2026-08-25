@@ -54,7 +54,7 @@ public:
         ReplayResult result;
         result.meta = reader.meta();
 
-        TraceFrame frame;
+        TraceRecord frame;
         // Both stop conditions live in the loop condition, so neither reads a
         // line it will not use. They used to sit in the body after next() had
         // already parsed and validated one more line, which meant a malformed
@@ -126,6 +126,13 @@ public:
         // `if constexpr` rather than an overload set: the two Stats types share
         // no base and never will, and the whole point of ReplayResult carrying
         // both is that exactly one is populated per run.
+        //
+        // DELIBERATELY NOT WIDENED TO THREE AT M5 STAGE A. Binance has no
+        // adapter, so `Replay<BinanceTraceDecoder>` is never instantiated —
+        // `run_replay` refuses that venue by name. If B1 forgets to add its
+        // branch here, the `else` below asks a decoder with no `adapter()` for
+        // one and the build fails, which is the failure this stage wants.
+        // Adding an empty third branch now would replace that with silence.
         if constexpr (Decoder::kVenue == Venue::Anvil) {
             result.adapter = decoder_.adapter().stats();
         } else {
@@ -374,8 +381,25 @@ depthcharge::SymbolSpec symbol_for(const TraceMeta& meta) {
             }
             return cfg.spec;
         }
+        case Venue::Binance:
+            // M5 STAGE A DELIBERATELY DOES NOT INVENT ONE. The wire's precision
+            // is measured and uniform — 8 decimals on price and on quantity,
+            // both pairs, both ticks (NOTES-binance.md §7) — so a spec could be
+            // written here in one line and it would be a scale nothing has
+            // agreed to. Kraken's rule applies unchanged: a scale that is not
+            // declared by the venue's own adapter does not fail, it draws a
+            // wrong ladder. B1 brings the adapter and its symbol table with it.
+            //
+            // Nothing this stage claims needs this: `dc_replay` reads a trace
+            // through `read_trace`, which holds no book at all, and the seven
+            // committed slices are read end to end without one.
+            throw TraceError(1,
+                             "this build has no Binance adapter, so it cannot drive a "
+                             "book from a Binance trace (M5 stage A is the reader; the "
+                             "adapter is B1). `dc_replay` reads these traces; "
+                             "`dc_ladder` cannot yet render them.");
     }
-    return {};  // unreachable: venue_from_name rejects anything else
+    unhandled_venue(meta.venue, "symbol_for");
 }
 
 ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symbol,
@@ -430,8 +454,23 @@ ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symb
                 KrakenTraceDecoder(symbol, cfg.wire_symbol, depth), symbol, opts, observer);
             return replay.run(reader);
         }
+        case Venue::Binance:
+            // THE LOUD REFUSAL, BACK FOR ONE VENUE — the same holding position
+            // Kraken sat in between M4 stage A and B1, and correct for the same
+            // reason: this venue's decoder is a CLASSIFIER, so driving a book
+            // with it would produce an empty ladder over a real capture and call
+            // it a replay. `dc_replay` and `dc_taxonomy` read these traces
+            // through `read_trace`, which needs no adapter and no book.
+            //
+            // It is a refusal rather than a silent empty run because the mistake
+            // this guards is the one M4 stage A's own comment names: a decoder
+            // that emits nothing looks exactly like a feed that said nothing.
+            throw TraceError(reader.name(), 1,
+                             "this build has no Binance adapter (M5 stage A is the "
+                             "reader; B1 is the adapter). The trace is readable -- try "
+                             "dc_replay or dc_taxonomy, which do not drive a book.");
     }
-    throw TraceError(reader.name(), 1, "trace declares a venue this build cannot replay");
+    unhandled_venue(reader.venue(), "run_replay");
 }
 
 ReplayResult run_replay_file(const std::string& path, const depthcharge::SymbolSpec& symbol,

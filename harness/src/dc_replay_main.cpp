@@ -69,16 +69,31 @@ void print_report(const std::string& path, const dc::harness::TraceStats& s) {
     std::printf("\nOK\n");
 }
 
-// Kraken's report. A separate function rather than flags threaded through the
-// Anvil one, because the two venues do not answer the same questions: there is
-// no seq here to be non-monotonic about, and the figures that matter are the
-// record taxonomy and the two clocks. The findings themselves are printed by
-// the shared renderer — this function owns only the metadata header, which is
-// the part that genuinely differs.
-void print_kraken_report(const std::string& path, const dc::harness::TraceStats& s) {
+// The report for a venue that identifies its instrument by SYMBOL — Kraken
+// since M4 stage A, Binance since M5 stage A.
+//
+// A separate function from the Anvil one rather than flags threaded through it,
+// because the two shapes do not answer the same questions: there is no seq here
+// to be non-monotonic about, and the figures that matter are the record taxonomy
+// and the two clocks. The findings themselves come from the shared renderer —
+// this function owns only the metadata header and the adapter line, which are
+// the parts that genuinely differ.
+//
+// ONE FUNCTION FOR BOTH VENUES, AND THE THIRD VENUE IS WHY. It was written a
+// second time at M5 stage A and the copy differed in three lines: the header's
+// `depth` field, the adapter sentence, and a "not frames" line that DUPLICATED
+// one the shared renderer already prints — two spellings of one figure in one
+// report, which is precisely what happens when a printer is copied. `depth` is
+// venue-optional already (-1 means the tool recorded none), so the header needed
+// no fork at all, and the adapter note is a parameter.
+void print_symbol_venue_report(const std::string& path, const dc::harness::TraceStats& s,
+                               const char* adapter_note) {
     const auto& m = s.meta;
-    // `depth` is optional even at Kraken; -1 is "the tool did not record one",
+    // `depth` is optional at both venues; -1 is "the tool did not record one",
     // and printing that number would read as a subscription depth of minus one.
+    // Binance records none — its subscription is named by `streams` in the
+    // header — so it prints "-" for the same reason a Kraken capture that
+    // predates the field does.
     char depth[32] = "-";
     if (m.depth >= 0) { std::snprintf(depth, sizeof depth, "%lld", static_cast<long long>(m.depth)); }
 
@@ -90,9 +105,11 @@ void print_kraken_report(const std::string& path, const dc::harness::TraceStats&
                 static_cast<long long>(m.cycles));
     std::printf("            captured_at=%s\n", m.captured_at.c_str());
     std::printf("            url=%s\n", m.url.c_str());
+    // The record taxonomy, the two clocks, and — where the venue has any — the
+    // count of records that are not frames. All of it from one renderer, so
+    // dc_taxonomy reports the same figures (trace_report.hpp).
     dc::harness::print_trace_findings(stdout, s, "");
-    std::printf("adapter     : none — stage A's Kraken decoder is a CLASSIFIER; "
-                "0 FeedEvents by design\n");
+    std::printf("adapter     : %s\n", adapter_note);
     std::printf("\nOK\n");
 }
 
@@ -106,9 +123,33 @@ int main(int argc, char** argv) {
     const std::string path = argv[1];
     try {
         const dc::harness::TraceStats stats = dc::harness::read_trace(path);
+        // No `default:`, so a fourth venue is a -Wswitch error here rather than
+        // a trace this program reads and says nothing about (M5 stage A,
+        // deliverable 3).
         switch (stats.meta.venue) {
-            case dc::harness::Venue::Anvil:  print_report(path, stats); break;
-            case dc::harness::Venue::Kraken: print_kraken_report(path, stats); break;
+            case dc::harness::Venue::Anvil:
+                print_report(path, stats);
+                break;
+            // CORRECTED AT M5 STAGE A. This line read "none — stage A's Kraken
+            // decoder is a CLASSIFIER; 0 FeedEvents by design", and it has been
+            // false since M4 stage B1 put a real adapter behind that decoder.
+            // It went unnoticed because it is trivially true OF THIS PROGRAM —
+            // `dc_replay` runs `read_trace`, which drives no adapter at any
+            // venue — so the sentence was right about the count and wrong about
+            // the reason, which is the worse half to be wrong about.
+            case dc::harness::Venue::Kraken:
+                print_symbol_venue_report(
+                    path, stats,
+                    "not driven here — dc_replay reads the envelope and names records; "
+                    "KrakenTraceDecoder has been an ADAPTER since M4 stage B1 and "
+                    "dc_ladder is what runs it");
+                break;
+            case dc::harness::Venue::Binance:
+                print_symbol_venue_report(
+                    path, stats,
+                    "none — M5 stage A's Binance decoder is a CLASSIFIER; 0 FeedEvents by "
+                    "design (B1 is the adapter)");
+                break;
         }
     } catch (const dc::harness::UnknownVenueError& e) {
         // Not a malformed trace. Separated so a caller can tell "this file is

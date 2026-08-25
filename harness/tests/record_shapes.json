@@ -1,0 +1,135 @@
+{
+  "_comment": [
+    "ONE CORPUS, TWO READERS (M5 stage A, deliverable 1).",
+    "",
+    "harness/src/trace.cpp's TraceReader::next and tools/tracefile.py's",
+    "read_capture implement the same record-form contract in two languages.",
+    "'The two must agree on what they accept and what they reject' is a claim,",
+    "and this file is what makes it a test: test_trace_records.cpp replays it",
+    "through the C++ reader and tracefile.selfcheck() replays it through the",
+    "Python one, and each asserts the verdict recorded here.",
+    "",
+    "SCOPE, stated so the corpus is not read as more than it is: these cases",
+    "cover the `kind` DISCRIMINATOR's contract -- the thing this stage added.",
+    "They do not cover every structural rule the C++ reader enforces (the venue",
+    "metadata contract, rx_ns monotonicity, the `type` rule), because the Python",
+    "reader deliberately does not enforce those: read_meta's `validate` is",
+    "opt-in, for the reason its own docstring gives. Adding a rule to either",
+    "reader means adding its case here, and that is the point of the file.",
+    "",
+    "Every case is a RECORD LINE. The header is supplied by whichever test reads",
+    "this, because the two readers want different things from it and the header",
+    "is not what is under test. `accept` is the verdict; `form` is the record",
+    "form a reader must report when it accepts; `why` is for the human reading a",
+    "failure.",
+    "",
+    "ADD CASES. Never quietly relax one: a case that starts failing is either a",
+    "reader that changed what a committed file means, or a contract that moved",
+    "on purpose -- and the second wants a sentence in a commit message."
+  ],
+  "cases": [
+    {
+      "name": "plain frame, no kind key",
+      "line": "{\"rx_ns\": 1000, \"frame\": {\"e\":\"depthUpdate\",\"U\":1,\"u\":2}}",
+      "accept": true,
+      "form": "",
+      "why": "the shape every record in every trace committed before 2026-08-24 has; an absent kind is what makes the key additive"
+    },
+    {
+      "name": "a frame this side sent",
+      "line": "{\"rx_ns\": 1100, \"dir\": \"tx\", \"frame\": {\"method\":\"subscribe\"}}",
+      "accept": true,
+      "form": "",
+      "why": "dir and kind are independent keys in the same wrapper slot; a tx record is still a frame"
+    },
+    {
+      "name": "rest, fully formed",
+      "line": "{\"rx_ns\": 2000, \"kind\": \"rest\", \"req\": {\"method\": \"GET\", \"url\": \"https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=100\", \"limit\": 100, \"weight\": 5, \"sent_ns\": 1000, \"status\": 200, \"used_weight_1m\": \"5\", \"recv_ns\": 1900}, \"frame\": {\"lastUpdateId\":7,\"bids\":[],\"asks\":[]}}",
+      "accept": true,
+      "form": "rest",
+      "why": "a transcript plus a question: the body means nothing without the url and limit that produced it"
+    },
+    {
+      "name": "control ping, fully formed",
+      "line": "{\"rx_ns\": 3000, \"kind\": \"control\", \"ctl\": {\"op\": \"ping\", \"recv_ns\": 2500, \"pong_ns\": 2500105, \"payload_len\": 13, \"payload_b64\": \"MTc4NzYwMjk2ODIyNA==\"}, \"frame\": null}",
+      "accept": true,
+      "form": "control",
+      "why": "the record that is not a frame at all: a ping payload is arbitrary bytes, so frame is null"
+    },
+    {
+      "name": "control close, no reply recorded",
+      "line": "{\"rx_ns\": 3100, \"kind\": \"control\", \"ctl\": {\"op\": \"close\", \"recv_ns\": 3050}, \"frame\": null}",
+      "accept": true,
+      "form": "control",
+      "why": "pong_ns is optional and its ABSENCE is meaningful -- a close carries no reply, and neither does a ping nobody answered"
+    },
+    {
+      "name": "unknown kind",
+      "line": "{\"rx_ns\": 4000, \"kind\": \"telemetry\", \"frame\": {\"x\":1}}",
+      "accept": false,
+      "why": "refused BY NAME rather than read as a plain frame: an unknown kind is a capture written by a newer tool, and filing it as a venue frame puts a record nobody understands in a counter that claims to describe the wire"
+    },
+    {
+      "name": "control with a non-null frame",
+      "line": "{\"rx_ns\": 4100, \"kind\": \"control\", \"ctl\": {\"op\": \"ping\", \"recv_ns\": 4000}, \"frame\": {\"x\":1}}",
+      "accept": false,
+      "why": "a control record with something to say is a record that cannot be true"
+    },
+    {
+      "name": "control with no ctl object",
+      "line": "{\"rx_ns\": 4200, \"kind\": \"control\", \"frame\": null}",
+      "accept": false,
+      "why": "ctl is the only thing a control record has, the frame being null by definition"
+    },
+    {
+      "name": "control with no recv_ns",
+      "line": "{\"rx_ns\": 4300, \"kind\": \"control\", \"ctl\": {\"op\": \"ping\"}, \"frame\": null}",
+      "accept": false,
+      "why": "recv_ns is the ARRIVAL; the record's own rx_ns is when the main loop wrote it, and three pings 20 s apart can share one"
+    },
+    {
+      "name": "control with no op",
+      "line": "{\"rx_ns\": 4400, \"kind\": \"control\", \"ctl\": {\"recv_ns\": 4300}, \"frame\": null}",
+      "accept": false,
+      "why": "the opcode is the record's kind name, and a ping and a close are opposite evidence about the same socket"
+    },
+    {
+      "name": "rest with no req object",
+      "line": "{\"rx_ns\": 4500, \"kind\": \"rest\", \"frame\": {\"lastUpdateId\":7}}",
+      "accept": false,
+      "why": "a response body whose request is unknown cannot be reconciled against anything"
+    },
+    {
+      "name": "rest with no limit",
+      "line": "{\"rx_ns\": 4600, \"kind\": \"rest\", \"req\": {\"url\": \"https://x/api/v3/depth\", \"recv_ns\": 4500}, \"frame\": {\"lastUpdateId\":7}}",
+      "accept": false,
+      "why": "a limit=100 book and a limit=1000 book are different claims about the same instrument, and limit=100 is wrong within 90 seconds on BTCUSDT"
+    },
+    {
+      "name": "rest with no url",
+      "line": "{\"rx_ns\": 4700, \"kind\": \"rest\", \"req\": {\"limit\": 100, \"recv_ns\": 4600}, \"frame\": {\"lastUpdateId\":7}}",
+      "accept": false,
+      "why": "which instrument, on which host, at which API version -- none of it is recoverable from the body"
+    },
+    {
+      "name": "rest whose fetch failed, recorded not dropped",
+      "line": "{\"rx_ns\": 4800, \"kind\": \"rest\", \"req\": {\"method\": \"GET\", \"url\": \"https://x/api/v3/depth\", \"limit\": 100, \"weight\": 5, \"sent_ns\": 4600, \"status\": 429, \"error\": \"Too Many Requests\", \"recv_ns\": 4700}, \"frame\": null}",
+      "accept": true,
+      "form": "rest",
+      "why": "ACCEPTED, and the reader learned it from the wire: capture_binance.py records a failed fetch because 'the snapshot did not arrive' is a fact about the capture window. It re-baselines nothing, and both readers name it rest:no-body rather than folding it into the fetch count"
+    },
+    {
+      "name": "rest whose frame is neither an object nor null",
+      "line": "{\"rx_ns\": 4850, \"kind\": \"rest\", \"req\": {\"url\": \"https://x/api/v3/depth\", \"limit\": 100, \"recv_ns\": 4800}, \"frame\": 7}",
+      "accept": false,
+      "why": "object-or-null is the whole rule; a number is neither a book nor an absence of one"
+    },
+    {
+      "name": "a frame body carrying the kind marker in its text",
+      "line": "{\"rx_ns\": 4900, \"frame\": {\"note\":\"\\\"kind\\\": \\\"rest\\\"\"}}",
+      "accept": true,
+      "form": "",
+      "why": "the venue's text must never be able to describe the record that carries it; both readers bound the kind scan to the wrapper"
+    }
+  ]
+}

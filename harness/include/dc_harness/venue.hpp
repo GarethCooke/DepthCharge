@@ -21,6 +21,8 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
 // For `kChecksumLevels`. The Kraken row below uses the constant rather than
@@ -37,7 +39,40 @@ namespace dc::harness {
 // ONE VENUE PER BUILD is a *firmware* decision (ARCHITECTURE §9, 2026-08-17);
 // the harness reads every venue it knows, because a golden that could only be
 // run by rebuilding is not a golden anyone runs.
-enum class Venue : std::uint8_t { Anvil, Kraken };
+enum class Venue : std::uint8_t { Anvil, Kraken, Binance };
+
+// A VENUE THIS CODE HAS NO BRANCH FOR IS A HARD FAILURE, NOT A DEFAULT
+// (M5 stage A, deliverable 3).
+//
+// Every switch on `Venue` in the harness ends here instead of returning
+// something. Two things make that load-bearing rather than tidy:
+//
+//   * with no `default:` label and every enumerator listed, adding a fourth
+//     enumerator turns `-Wswitch` into an error at EVERY dispatch site under
+//     -Werror — which is the loud failure DESIGN strain 22 says three of the
+//     four venue edits already had and the fourth did not;
+//   * the runtime path throws instead of handing back a zero-initialised
+//     answer. `RecordClassifier::classify` used to `return {}` past its
+//     switch, and a `RecordKind{}` is indistinguishable from "this record
+//     reaches nothing and proves nothing" — a confident wrong answer, which is
+//     precisely the failure mode this stage was asked to close.
+//
+// It throws rather than aborts because the harness's callers already catch
+// TraceError-shaped failures and report the file; a std::abort here would kill
+// dc_taxonomy mid-table with no idea which trace did it.
+//
+// `inline` and not a .cpp: this header is the one thing every venue-aware
+// translation unit already includes, and a link-time dependency for a function
+// that exists to make a build-time failure louder would be its own small joke.
+[[noreturn]] inline void unhandled_venue(Venue v, const char* where) {
+    throw std::logic_error(
+        std::string("no branch for venue ") + std::to_string(static_cast<int>(v)) +
+        " in " + where +
+        " -- adding a Venue enumerator means adding a branch at every dispatch "
+        "site, a row in kVenueTable, a decoder in trace_decoder.hpp, a VENUES row "
+        "in tools/tracefile.py and a branch in each of its predicates. This is the "
+        "path that used to return a default (DESIGN strain 22).");
+}
 
 // Everything that used to be assumed about "a trace".
 struct VenueTraits {
@@ -103,8 +138,42 @@ struct VenueTraits {
     // measuring the same fixed quantity they measured when they were pinned, and
     // so the ruling's effect is legible as a delta against a number that does
     // not move. Read `legacy_note` before quoting it.
+    //
+    // WHICH CLOCK THIS NUMBER IS ABOUT — said out loud from M5 stage A, because
+    // Binance is the first venue where the two clocks are different quantities
+    // rather than one quantity measured twice:
+    //
+    //   RECORD ARRIVAL   any record from the venue, in `rx_ns` order. THIS
+    //                    field, and `TraceStats::watchdog_firings_*`, are about
+    //                    that clock and only that clock. Binance's record
+    //                    arrival goes silent for 10.5 s legitimately on a quiet
+    //                    pair (M5 stage 0), which is why nothing may be armed
+    //                    on it.
+    //   LIVENESS         arrivals of `liveness_signal` and nothing else. This
+    //                    is what greys the panel, its threshold is CALIBRATED
+    //                    from the signal's own median (liveness_clock.hpp) and
+    //                    is never a constant in this table, and at Binance it
+    //                    is stamped from `TraceRecord::event_ns` rather than
+    //                    `rx_ns` — see trace.hpp, where a ping's arrival and
+    //                    the moment its record was written are hours-of-
+    //                    difference apart in the same file.
+    //
+    // At Anvil and Kraken the two coincided closely enough that nothing ever
+    // had to say which was meant. That coincidence is over, and a fourth venue
+    // must not inherit the ambiguity.
+    //
+    // **-1.0 MEANS THIS VENUE NEVER DECLARED ONE.** It is a sentinel and not a
+    // number: Binance was added after the ruling that withdrew the other two,
+    // so it has no withdrawn constant to hold still. It is not 0, because 0
+    // would silently count every record-arrival gap as a firing and produce a
+    // pinned column full of confident nonsense.
     double legacy_book_threshold_ms;
     std::string_view legacy_note;
+
+    // Whether `legacy_book_threshold_ms` is a real historical number.
+    constexpr bool has_legacy_threshold() const noexcept {
+        return legacy_book_threshold_ms >= 0.0;
+    }
 
     // ---- HOW MANY OF THE BOOK'S BEST LEVELS THE VENUE ITSELF CONFIRMS ------
     // M4 stage C. Kraken's CRC32 is computed over the top 10 levels a side
@@ -160,6 +229,53 @@ inline constexpr VenueTraits kVenueTable[] = {
      "confirmed at stage 0 across 8,677 checksums at depths 10/25/100, and "
      "re-confirmed at B2 by the only test that discriminates: a book edited BELOW "
      "level 10 does not move the checksum"},
+    // --- BINANCE (M5 stage A) ----------------------------------------------
+    // The first venue whose liveness signal is not a record. It is a WebSocket
+    // PING control frame: not JSON, not something the venue "said" in the sense
+    // the other two rows mean, and until the `kind` record shape landed it could
+    // not appear in a DepthCharge trace at all. `liveness_signal` still names it,
+    // because the field's contract is "the NAME of the record kind whose arrival
+    // proves this feed is alive" and a control record's kind name IS its opcode
+    // (trace_decoder.hpp, binance_classify).
+    {Venue::Binance, "binance",
+     /*requires_ticker=*/false, /*requires_symbol=*/true,
+     /*frames_carry_type=*/false,
+     /*liveness_signal=*/"ping",
+     "WebSocket PING control frame, answered by the transport -- 23 intervals, "
+     "median 19,970 ms (min 19,850, max 20,200; worst/median 1.01x, the tightest "
+     "of the three venues). The lone 40.7 s is a deliberate reconnect restarting "
+     "the venue's schedule, not a missed ping. THE DEPTH STREAMS PUBLISH NO "
+     "LIVENESS RECORD AT ALL: both are change-driven, and record arrival went "
+     "silent for 10.5 s legitimately on the quiet pair -- so this venue's grey is "
+     "armed on the ping and on nothing else (ARCHITECTURE 9, 2026-08-25). The 4x "
+     "margin the other two run WOULD put the threshold near 80 s -- a 20x "
+     "regression in grey latency against Kraken's ~4 s, accepted in exchange for "
+     "catching the half-open socket that was the plurality case at 4 of 7 losses. "
+     "IT DOES NOT, AND THIS ROW IS WHERE THAT IS RECORDED (measured M5 stage A): "
+     "liveness_clock.hpp clamps at kThresholdCeilingMs = 30,000 ms, so 4 x 19,970 "
+     "= 79,880 caps to 30 s. And kMinSamples = 8 intervals is ~160 s of wall clock "
+     "at this cadence, which no committed slice reaches -- the longest is 88 s "
+     "with 5 pings -- so every slice runs on the UNCALIBRATED default, which is "
+     "the same 30,000 ms. The two coincide here, so nothing misbehaves and no "
+     "golden moves; what is inert is the self-calibration the 2026-08-17 ruling "
+     "rests on. Owned by C, with the multiplier",
+     /*legacy_book_threshold_ms=*/-1.0,
+     "NONE, and -1 is a sentinel rather than a number. This venue was added "
+     "2026-08-25, after the ruling that withdrew Anvil's 1,000 ms and Kraken's "
+     "15,000 ms, so it has no declared record-arrival constant to hold still and "
+     "no pinned column derived from one. `watchdog_firings_at_anvil_threshold` "
+     "still measures against Anvil's 1,000 ms and is the informative number here: "
+     "it is large by construction, because record arrival is not this venue's "
+     "liveness clock",
+     /*validated_depth=*/0,
+     "no integrity field on any record -- no checksum, no CRC, nothing the venue "
+     "signs. What this venue has instead is a SECOND STREAM: `@depth20`'s "
+     "`lastUpdateId` coincided with a diff `u` on 899/899, 901/901, 90/90 and "
+     "29/29 payloads (M5 stage 0), and 90/90 twice more at the 1000 ms tick that "
+     "the 2026-08-25 ruling ships on the board. That is an exact CROSS-STREAM "
+     "audit, not a per-record checksum, and nothing in THIS build performs it -- "
+     "so the honest count of rendered rows the venue itself confirmed is 0. It "
+     "becomes 20 at the stage that wires the audit into the window, which is C"},
 };
 
 constexpr const VenueTraits& venue_traits(Venue v) noexcept {
@@ -170,9 +286,34 @@ constexpr const VenueTraits& venue_traits(Venue v) noexcept {
 // wrong place would silently give Kraken Anvil's threshold.
 static_assert(kVenueTable[static_cast<std::size_t>(Venue::Anvil)].venue == Venue::Anvil);
 static_assert(kVenueTable[static_cast<std::size_t>(Venue::Kraken)].venue == Venue::Kraken);
+static_assert(kVenueTable[static_cast<std::size_t>(Venue::Binance)].venue == Venue::Binance);
 static_assert(sizeof(kVenueTable) / sizeof(kVenueTable[0]) ==
-                  static_cast<std::size_t>(Venue::Kraken) + 1,
+                  static_cast<std::size_t>(Venue::Binance) + 1,
               "every Venue enumerator needs a row in kVenueTable");
+
+// ...and the general form of the same check, which the three lines above cannot
+// express: every row sits at the index of the enumerator it names. The named
+// assertions catch a row inserted in the wrong place at the ends; this catches
+// one inserted anywhere, and costs nothing.
+//
+// NEITHER catches a FOURTH enumerator added with no row — the count assertion
+// above names `Venue::Binance` and would have to be edited to notice. That gap
+// is real and is closed elsewhere rather than here: every switch on `Venue` in
+// the harness lists its enumerators with no `default:` and ends in
+// `unhandled_venue`, so a new enumerator is a -Wswitch error at each dispatch
+// site under -Werror. Adding one is meant to break the build in several places
+// at once; this file is one of them and is not the only one.
+constexpr bool every_row_sits_at_its_own_index() noexcept {
+    std::size_t i = 0;
+    for (const VenueTraits& v : kVenueTable) {
+        if (static_cast<std::size_t>(v.venue) != i) { return false; }
+        ++i;
+    }
+    return true;
+}
+static_assert(every_row_sits_at_its_own_index(),
+              "a venue row is not at the index of the enumerator it names -- "
+              "venue_traits() would hand out the wrong venue's thresholds");
 
 // AN ABSENT CAPABILITY MUST BE REPRESENTED, NOT LEFT AS A ZERO (ARCHITECTURE §9,
 // 2026-08-19). `validated_depth` is 0 for Anvil because that protocol has no
@@ -189,6 +330,20 @@ constexpr bool every_row_explains_its_validated_depth() noexcept {
 static_assert(every_row_explains_its_validated_depth(),
               "a venue row must say WHY its validated_depth is what it is -- a bare 0 cannot "
               "be told apart from a field nobody filled in");
+
+// The same rule, applied to the other field that now has a sentinel (M5 stage
+// A). `legacy_book_threshold_ms` reads -1 at Binance and means NEVER DECLARED;
+// a reader who quotes it as a threshold has been told not to, in the row.
+constexpr bool every_row_explains_its_legacy_threshold() noexcept {
+    for (const VenueTraits& v : kVenueTable) {
+        if (v.legacy_note.empty()) { return false; }
+    }
+    return true;
+}
+static_assert(every_row_explains_its_legacy_threshold(),
+              "a venue row must say what its legacy_book_threshold_ms was and why it is "
+              "withdrawn or absent -- the number decides nothing and must never read as "
+              "though it did");
 
 // The metadata tag -> venue rule, in ONE place, in this language. The prose
 // statement both languages share is in harness/replay/NOTES.md; the Python half

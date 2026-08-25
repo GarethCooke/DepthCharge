@@ -217,13 +217,20 @@ add_executable(dc_tests
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
   harness/tests/test_liveness_watchdog.cpp
+  harness/tests/test_trace_records.cpp
   harness/tests/test_trace_venue.cpp
   harness/tests/test_ws_frame.cpp
   harness/tests/test_ws_ping.cpp
   harness/tests/test_window.cpp
   harness/tests/test_ws_supervisor.cpp)
+# DC_TESTS_DIR is where the SHARED record-shape corpus lives (M5 stage A).
+# `harness/tests/record_shapes.json` is replayed by test_trace_records.cpp AND
+# by tools/tracefile.py's selfcheck, which is what makes "the C++ reader and the
+# Python one agree on what they reject" a test rather than an inspection — the
+# cases live outside both readers, so neither can quietly relax one.
 target_compile_definitions(dc_tests PRIVATE
-  DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
+  DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay"
+  DC_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/tests")
 # M3 stages C, D, E and the transport rebuild: the firmware's WebSocket frame
 # parser and reassembler, its gap histograms,
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
@@ -479,6 +486,65 @@ add_test(NAME dc_ladder_kraken_resync
           ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_minagbp_d25_resync_20260818.ndjson
           --no-color)
 
+# THE COMMITTED BINANCE SLICES ARE NAMED, NOT GLOBBED, AND CHECKED BEFORE THE
+# PYTHON GUARD — because whether a committed artefact is present is a question
+# about this repository, not about whether a Python interpreter is installed.
+#
+# `file(GLOB)` resolves at CONFIGURE time, so a fresh clone, a stale cache or a
+# renamed trace silently drops the test and the suite still reports green — at a
+# total that reads as full coverage to whoever quotes it. This repository already
+# holds the rule, from the Kraken pin table: an unpinned trace is a FAILURE, not a
+# skip. A missing file here is a configure-time error naming the file, because the
+# file list is part of what is being pinned.
+#
+# It sits outside `if(Python3_Interpreter_FOUND)` deliberately: review found that
+# inside it, a machine without Python tolerated a missing committed slice in
+# silence — the exact hole the rule exists to close.
+set(DC_BINANCE_TRACE_NAMES
+  binance_btcusdt_deepseed_20260824.ndjson
+  binance_btcusdt_deepseed2_20260824.ndjson
+  binance_atomeur_deepseed_20260824.ndjson
+  binance_btcusdt_d100ms_20260824.ndjson
+  binance_btcusdt_d1000ms_20260824.ndjson
+  binance_atomeur_d100ms_20260824.ndjson
+  binance_btcusdt_reconnect_20260824.ndjson)
+set(DC_BINANCE_TRACES "")
+foreach(dc_trace IN LISTS DC_BINANCE_TRACE_NAMES)
+  set(dc_trace_path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${dc_trace})
+  if(NOT EXISTS ${dc_trace_path})
+    message(FATAL_ERROR
+      "Committed Binance slice missing: ${dc_trace}. It is named in CMakeLists.txt "
+      "because it is pinned by binance_tool_selfcheck and (for the deep-seed ones) "
+      "by binance_oracle_mutants. Restore it, or remove it from BOTH this list and "
+      "tools/binance_pins.py in the same commit — never from one.")
+  endif()
+  list(APPEND DC_BINANCE_TRACES ${dc_trace_path})
+endforeach()
+unset(dc_trace)
+unset(dc_trace_path)
+
+# --- the third venue's traces, read end to end (M5 stage A) -------------------
+# Before this stage, dc_replay could read none of these: `binance` was a venue
+# the build rejected by name, and the reader could not have represented two of
+# the three things a Binance session produces even if it had known the venue —
+# a REST snapshot body is not a frame the venue sent, and a ping payload is not
+# JSON at all.
+#
+# THESE ARE dc_replay ONLY, AND dc_ladder IS DELIBERATELY ABSENT. The ladder
+# drives the replay DRIVER, and the driver has no Binance adapter — it refuses
+# the venue loudly, which is exactly where Kraken sat between M4 stage A and B1.
+# A ladder test here would run the whole chain over a real capture, draw nothing,
+# and exit 0: a decoder that emits nothing looks exactly like a feed that said
+# nothing. B1 brings the adapter and these gain their ladder half then.
+#
+# The list is the NAMED one above, never a glob, for the reason stated there.
+foreach(dc_trace IN LISTS DC_BINANCE_TRACES)
+  get_filename_component(dc_trace_stem ${dc_trace} NAME_WE)
+  add_test(NAME dc_replay_${dc_trace_stem} COMMAND dc_replay ${dc_trace})
+endforeach()
+unset(dc_trace)
+unset(dc_trace_stem)
+
 # The taxonomy pin, over EVERY committed trace, Anvil included. An unpinned
 # trace fails rather than skips (see dc_taxonomy_main.cpp): adding a committed
 # trace without recording its figures would otherwise leave a green test that
@@ -516,42 +582,6 @@ set_tests_properties(dc_tests dc_tests_streaming dc_tests_noping dc_tests_kraken
 # Optional by design, exactly like dc_engine_target_check above — a contributor
 # without a Python 3 interpreter still gets a complete C++ build and a STATUS line
 # saying which check was skipped.
-# THE COMMITTED BINANCE SLICES ARE NAMED, NOT GLOBBED, AND CHECKED BEFORE THE
-# PYTHON GUARD — because whether a committed artefact is present is a question
-# about this repository, not about whether a Python interpreter is installed.
-#
-# `file(GLOB)` resolves at CONFIGURE time, so a fresh clone, a stale cache or a
-# renamed trace silently drops the test and the suite still reports green — at a
-# total that reads as full coverage to whoever quotes it. This repository already
-# holds the rule, from the Kraken pin table: an unpinned trace is a FAILURE, not a
-# skip. A missing file here is a configure-time error naming the file, because the
-# file list is part of what is being pinned.
-#
-# It sits outside `if(Python3_Interpreter_FOUND)` deliberately: review found that
-# inside it, a machine without Python tolerated a missing committed slice in
-# silence — the exact hole the rule exists to close.
-set(DC_BINANCE_TRACE_NAMES
-  binance_btcusdt_deepseed_20260824.ndjson
-  binance_btcusdt_deepseed2_20260824.ndjson
-  binance_atomeur_deepseed_20260824.ndjson
-  binance_btcusdt_d100ms_20260824.ndjson
-  binance_btcusdt_d1000ms_20260824.ndjson
-  binance_atomeur_d100ms_20260824.ndjson
-  binance_btcusdt_reconnect_20260824.ndjson)
-set(DC_BINANCE_TRACES "")
-foreach(dc_trace IN LISTS DC_BINANCE_TRACE_NAMES)
-  set(dc_trace_path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${dc_trace})
-  if(NOT EXISTS ${dc_trace_path})
-    message(FATAL_ERROR
-      "Committed Binance slice missing: ${dc_trace}. It is named in CMakeLists.txt "
-      "because it is pinned by binance_tool_selfcheck and (for the deep-seed ones) "
-      "by binance_oracle_mutants. Restore it, or remove it from BOTH this list and "
-      "tools/binance_pins.py in the same commit — never from one.")
-  endif()
-  list(APPEND DC_BINANCE_TRACES ${dc_trace_path})
-endforeach()
-unset(dc_trace)
-unset(dc_trace_path)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
