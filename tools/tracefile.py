@@ -81,6 +81,46 @@ TX_KEY = '"dir": "tx"'
 # single payload in the file. A caller that wants them says so.
 KIND_KEY = '"kind": "'
 
+# The record forms this reader knows, and what each one owes. The C++ twin is
+# `RecordForm` / `TraceReader::next` in harness/include/dc_harness/trace.hpp and
+# harness/src/trace.cpp, and the two are held to this list by a SHARED CORPUS --
+# harness/tests/record_shapes.json, replayed by `selfcheck()` below and by
+# `test_trace_records.cpp`. One corpus, two readers, one place to add a case:
+# "the two must agree on what they reject" is a claim, and a shared fixture is
+# the difference between a claim and a test (M5 stage A, deliverable 1).
+#
+# `wrapper_key` is the object the form carries beside the frame; `frame_is_null`
+# says whether the record has a frame at all. An unknown kind is REFUSED BY NAME
+# rather than read as a plain frame: it means a capture written by a newer tool
+# than this one, and filing a record these tools do not understand into a
+# counter that claims to describe the venue's wire is how a figure becomes
+# fiction.
+# `frame` values a form may carry: "object" | "null" | "object-or-null".
+#
+# **`rest` IS object-or-null AND THE READER LEARNED THAT FROM THE WIRE.** The
+# first draft required an object, and `capture_binance --selfcheck` refused a
+# trace its own capture loop had just written: `on_rest` RECORDS a failed fetch
+# rather than dropping it, because "the snapshot did not arrive" is a fact about
+# the capture window, and so is a body this line shape cannot hold. `req.status`
+# and `req.error` say which. The reader learns the wire; the wire does not learn
+# the reader.
+# ONE ROW PER FORM: (wrapper key, what `frame` may be, what the wrapper owes).
+# Written as one table rather than two keyed by the same strings, because two
+# parallel dicts are two places to add a form and one place to forget -- and the
+# forgotten one is a KeyError at read time, on a file that is perfectly valid.
+#
+# The `required` fields are what makes the record MEAN anything. `rest` must say
+# WHAT WAS ASKED FOR and WHEN THE ANSWER LANDED, because a limit=100 book and a
+# limit=1000 book are different claims about the same instrument; `control`
+# needs its opcode and its arrival, because the record's own rx_ns is when the
+# main loop wrote it and three pings 20 s apart can share one.
+RECORD_FORMS: dict[str, dict] = {
+    "rest": {"wrapper_key": "req", "frame": "object-or-null",
+             "required": (("url", str), ("limit", int), ("recv_ns", int))},
+    "control": {"wrapper_key": "ctl", "frame": "null",
+                "required": (("op", str), ("recv_ns", int))},
+}
+
 # --- the venue-conditional metadata contract (M4 stage A) --------------------
 # One table, mirroring kVenueTable in harness/include/dc_harness/venue.hpp.
 # Adding a venue means adding a row in BOTH, and `check_meta` below is what
@@ -132,6 +172,38 @@ def ticks(text: str) -> tuple[int, int]:
 def venue_of(meta: dict) -> str:
     """The trace's venue. An absent tag is `anvil` -- that is the rule."""
     return meta.get("venue") or DEFAULT_VENUE
+
+
+def _no_branch(venue: str, predicate: str) -> ValueError:
+    """The error every venue-conditional predicate below ends with.
+
+    **THE SHAPE FIX, M5 stage A deliverable 3, and it is not the same thing as
+    adding a third venue's branches.** Every predicate here used to be written
+    ``if venue == "anvil": ... else: <Kraken's answer>``, so a venue added
+    without an explicit branch did not fail loudly and did not fail quietly --
+    it returned a CONFIDENT WRONG ANSWER. Verified before the fix: without its
+    branch, ``is_book_event("binance", <a depthUpdate>)`` returns False, so a
+    pricing tool reports zero book events on a full capture and the file reads
+    as empty rather than as unsupported.
+
+    Now the last venue is an explicit branch like every other, and the path
+    past it raises. That catches BOTH failure modes with one line per
+    predicate: a venue this module has never heard of, and a venue that has a
+    ``VENUES`` row but no branch here -- which is the one that used to be
+    silent, because adding the row is the edit people remember.
+
+    The C++ twin is ``unhandled_venue`` in ``harness/include/dc_harness/
+    venue.hpp``, ending the same dispatches on the other side.
+    """
+    known = venue in VENUES
+    why = ("has a VENUES row but no branch in this predicate -- which is the "
+           "silent half of DESIGN strain 22"
+           if known else
+           "is not a venue these tools know at all")
+    return ValueError(
+        f"{predicate}(): venue {venue!r} {why}. Known: {', '.join(sorted(VENUES))}. "
+        f"Adding a venue means a VENUES row AND a branch in every predicate here, "
+        f"and this exception is what makes the second half fail rather than guess.")
 
 
 def binance_payload(frame):
@@ -186,7 +258,9 @@ def is_book_event(venue: str, frame) -> bool:
         # A diff event, or a partial-depth payload (which has no event type at
         # all -- it is identified by carrying `lastUpdateId` and nothing else).
         return p.get("e") == "depthUpdate" or "lastUpdateId" in p
-    return frame.get("channel") == "book"
+    if venue == "kraken":
+        return frame.get("channel") == "book"
+    raise _no_branch(venue, "is_book_event")
 
 
 def is_snapshot(venue: str, frame) -> bool:
@@ -204,7 +278,9 @@ def is_snapshot(venue: str, frame) -> bool:
         # to resolve; this predicate answers only for frames.
         p = binance_payload(frame)
         return isinstance(p, dict) and "lastUpdateId" in p and "e" not in p
-    return frame.get("channel") == "book" and frame.get("type") == "snapshot"
+    if venue == "kraken":
+        return frame.get("channel") == "book" and frame.get("type") == "snapshot"
+    raise _no_branch(venue, "is_snapshot")
 
 
 def rebaselines(venue: str, frame, kind: str = "") -> bool:
@@ -229,12 +305,22 @@ def rebaselines(venue: str, frame, kind: str = "") -> bool:
     and `KrakenAdapter::apply_update` drops deltas outright until a snapshot has
     arrived (*no baseline, no deltas*).
 
-    NO C++ TWIN, deliberately. The three other predicates here mirror
-    `harness/include/dc_harness/trace_decoder.hpp` because the C++ reader asks
-    those questions too; nothing in the harness asks this one — only the slicer
-    does — and adding an unused field to `RecordKind` would move the taxonomy
-    pins to carry weight nobody lifts. If a C++ caller ever needs it, the
-    authority to mirror is the adapters' own dispatch, named above.
+    **THE C++ TWIN NOW EXISTS, AND IT IS `RecordKind::is_snapshot`** (M5 stage
+    A). This paragraph used to read "NO C++ TWIN, deliberately", on the grounds
+    that nothing in the harness asked this question -- only the slicer did. That
+    stopped being true the evening Binance got a decoder: `TraceStats` counts
+    snapshots and derives its resync rule from them, and at a venue whose only
+    re-baseline is a REST fetch, the question the C++ field has to answer is
+    THIS one and not `is_snapshot`'s.
+
+    So the two languages deliberately disagree at exactly one venue, and this is
+    where it is written down: `binance_classify` mirrors THIS function, not
+    `is_snapshot`. A `@depth20` partial is `is_snapshot(...) == True` here --
+    it replaces the top 20 outright -- and `is_snapshot == False` in the C++
+    `RecordKind`, because the venue publishes ten a second and counting them
+    there would report a hundred and fifty resyncs on a fifteen-second slice.
+    Neither answer is wrong; they are answers to the two different questions
+    this docstring opens by distinguishing.
     """
     if not isinstance(frame, dict):
         return False
@@ -264,7 +350,9 @@ def rebaselines(venue: str, frame, kind: str = "") -> bool:
         # capture can only be cut at a `kind: "rest"` record, which is what
         # `slice_trace.py --from-baseline` exists for.
         return False
-    return is_snapshot(venue, frame)
+    if venue == "kraken":
+        return is_snapshot(venue, frame)
+    raise _no_branch(venue, "rebaselines")
 
 
 def is_trade(venue: str, frame) -> bool:
@@ -290,10 +378,12 @@ def is_trade(venue: str, frame) -> bool:
         # subscribe to, so this is a property of the subscription and not of the
         # venue.
         return isinstance(p, dict) and p.get("e") in ("trade", "aggTrade")
-    return frame.get("channel") == "trade"
+    if venue == "kraken":
+        return frame.get("channel") == "trade"
+    raise _no_branch(venue, "is_trade")
 
 
-def is_liveness(venue: str, frame) -> bool:
+def is_liveness(venue: str, frame, kind: str = "", wrapper: dict | None = None) -> bool:
     """Is this the venue's DECLARED LIVENESS SIGNAL?
 
     Anvil's `summary`, Kraken's `heartbeat` -- the record whose arrival proves
@@ -307,31 +397,41 @@ def is_liveness(venue: str, frame) -> bool:
     data the adapter ignores, so it is NOT a book event -- and that is exactly
     what makes it usable here. It proves the server is alive without pretending
     the book moved.
+
+    `kind` and `wrapper` are `Record.kind` and `Record.wrapper`, and Binance is
+    why they are here: its signal is not a frame (M5 stage A).
     """
+    if venue == "binance":
+        # **TRUE FOR A PING ARRIVAL AND FOR NOTHING ELSE** (M5 stage A, the
+        # 2026-08-25 ruling as written).
+        #
+        # Stage 0 measured this as ALWAYS FALSE and that was the finding:
+        # Binance's depth streams publish no record whose arrival proves the feed
+        # is alive without claiming the book moved. What the venue has instead is
+        # a WebSocket PING control frame every ~20 s, which is a liveness signal
+        # in every respect except that it is not JSON, is not a frame, and could
+        # not appear in a DepthCharge trace at all until the `kind` record shape
+        # landed. It can now, so this answers.
+        #
+        # DO NOT SOFTEN IT INTO "true for anything unsolicited": the `@depth20`
+        # audit stream is unsolicited too, and it is change-driven, which is the
+        # entire reason this venue needs a control frame to prove it is alive. A
+        # pong is this side talking and proves nothing; a close proves the
+        # opposite.
+        if kind != "control":
+            return False
+        return ((wrapper or {}).get("ctl") or {}).get("op") == "ping"
     if not isinstance(frame, dict):
         return False
     if venue == "anvil":
         return frame.get("type") == "summary"
-    if venue == "binance":
-        # **ALWAYS FALSE, AND THAT IS THE FINDING** (M5 stage 0, measured).
-        #
-        # Anvil declares liveness with `summary`, Kraken with `heartbeat`, and the
-        # 2026-08-17 ruling arms the panel's grey state on that record and on
-        # nothing else. Binance's depth streams publish no such record: there is
-        # no frame whose arrival proves the feed is alive without claiming the
-        # book moved.
-        #
-        # What this venue has instead is a **WebSocket PING control frame every
-        # ~20 s**, which is a liveness signal in every respect except that it is
-        # not JSON, is not a record, and -- before the `kind` proposal above --
-        # could not appear in a DepthCharge trace at all. So Binance's row in the
-        # venue table cannot be filled in by copying either predecessor's, and the
-        # thing that would fill it lives one layer down, in the transport.
-        return False
-    return frame.get("channel") == "heartbeat"
+    if venue == "kraken":
+        return frame.get("channel") == "heartbeat"
+    raise _no_branch(venue, "is_liveness")
 
 
-def record_kind(venue: str, frame, is_tx: bool = False) -> str:
+def record_kind(venue: str, frame, is_tx: bool = False, kind: str = "",
+                wrapper: dict | None = None) -> str:
     """A short label for the record's kind, agreeing with the C++ decoders.
 
     The strings are the ones `harness/include/dc_harness/trace_decoder.hpp` and
@@ -339,7 +439,29 @@ def record_kind(venue: str, frame, is_tx: bool = False) -> str:
     `ack:subscribe`, `tx:subscribe` -- so a histogram printed by a Python tool
     and one printed by `dc_taxonomy` are counting the same buckets. At Anvil the
     kind is the bare wire `type`, unchanged.
+
+    `kind` and `wrapper` are `Record.kind` and `Record.wrapper` (M5 stage A),
+    and they are how the two records that are NOT frames get named. A control
+    record's kind is its OPCODE -- which is what makes `venue.hpp`'s
+    `liveness_signal = "ping"` name a bucket this function produces, exactly as
+    `summary` and `heartbeat` do at the other two venues. A REST record is
+    `rest`, named for the record rather than for the body's shape, because a
+    REST body and a `@depth20` payload are the same shape and only the record
+    that carries them says which is which.
     """
+    if kind == "control":
+        # THE ONE RECORD WITH NO FRAME. Its name cannot come from `frame`,
+        # because there is not one -- it comes from the wrapper the capture tool
+        # wrote, which is this project's own output and therefore predictable.
+        op = ((wrapper or {}).get("ctl") or {}).get("op")
+        return str(op) if op else "?"
+    if kind == "rest":
+        # A FETCH THAT RETURNED NOTHING IS NAMED, not folded into the count --
+        # the same rule as `ack:subscribe REFUSED` at Kraken, and for the same
+        # reason. `capture_binance.py` records a failed fetch rather than
+        # dropping it; filing it as an ordinary one hides the only thing it is
+        # evidence of. `req.status` and `req.error` say why it failed.
+        return "rest" if isinstance(frame, dict) else "rest:no-body"
     if not isinstance(frame, dict):
         return "?"
     if venue == "anvil":
@@ -355,6 +477,8 @@ def record_kind(venue: str, frame, is_tx: bool = False) -> str:
         if "result" in p or "id" in p:
             return "ack"
         return "?"
+    if venue != "kraken":
+        raise _no_branch(venue, "record_kind")
     channel = frame.get("channel")
     if channel is not None:
         kind = frame.get("type")
@@ -433,6 +557,13 @@ def read_capture(path, *, skip_tx: bool = True, kinds: tuple[str, ...] = ()):
     what it always saw -- the venue's WS text frames -- even when handed a trace
     full of REST fetches and control frames. A caller that wants them opts in,
     and gets `Record.kind` and `Record.wrapper` filled in.
+
+    **A KINDED RECORD IS VALIDATED WHETHER OR NOT IT IS YIELDED** (M5 stage A).
+    Skipping a record is a statement about what the CALLER wants, not about
+    whether the file is well-formed, and the C++ reader has no `kinds` parameter
+    to skip with -- so a rule enforced only on the yielded path would be a rule
+    the two readers disagree about on every trace nobody opted in to. Nothing
+    moves on a well-formed capture, which is every committed one.
     """
     want = frozenset(kinds)
     with open(path, encoding="utf-8") as fh:
@@ -451,11 +582,14 @@ def read_capture(path, *, skip_tx: bool = True, kinds: tuple[str, ...] = ()):
             if is_tx and skip_tx:
                 continue
             kind = kind_of_line(line, start)
-            if kind and kind not in want:
-                continue
             raw = line[start + len(FRAME_KEY):].rstrip()
             if raw.endswith("}"):
                 raw = raw[:-1]  # the capture wrapper's own closing brace
+            wrapper = None
+            if kind:
+                wrapper = _check_kinded(line, start, kind, raw, lineno)
+            if kind and kind not in want:
+                continue
             try:
                 frame = json.loads(raw)
             except json.JSONDecodeError as exc:
@@ -467,19 +601,76 @@ def read_capture(path, *, skip_tx: bool = True, kinds: tuple[str, ...] = ()):
                 rx_ns = int(line[len('{"rx_ns": '):line.index(",")])
             except ValueError as exc:
                 raise ValueError(f"line {lineno}: no readable rx_ns ({exc})") from exc
-            wrapper = None
-            if kind:
-                # The wrapper is this tool's own output and therefore safely
-                # re-parsable; only the frame is the venue's.
-                head = line[:start].rstrip()
-                if head.endswith(","):
-                    head = head[:-1]
-                try:
-                    wrapper = json.loads(head + "}")
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"line {lineno}: unreadable {kind!r} wrapper ({exc})") from exc
             yield Record(raw, frame, rx_ns, is_tx, lineno, kind, wrapper)
+
+
+def _parse_wrapper(line: str, start: int, kind: str, lineno: int) -> dict:
+    """The non-frame half of a kinded record line, parsed.
+
+    The wrapper is this project's own output and therefore safely re-parsable;
+    only the frame is the venue's, which is why the frame is never round-tripped
+    anywhere in this module.
+    """
+    head = line[:start].rstrip()
+    if head.endswith(","):
+        head = head[:-1]
+    try:
+        return json.loads(head + "}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"line {lineno}: unreadable {kind!r} wrapper ({exc})") from exc
+
+
+def _check_kinded(line: str, start: int, kind: str, raw: str, lineno: int) -> dict:
+    """Validate one kinded record and return its wrapper. Raises ValueError.
+
+    THE PYTHON HALF OF ONE CONTRACT. Every rule here has a twin in
+    `TraceReader::next` (harness/src/trace.cpp) and the pair is held together by
+    harness/tests/record_shapes.json, which both readers replay. If you add a
+    rule to one side, add the case to the corpus -- that is what makes the other
+    side fail rather than diverge.
+    """
+    if kind not in RECORD_FORMS:
+        raise ValueError(
+            f"line {lineno}: record declares kind {kind!r}, which these tools do not "
+            f"know (known: {', '.join(sorted(RECORD_FORMS))}, or the key absent for a "
+            f"WebSocket text frame)")
+    form = RECORD_FORMS[kind]
+    wrapper_key = form["wrapper_key"]
+
+    # The frame, checked from the RAW TEXT rather than by parsing it: a REST body
+    # is up to 100 KB and this runs on every record of every capture, including
+    # the ones the caller is about to skip.
+    is_null, is_object = raw == "null", raw.startswith("{")
+    allowed = form["frame"]
+    if allowed == "null" and not is_null:
+        raise ValueError(
+            f"line {lineno}: a {kind!r} record must carry \"frame\": null -- a "
+            f"WebSocket control frame is not JSON, and a control record with a "
+            f"frame is a record that cannot be true")
+    if allowed == "object" and not is_object:
+        raise ValueError(f"line {lineno}: a {kind!r} record must carry an object frame")
+    if allowed == "object-or-null" and not (is_object or is_null):
+        raise ValueError(
+            f"line {lineno}: a {kind!r} record's frame must be the response body or "
+            f"null (a fetch that failed is recorded, not dropped)")
+
+    wrapper = _parse_wrapper(line, start, kind, lineno)
+    payload = wrapper.get(wrapper_key)
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"line {lineno}: a {kind!r} record must carry an object {wrapper_key!r}")
+    for field, want_type in form["required"]:
+        value = payload.get(field)
+        if want_type is str:
+            ok = isinstance(value, str) and value != ""
+        else:
+            # bool is a subclass of int and must not satisfy an integer field.
+            ok = isinstance(value, want_type) and not isinstance(value, bool)
+        if not ok:
+            raise ValueError(
+                f"line {lineno}: a {kind!r} record's {wrapper_key!r} needs "
+                f"{field!r} as {want_type.__name__}")
+    return wrapper
 
 
 def read_meta(path, *, validate: bool = False) -> dict:
@@ -620,12 +811,60 @@ def selfcheck() -> int:
                 check(isinstance(fn(venue, frame), bool),
                       f"{fn.__name__}({venue!r}, {frame!r}) is not a bool")
 
+    # -- THE HARD FAILURE, which is what deliverable 3 actually asked for ---
+    # Not "does binance have branches" -- it does, stage 0 added them -- but
+    # "does a FOURTH venue fail loudly". Both halves are staged: a venue these
+    # tools have never heard of, and (the one that used to be silent) a venue
+    # that has a VENUES row and no branch, because adding the row is the edit
+    # people remember.
+    predicates = (is_book_event, is_snapshot, is_trade, is_liveness, rebaselines,
+                  record_kind)
+    for fn in predicates:
+        try:
+            fn("coinbase", diff)
+            check(False, f"{fn.__name__} answered for a venue it has no branch for")
+        except ValueError:
+            check(True, "")
+    VENUES["_unbranched"] = ("symbol",)
+    try:
+        for fn in predicates:
+            try:
+                fn("_unbranched", diff)
+                check(False,
+                      f"{fn.__name__} answered for a venue with a VENUES row and no "
+                      f"branch -- the silent half of DESIGN strain 22 is back")
+            except ValueError:
+                check(True, "")
+    finally:
+        del VENUES["_unbranched"]
+
+    # -- the two records that are NOT frames, named (M5 stage A) -----------
+    ping_wrap = {"ctl": {"op": "ping", "recv_ns": 5, "pong_ns": 6}}
+    close_wrap = {"ctl": {"op": "close", "recv_ns": 7}}
+    check(is_liveness("binance", None, "control", ping_wrap),
+          "a Binance ping arrival must stamp the liveness clock")
+    check(is_liveness("binance", None, "control", close_wrap) is False,
+          "a close proves the opposite of liveness")
+    check(is_liveness("binance", diff) is False,
+          "a depthUpdate is not liveness -- the ruling is the ping and nothing else")
+    check(record_kind("binance", None, kind="control", wrapper=ping_wrap) == "ping",
+          "a control record's kind is its opcode, which is what venue.hpp names")
+    check(record_kind("binance", partial, kind="rest") == "rest",
+          "a REST record is named for the record, not for the body's shape")
+    # The C++/Python divergence at this venue, asserted so it stays deliberate:
+    # `rebaselines` is what `RecordKind::is_snapshot` mirrors, NOT `is_snapshot`.
+    check(is_snapshot("binance", partial) and not rebaselines("binance", partial),
+          "a @depth20 partial replaces the top 20 and does NOT re-baseline; the two "
+          "predicates must keep disagreeing about it")
+
     # -- the record line shape, against the spellings the writers emit -----
     lines = [
         '{"rx_ns": 5, "frame": {"e":"depthUpdate"}}',
         '{"rx_ns": 6, "dir": "tx", "frame": {"method":"subscribe"}}',
-        '{"rx_ns": 7, "kind": "rest", "req": {"limit": 100}, "frame": {"lastUpdateId":1}}',
-        '{"rx_ns": 8, "kind": "control", "ctl": {"op": "ping"}, "frame": null}',
+        '{"rx_ns": 7, "kind": "rest", "req": {"url": "https://x/depth", "limit": 100,'
+        ' "recv_ns": 6}, "frame": {"lastUpdateId":1}}',
+        '{"rx_ns": 8, "kind": "control", "ctl": {"op": "ping", "recv_ns": 7},'
+        ' "frame": null}',
     ]
     for line, want in zip(lines, ("", "", "rest", "control")):
         check(kind_of_line(line, line.find(FRAME_KEY)) == want,
@@ -662,6 +901,49 @@ def selfcheck() -> int:
         withtx = list(read_capture(path, skip_tx=False))
         check(sum(1 for r in withtx if r.is_tx) == 1, "the tx record was not surfaced")
         check(check_meta(read_meta(path)) == "binance", "check_meta did not say binance")
+
+        # -- THE SHARED CORPUS: what this reader and the C++ one must agree on.
+        #
+        # `test_trace_records.cpp` replays the same file through TraceReader and
+        # asserts the same verdicts. That is the whole mechanism behind
+        # deliverable 1's "the two must agree on what they reject, proven by a
+        # test rather than by inspection" -- neither side can quietly relax a
+        # rule, because the case lives outside both of them.
+        corpus = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              os.pardir, "harness", "tests", "record_shapes.json")
+        if not os.path.exists(corpus):
+            check(False, f"the shared record-shape corpus is missing: {corpus}")
+        else:
+            with open(corpus, encoding="utf-8") as fh:
+                cases = json.load(fh)["cases"]
+            check(len(cases) >= 10,
+                  f"the shared corpus has only {len(cases)} cases -- it is meant to "
+                  f"carry the cases no committed capture contains")
+            for case in cases:
+                one = os.path.join(tmp, "case.ndjson")
+                with open(one, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(header + "\n")
+                    fh.write(case["line"] + "\n")
+                try:
+                    got = list(read_capture(one, skip_tx=False,
+                                            kinds=tuple(RECORD_FORMS)))
+                    accepted, err = True, ""
+                except ValueError as exc:
+                    accepted, got, err = False, [], str(exc)
+                if accepted != case["accept"]:
+                    check(False,
+                          f"record_shapes[{case['name']!r}]: "
+                          f"{'accepted' if accepted else 'rejected: ' + err}, want "
+                          f"{'accept' if case['accept'] else 'reject'} -- {case['why']}")
+                    continue
+                check(True, "")
+                if case["accept"]:
+                    check(len(got) == 1,
+                          f"record_shapes[{case['name']!r}]: yielded {len(got)} records")
+                    if got:
+                        check(got[0].kind == case["form"],
+                              f"record_shapes[{case['name']!r}]: form "
+                              f"{got[0].kind!r}, want {case['form']!r}")
 
     for why in fails:
         print("  FAIL " + why)
