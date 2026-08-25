@@ -215,10 +215,41 @@ class WsClient:
             self._fill()
 
     def _fill(self) -> int:
-        """Pull one chunk into the buffer. Returns bytes read (0 on timeout)."""
+        """Pull one chunk into the buffer. Returns bytes read (0 on timeout).
+
+        TWO ways a poll can come back empty, and only one of them was handled
+        until M5 stage 0 (2026-08-24), when Binance found the other.
+
+        `socket.timeout` is the plain case: the deadline passed with nothing
+        readable. `ssl.SSLWantReadError` is the case a TLS socket adds -- the
+        deadline passed with a **partially received TLS record** in hand, so the
+        SSL layer cannot return a plaintext chunk yet and needs more bytes. It is
+        NOT an error and it is NOT a closed connection: the partial record is held
+        inside the SSL object and the next `recv` resumes it. Returning 0 is the
+        correct answer to both.
+
+        Why no venue found this before. It fires only when a frame straddles the
+        1.0 s poll boundary, which needs the socket to be quiet for most of a
+        second and then to speak. Anvil summarises every 500 ms and Kraken
+        heartbeats at 1 Hz, so on both venues a poll almost always completes
+        inside one record. Binance's `@depth`/`@depth20` at the **1000 ms**
+        cadence sits exactly on the boundary, and the first capture 2 attempt
+        died after 4 frames with
+
+            connection ended: The operation did not complete (read) (_ssl.c:2624)
+
+        which `capture_*.py` reports as `ssl.SSLError` and treats as the end of
+        the stream -- an ordinary quiet second, misread as a dead socket. On a
+        quiet pair (capture 3) it would have ended the capture almost at once.
+        This is the shape ARCHITECTURE §9's never-observed row describes: a code
+        path whose correctness had never been exercised because no committed
+        trace had ever contained the condition.
+        """
         try:
             chunk = self.sock.recv(65536)
         except socket.timeout:
+            return 0
+        except ssl.SSLWantReadError:
             return 0
         if chunk == b"":
             raise ConnectionError("server closed the connection")
