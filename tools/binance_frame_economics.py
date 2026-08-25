@@ -59,7 +59,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from tracefile import binance_payload, read_capture, read_meta
+from tracefile import (binance_payload, binance_stream_name, decimals_of,
+                       read_capture, read_meta, ticks)
 
 # The two byte rates M4 and M5 are sized against, both measured rather than
 # assumed. 30.8 KiB/s is what the board draws from Anvil today at depth=27
@@ -95,28 +96,6 @@ def percentile(ordered: list[float], pct: float) -> float:
     lo = int(k)
     hi = min(lo + 1, len(ordered) - 1)
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
-
-
-def decimals_of(text: str) -> int:
-    """Fractional digit count of a quoted decimal, without touching a float."""
-    _, _, frac = text.partition(".")
-    return len(frac)
-
-
-def ticks(text: str) -> tuple[int, int]:
-    """(scaled integer, fractional digits). Digits are shifted, never rounded.
-
-    Same spelling as the Kraken tool's, and deliberately so: the adapter will
-    have to do exactly this from the token text on the hot path, and invariant #3
-    says no float ever touches book data.
-    """
-    neg = text.startswith("-")
-    body = text[1:] if neg else text
-    if "e" in body or "E" in body:
-        raise ValueError(f"exponent notation on the wire: {text!r}")
-    whole, _, frac = body.partition(".")
-    value = int(whole + frac) if (whole + frac) else 0
-    return (-value if neg else value), len(frac)
 
 
 class Book:
@@ -192,23 +171,72 @@ class StreamStats:
         self.diff_u_values: set[int] = set()
         self.diff_brackets: list[tuple[int, int]] = []
 
+    def on_diff(self, payload: dict, precision, exponent_tokens) -> int:
+        """Absorb one `depthUpdate`. Returns the level entries it contributed.
+
+        Extracted at review: `measure` was 115 lines doing record reading,
+        stream classification, book-keeping and precision counting at once, and
+        the counting block was duplicated three times inside it. A stream's own
+        accounting belongs on the stream.
+        """
+        self.is_diff = True
+        bids, asks = payload.get("b", []), payload.get("a", [])
+        U, u = payload["U"], payload["u"]
+        self.diff_u_values.add(u)
+        self.diff_brackets.append((U, u))
+        if self.first_U is None:
+            self.first_U = U
+        elif U == self.prev_u + 1:
+            self.seq_ok += 1
+        else:
+            self.seq_break += 1
+            self.seq_breaks.append((self.prev_u, U))
+        self.prev_u = u
+        entries = moved = 0
+        for side, rows in (("b", bids), ("a", asks)):
+            entries += count_levels(rows, precision, exponent_tokens)
+            for price, qty in rows:
+                if self.book.apply(side, price, qty):
+                    moved += 1
+        self.levels += len(bids) + len(asks)
+        self.changed += moved
+        return entries
+
+    def on_partial(self, payload: dict, precision, exponent_tokens) -> int:
+        """Absorb one partial-depth payload. Returns the level entries it added."""
+        self.is_partial = True
+        bids, asks = payload.get("bids", []), payload.get("asks", [])
+        self.last_update_ids.append(payload["lastUpdateId"])
+        entries = 0
+        for rows in (bids, asks):
+            entries += count_levels(rows, precision, exponent_tokens)
+        self.levels += len(bids) + len(asks)
+        self.changed += self.book.replace(bids, asks)
+        return entries
+
     def gaps_ms(self) -> list[float]:
         return sorted((b - a) / 1e6 for a, b in zip(self.rx, self.rx[1:]))
 
 
-def stream_name_of(meta: dict, frame) -> str:
-    """Which stream a frame belongs to.
+def count_levels(rows, precision, tally) -> int:
+    """Count one side's level entries into the precision/exponent tallies.
 
-    From the combined-stream wrapper when there is one; otherwise the capture is
-    single-stream by construction and the metadata header names it. NOTE the
-    wrapper is not stripped from the byte counts -- `payload_bytes` is the whole
-    frame as sent, wrapper included, because whether the wrapper is worth its
-    bytes is one of the questions this tool exists to answer.
+    Extracted at review: this block appeared THREE times in `measure` -- once for
+    a REST body, once for a diff event, once for a partial payload -- identical
+    but for which rows it walked. `tally` is a one-element list used as a counter
+    so the exponent count can be mutated by reference without threading a return
+    value through every call site.
+
+    Returns the number of entries seen, so the caller does not count them twice.
     """
-    if isinstance(frame, dict) and "stream" in frame:
-        return str(frame["stream"]).split("@", 1)[-1]
-    streams = meta.get("streams") or ["?"]
-    return streams[0]
+    seen = 0
+    for price, qty in rows:
+        seen += 1
+        precision[("price", decimals_of(price))] += 1
+        precision[("qty", decimals_of(qty))] += 1
+        if "e" in price or "E" in price or "e" in qty or "E" in qty:
+            tally[0] += 1
+    return seen
 
 
 def measure(trace: Path) -> tuple[dict, dict]:
@@ -223,7 +251,7 @@ def measure(trace: Path) -> tuple[dict, dict]:
     controls: Counter[str] = Counter()
     ping_latencies_ms: list[float] = []
     precision: Counter[tuple[str, int]] = Counter()
-    exponent_tokens = 0
+    exponent_tokens = [0]   # by-reference, see count_levels
     level_entries = 0
     all_rx: list[int] = []
 
@@ -242,15 +270,10 @@ def measure(trace: Path) -> tuple[dict, dict]:
             rest_ids.append((rec.rx_ns, rec.frame["lastUpdateId"]))
             rest_levels.append(len(rec.frame["bids"]) + len(rec.frame["asks"]))
             for rows in (rec.frame["bids"], rec.frame["asks"]):
-                for price, qty in rows:
-                    level_entries += 1
-                    precision[("price", decimals_of(price))] += 1
-                    precision[("qty", decimals_of(qty))] += 1
-                    if "e" in price or "E" in price or "e" in qty or "E" in qty:
-                        exponent_tokens += 1
+                level_entries += count_levels(rows, precision, exponent_tokens)
             continue
 
-        name = stream_name_of(meta, rec.frame)
+        name = binance_stream_name(rec.frame, meta)
         st = streams.get(name)
         if st is None:
             st = streams[name] = StreamStats(name)
@@ -265,44 +288,9 @@ def measure(trace: Path) -> tuple[dict, dict]:
         if not isinstance(payload, dict):
             continue
         if payload.get("e") == "depthUpdate":
-            st.is_diff = True
-            bids, asks = payload.get("b", []), payload.get("a", [])
-            U, u = payload["U"], payload["u"]
-            st.diff_u_values.add(u)
-            st.diff_brackets.append((U, u))
-            if st.first_U is None:
-                st.first_U = U
-            elif U == st.prev_u + 1:
-                st.seq_ok += 1
-            else:
-                st.seq_break += 1
-                st.seq_breaks.append((st.prev_u, U))
-            st.prev_u = u
-            moved = 0
-            for side, rows in (("b", bids), ("a", asks)):
-                for price, qty in rows:
-                    level_entries += 1
-                    precision[("price", decimals_of(price))] += 1
-                    precision[("qty", decimals_of(qty))] += 1
-                    if "e" in price or "E" in price or "e" in qty or "E" in qty:
-                        exponent_tokens += 1
-                    if st.book.apply(side, price, qty):
-                        moved += 1
-            st.levels += len(bids) + len(asks)
-            st.changed += moved
+            level_entries += st.on_diff(payload, precision, exponent_tokens)
         elif "lastUpdateId" in payload:
-            st.is_partial = True
-            bids, asks = payload.get("bids", []), payload.get("asks", [])
-            st.last_update_ids.append(payload["lastUpdateId"])
-            for rows in (bids, asks):
-                for price, qty in rows:
-                    level_entries += 1
-                    precision[("price", decimals_of(price))] += 1
-                    precision[("qty", decimals_of(qty))] += 1
-                    if "e" in price or "E" in price or "e" in qty or "E" in qty:
-                        exponent_tokens += 1
-            st.levels += len(bids) + len(asks)
-            st.changed += st.book.replace(bids, asks)
+            level_entries += st.on_partial(payload, precision, exponent_tokens)
 
     span_s = ((max(all_rx) - min(all_rx)) / 1e9) if len(all_rx) > 1 else 0.0
     summary = {
@@ -324,7 +312,7 @@ def measure(trace: Path) -> tuple[dict, dict]:
         "ping_latency_ms": ping_latencies_ms,
         "level_entries": level_entries,
         "precision": {f"{k[0]}:{k[1]}": v for k, v in sorted(precision.items())},
-        "exponent_tokens": exponent_tokens,
+        "exponent_tokens": exponent_tokens[0],
     }
     return summary, streams
 
@@ -479,6 +467,21 @@ def selfcheck(traces: list[Path]) -> int:
         return 1
     failures = 0
     checked = 0
+    # A PINNED TRACE THAT WAS NOT PASSED IS A FAILURE, NOT A QUIET PASS.
+    # Without this, dropping a name from CMakeLists' DC_BINANCE_TRACE_NAMES
+    # shrinks coverage in silence: the file still exists so the configure-time
+    # EXISTS check stays quiet, the pin still exists so nothing here says
+    # "NOT PINNED", and this function simply grades fewer traces and reports
+    # success. Two tables that must agree, with nothing making them — which is
+    # strain 22's shape, and it was found in review of the commit that quotes
+    # strain 22's lesson.
+    given = {t.name for t in traces}
+    for name in sorted(set(KNOWN_ANSWERS) - given):
+        print(f"  {name}: PINNED BUT NOT CHECKED -- it is in tools/binance_pins.py "
+              f"and was not passed to --selfcheck. Add it back to "
+              f"DC_BINANCE_TRACE_NAMES in CMakeLists.txt, or drop its pin in the "
+              f"same commit -- never one without the other.")
+        failures += 1
     for t in traces:
         want = KNOWN_ANSWERS.get(t.name)
         if want is None:
