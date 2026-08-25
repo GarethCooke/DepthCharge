@@ -92,11 +92,16 @@ def load(path: str):
             # object (capture_anvil.py preserves whatever the server sent),
             # mirroring its own isinstance guard so a non-object frame does not
             # crash slicing.
+            # `kind` (M5 stage 0) distinguishes a record that is not a venue
+            # WS text frame -- a REST fetch or a control frame. It is absent from
+            # every Anvil and Kraken line, so `""` is what those traces see and
+            # nothing about them changes.
+            kind = obj.get("kind", "")
             frames.append(Frame(line, obj["rx_ns"],
-                                is_snapshot(venue, frame),
-                                is_book_event(venue, frame),
+                                is_snapshot(venue, frame) and not kind,
+                                is_book_event(venue, frame) and not kind,
                                 obj.get("dir") == "tx",
-                                rebaselines(venue, frame)))
+                                rebaselines(venue, frame, kind)))
         except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
             sys.exit(f"{path}: line {line_no}: malformed capture line ({exc})")
     return meta_line, meta, venue, frames
@@ -107,8 +112,28 @@ def _between(frames, lo: int, hi: int):
     return [f.raw for f in frames if lo <= f.rx_ns <= hi]
 
 
-def slice_baseline(frames, window_s: float, start_s: float = 0.0):
+def slice_baseline(frames, window_s: float, start_s: float = 0.0,
+                   require_baseline: bool = False):
     """Keep [start_s, start_s + window_s) seconds from the first record.
+
+    `require_baseline` (M5 stage 0) CHECKS that the window contains a record
+    after which the book is fully known. It is a guard, **not an origin**, and
+    the difference was found the hard way.
+
+    The first version moved the window's start ONTO the baseline record, which
+    seemed obviously right and is wrong at Binance. A `/api/v3/depth` body is
+    stamped with the `lastUpdateId` it was computed at, but the round trip took
+    ~1.0-1.5 s from this box, so the record lands in the file **a second and a
+    half after the instant it describes** -- with ten to fifteen diff events
+    already written ahead of it. Cutting at the record therefore threw away
+    exactly the events needed to bring that snapshot forward, and the oracle went
+    from 884/884 green to 250/250 red on a slice of the same capture.
+
+    That is not a defect in the capture. It is the venue's shape, and it is why
+    Binance documents a BUFFERED procedure: buffer the diffs, fetch the snapshot,
+    drop what it already contains, and reconcile **by id, never by position**. A
+    window that starts at the first record and contains a REST snapshot satisfies
+    it; one that starts at the snapshot cannot.
 
     `start_s` was added 2026-08-17 for the quiet-pair extreme slice, where the
     interesting stretch is 65 s into a 600 s capture. Offsets are measured from
@@ -121,7 +146,17 @@ def slice_baseline(frames, window_s: float, start_s: float = 0.0):
     snapshot, so a slice beginning after the on-connect snapshot simply has none.
     """
     t0 = frames[0].rx_ns + int(start_s * 1e9)
-    return _between(frames, t0, t0 + int(window_s * 1e9))
+    kept = _between(frames, t0, t0 + int(window_s * 1e9))
+    if require_baseline:
+        lo, hi = t0, t0 + int(window_s * 1e9)
+        if not any(f.rebaselines for f in frames if lo <= f.rx_ns <= hi):
+            sys.exit(
+                "--require-baseline: this window contains no record after which "
+                "the book is fully known, so nothing could replay it. Widen "
+                "--window, or move --start earlier. (At Binance the baseline is "
+                "the opening REST snapshot record; at Anvil and Kraken it is the "
+                "connect snapshot.)")
+    return kept
 
 
 def find_resync(frames):
@@ -465,6 +500,11 @@ def main(argv=None) -> int:
     p.add_argument("--start", type=float, default=0.0,
                    help="baseline: seconds into the capture to start the window "
                         "(default 0 = from the first record)")
+    p.add_argument("--require-baseline", action="store_true",
+                   help="baseline: refuse to write unless the window contains a "
+                        "record after which the book is fully known. A GUARD, not "
+                        "an origin -- see slice_baseline()'s docstring for why "
+                        "moving the origin onto that record is wrong at Binance.")
     p.add_argument("--before", type=float, default=30.0,
                    help="reconnect: seconds of pre-drop tail to keep")
     p.add_argument("--after", type=float, default=60.0,
@@ -479,7 +519,7 @@ def main(argv=None) -> int:
     if not frames:
         sys.exit("no frames in input")
     if args.mode == "baseline":
-        kept = slice_baseline(frames, args.window, args.start)
+        kept = slice_baseline(frames, args.window, args.start, args.require_baseline)
     else:
         kept = slice_reconnect(frames, args.before, args.after, venue)
 
