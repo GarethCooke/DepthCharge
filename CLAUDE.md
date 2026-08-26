@@ -46,6 +46,21 @@ from 2026-08-18:
 > worktree** before believing a pass, and amend the split if any commit is red. **Nothing is pushed
 > until every commit has been shown green in isolation.**
 
+**AND THE MECHANISM, because that last sentence is prose and prose has no reach.** At M5 stage B2
+it was breached from OUTSIDE the session that held it — seven commits reached `origin/master`
+thirteen minutes after the last of them was created and before their ladder closed — and nothing
+failed, because a rule stated in a brief and held by one session is not a check. Same species as
+the stale report line B1 named and the sentinel guard two paragraphs up: a check that depends on
+the right person reading the right document at the right moment is not a check.
+
+> **Push the stage to its own branch. Fast-forward `master` only once the ladder has closed.**
+
+An unfinished split is then visible and pushable without being *published*, and the act that
+publishes it is a separate, deliberate one. **Not a pre-push hook:** `.git/hooks` is unversioned
+and absent on a fresh clone, so a hook is exactly the guard-that-depends-on-somebody-remembering
+this file warns about in the paragraph above and the stale worktree it warns about in the one
+below. A branch is a thing the repository can see. Tooling rather than architecture, so no §9 row.
+
 The worktree confirmation is not ceremony. A per-commit verification that was silently building the
 main tree is one of the three failures behind the mutation-verification rule in `ARCHITECTURE.md`
 §9 (2026-08-18) — it passed, and it was measuring the wrong tree. Delete stale worktrees when done:

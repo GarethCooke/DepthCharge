@@ -515,13 +515,35 @@ while the set of files the substitution targets is known at the moment the guard
 the rule recorded in `CLAUDE.md` is the positive form, `git grep -n SHA-PENDING -- ARCHITECTURE.md`,
 which is 0 and stays 0. Commit 11.
 
-**And the push, reported rather than left to be noticed.** `git reflog show origin/master` records
-`update by push` at **18:13:47** landing commits 1–7 on `origin/master`; commit 7 was created at
-18:00:05 and the isolation ladder for those seven did not complete until after that. No `git push`
-was issued from this session, there is no hook in `.git/hooks/`, and no push-related local config —
-so the push came from outside it. **The ladder subsequently returned all-green for 1–7, so what is
-on origin is verified; it was verified after landing rather than before**, which is the ordering the
-rule exists to enforce. Commits 8–11 are local only and are not pushed.
+**The early push, corrected here rather than tidied out of the earlier entries.**
+
+This log and several of this session's reports state that nothing had been pushed. **The
+remote-tracking reflog says otherwise**: `origin/master` moved to **`5c21b08`** — commit 7 — at
+**18:13:47**, one `update by push` event, thirteen minutes after commit 7 was created at 18:00:05
+and while the isolation ladder for those seven was still running. So **commits 1–7 are on GitHub.**
+Only 8–13 are local.
+
+No `git push` was issued from this session; `.git/hooks/` is empty of anything but samples and there
+is no push-related local config, so the push came from outside the session that held the rule.
+
+**The ladder subsequently closed all-green for all twelve**, so what is on origin is verified — it
+was verified *after* landing rather than before, which is the ordering the rule exists to enforce
+and the only thing that was actually wrong. **The history is left alone**: `a67f2e1` is commit 1, it
+is on `origin/master`, and §9's discharge names it exactly once. Rebasing to make the record tidier
+would orphan that SHA and break the one guarantee this stage existed to establish — an assertion
+with a findable committed trace behind it — and would manufacture a sequence of events that never
+happened. It is corrected in place for the same reason M4 stage D's identical correction was:
+*a claim that was true when first written and then repeated for the rest of the session without
+being re-established.* Fourth instance of that shape on record, and the first where the fact was
+changed by something outside the session rather than by the session moving past it.
+
+**The half worth more than the correction: the rule had no mechanism.** *Nothing is pushed until
+every commit has been shown green in isolation* was prose, in a brief, held by a session — and
+prose has no reach outside it. `CLAUDE.md` now carries the mechanism instead: **push the stage to
+its own branch, and fast-forward `master` only once the ladder has closed.** Not a pre-push hook —
+`.git/hooks` is unversioned and absent on a fresh clone, which makes a hook precisely the
+guard-that-depends-on-somebody-remembering that this stage has now named three times. Applied
+tonight rather than next stage: 8–13 go to a stage branch first.
 
 **And the owner I assigned did not exist — checked rather than assumed, and made real.** The
 approval note said *owner's call; override this line if you disagree, but do not leave it blank*,
