@@ -212,6 +212,7 @@ add_executable(dc_tests
   harness/tests/test_age_estimator.cpp
   harness/tests/test_decimal.cpp
   harness/tests/test_anvil_adapter.cpp
+  harness/tests/test_binance_adapter.cpp
   harness/tests/test_book.cpp
   harness/tests/test_console_ladder.cpp
   harness/tests/test_frame_reassembler.cpp
