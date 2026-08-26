@@ -259,9 +259,23 @@ inline constexpr std::size_t kAgeWindowSamples = 256;
 // produced here (a 2.8 s reading on a healthy connection), and it is why this is
 // a full window: four outliers cannot move the rank past the middle of 32.
 //
-// The cost is that the meter reads "-" for the first 16 s of an Anvil connection
-// and 32 s of a Kraken one. That is the honest direction: no reading is a
-// smaller claim than a wrong one.
+// The cost is that the meter reads "-" for the first 16 s of an Anvil connection,
+// 32 s of a Kraken one, and **638.8 s — over ten minutes — of a Binance one**.
+// That is the honest direction: no reading is a smaller claim than a wrong one.
+//
+// **THE THIRD FIGURE WAS ADDED AT M5 STAGE B2, AND THE SENTENCE WITHOUT IT IS THE
+// POINT.** It was written when two venues existed, and it is a per-venue COST
+// stated in a venue-agnostic file — so it went stale the moment a venue arrived
+// whose cadence is forty times Anvil's, and nothing anywhere failed. 32 intervals
+// is 16 s at 500 ms and 638.8 s at the measured 19,963.97 ms. This constant is
+// one of three sized in ARRIVALS rather than in time; the other two are
+// `kMinSamples` (8 -> 4 s / 8 s / 159.7 s) and `kAgeWindowSamples` (256 ->
+// 128 s / 256 s / **85.2 min**, which is the span of the window the supremum
+// above is taken over and which nobody has sized at this venue). The class is in
+// ARCHITECTURE.md 9, 2026-08-26: a sample count in a venue-agnostic object must
+// state its duration at every venue the object serves. **What to DO about any of
+// the three is C's**, with the threshold work; this line only stops the cost
+// being invisible.
 //
 // The opposite bias — a backlog building DURING the latch window, dragging the
 // reference up — under-reports the age, which is the safe direction and is
