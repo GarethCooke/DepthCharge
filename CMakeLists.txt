@@ -84,7 +84,8 @@ endif()
 # nlohmann does not compile under -fno-exceptions anyway.
 set(DC_ENGINE_TARGET_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/anvil/anvil_frame_streaming.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/kraken/kraken_frame_streaming.cpp)
+  ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/kraken/kraken_frame_streaming.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/engine/src/binance/binance_frame_streaming.cpp)
 
 if(EXISTS ${DC_XTENSA_GXX})
   # -std=c++2a, not c++20: GCC 8.4 does not recognise the latter spelling, and
@@ -148,6 +149,17 @@ target_link_libraries(dc_engine_anvil_streaming
 # be inventing the obligation. So this library is what the harness AND the
 # firmware link, it never sees dc_vendor, and it is in DC_ENGINE_TARGET_SOURCES
 # above so the xtensa compiler builds it on every host configure.
+# --- Binance's parser: the same arrangement as Kraken's, for the same reasons --
+# One implementation, target-bound, never linked against dc_vendor, and in
+# DC_ENGINE_TARGET_SOURCES above so the xtensa compiler builds it on every host
+# configure. It is a THIRD PARSER AND NOT A THIRD SCANNER: the JSON token layer
+# is depthcharge/json_scan.hpp, extracted from Kraken's parser at M5 stage B1 and
+# reused here without a venue flag (DESIGN strain 25).
+add_library(dc_engine_binance STATIC engine/src/binance/binance_frame_streaming.cpp)
+target_link_libraries(dc_engine_binance
+  PUBLIC dc_engine
+  PRIVATE dc_warnings)
+
 add_library(dc_engine_kraken STATIC engine/src/kraken/kraken_frame_streaming.cpp)
 target_link_libraries(dc_engine_kraken
   PUBLIC dc_engine
@@ -181,10 +193,10 @@ target_link_libraries(dc_harness
 find_package(Threads REQUIRED)
 
 add_executable(dc_replay harness/src/dc_replay_main.cpp)
-target_link_libraries(dc_replay PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_warnings)
+target_link_libraries(dc_replay PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings)
 
 add_executable(dc_ladder harness/src/dc_ladder_main.cpp)
-target_link_libraries(dc_ladder PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_warnings Threads::Threads)
+target_link_libraries(dc_ladder PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings Threads::Threads)
 
 # The record taxonomy of every committed trace, and its pin (M4 stage A).
 # It links a parser implementation only because dc_harness leaves
@@ -192,7 +204,7 @@ target_link_libraries(dc_ladder PRIVATE dc_harness dc_engine_anvil dc_engine_kra
 # never parses an Anvil frame — it reads the envelope and asks the venue's
 # decoder to name each record.
 add_executable(dc_taxonomy harness/src/dc_taxonomy_main.cpp)
-target_link_libraries(dc_taxonomy PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_warnings)
+target_link_libraries(dc_taxonomy PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings)
 
 add_executable(dc_tests
   harness/tests/dc_tests.cpp
@@ -253,7 +265,7 @@ target_compile_definitions(dc_tests PRIVATE
 # rather than a discovery on the bench.
 target_include_directories(dc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
 target_link_libraries(dc_tests PRIVATE
-  dc_harness dc_engine_anvil dc_engine_kraken dc_vendor dc_warnings Threads::Threads)
+  dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_vendor dc_warnings Threads::Threads)
 
 # --- the same tests, against the streaming parser (M3 stage B) ----------------
 # THE ACCEPTANCE GATE FOR THE PARSER SWAP. Not a fork of the suite: the two files
@@ -282,7 +294,7 @@ add_executable(dc_tests_streaming
 target_compile_definitions(dc_tests_streaming PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
 target_link_libraries(dc_tests_streaming PRIVATE
-  dc_harness dc_engine_anvil_streaming dc_engine_kraken dc_vendor dc_warnings
+  dc_harness dc_engine_anvil_streaming dc_engine_kraken dc_engine_binance dc_vendor dc_warnings
   Threads::Threads)
 
 # --- the pingless arm's one branch (D5) ---------------------------------------
@@ -335,7 +347,7 @@ target_link_libraries(dc_tests_kraken PRIVATE
 # equality of the whole pipeline's output text, not just of the pinned fields.
 add_executable(dc_replay_streaming harness/src/dc_replay_main.cpp)
 target_link_libraries(dc_replay_streaming PRIVATE
-  dc_harness dc_engine_anvil_streaming dc_engine_kraken dc_warnings)
+  dc_harness dc_engine_anvil_streaming dc_engine_kraken dc_engine_binance dc_warnings)
 
 # --- the ThreadSanitizer workload, built here without the sanitiser -----------
 # harness/tsan.sh compiles this same TU with -fsanitize=thread on a Linux box and
