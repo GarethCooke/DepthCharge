@@ -240,6 +240,20 @@ void print_binance_adapter(const ReplayResult& r) {
                 static_cast<unsigned>(depthcharge::binance::kBinanceMaxFrameLevels),
                 ull(b.levels_evicted), ull(b.window_exits), ull(b.window_entries),
                 ull(b.levels_outside_emit));
+    // SEEDED COVERAGE, AND IT IS PRINTED BESIDE THE LINE ABOVE ON PURPOSE.
+    // Those two numbers look like this one and mean something else: `held` only
+    // ever grows and reads a flat 100 through the 82.4% failure class, while
+    // `covered` is what actually erodes. Putting them one line apart is how a
+    // reader finds that out without reading the adapter (M5 stage B2).
+    std::printf("coverage  : seeded low-water bid=%u ask=%u   trigger at <%u   "
+                "fired=%llu   seed below margin=%llu\n",
+                b.min_bid_cover == 0xFFFFFFFFu ? 0u : b.min_bid_cover,
+                b.min_ask_cover == 0xFFFFFFFFu ? 0u : b.min_ask_cover,
+                static_cast<unsigned>(depthcharge::binance::kBinanceReseedCoverLevels),
+                ull(b.cover_triggers), ull(b.seeds_below_margin));
+    std::printf("            re-snapshots declined on a live book=%llu (of which "
+                "loss-free to adopt=%llu) -- D's input, not this run's decision\n",
+                ull(b.resnapshots_declined), ull(b.resnapshots_adoptable));
     // WHAT THE ORACLE REACHES, on the line rather than in a comment. `@depth20`
     // validates the top 20 a side while the panel draws 25 — the same shape of
     // gap as Kraken's CRC-10-of-25, and smaller. `dc_binance_oracle` performs

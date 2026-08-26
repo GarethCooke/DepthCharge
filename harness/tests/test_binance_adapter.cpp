@@ -418,6 +418,230 @@ TEST_CASE("the silent stream draws a LIVE ladder over a feed that never spoke") 
 }
 
 // ---------------------------------------------------------------------------
+// The re-snapshot trigger (M5 stage B2)
+// ---------------------------------------------------------------------------
+//
+// **NO COMMITTED CAPTURE EXERCISES THE FIRING PATH, AND THAT IS A FACT ABOUT
+// THE CORPUS RATHER THAN A GAP IN IT.** Measured across all nine Binance files:
+// every `limit=1000` seed keeps coverage at 771 or better against a trigger at
+// 448, so the trigger correctly never fires; every `limit=100` seed arrives
+// below its own margin and is correctly never armed. So the trigger is real on
+// the corpus in the only two ways the corpus can show it — it stays silent where
+// it should — and the crossing itself has to be synthesised.
+//
+// That is ARCHITECTURE §9's 2026-08-18 rule applied exactly as written: where
+// the code and every available file agree, synthesise the input that
+// discriminates. Same reason `slice_trace.py --selfcheck` takes no trace.
+
+namespace {
+
+// A price on BTCUSDT's 0.01 tick, at the venue's 8-decimal scale.
+std::string px_at(std::int64_t cents) {
+    return std::to_string(cents / 100) + "." +
+           (cents % 100 < 10 ? "0" : "") + std::to_string(cents % 100) + "000000";
+}
+
+// `n` levels a side: bids descending from `top_cents`, asks ascending from
+// `top_cents + 1`. Deep enough to arm the trigger when `n` says so.
+std::string deep_seed(std::int64_t last_id, std::int64_t top_cents, int n) {
+    std::string bids;
+    std::string asks;
+    for (int i = 0; i < n; ++i) {
+        if (i) {
+            bids += ",";
+            asks += ",";
+        }
+        bids += level(px_at(top_cents - i).c_str(), "1.00000000");
+        asks += level(px_at(top_cents + 1 + i).c_str(), "1.00000000");
+    }
+    return seed_body(last_id, bids, asks);
+}
+
+constexpr std::int64_t kTopCents = 5000000;  // $50,000.00
+constexpr int kDeepLevels = 500;             // >= the 448 trigger, so armed
+
+// ONE STEP OF THE WALK THAT MATTERS, and it is a helper because all three cases
+// below need exactly it: retire the best bid and introduce one new price below
+// the seeded floor. That is the shape the wire actually has, and it is what
+// makes held depth CONSTANT while coverage falls by one — the whole distinction
+// under test. `id` advances by two so every frame brackets the last.
+void retire_best_bid(BinanceAdapter& a, Events& ev, int step, int seed_levels,
+                     std::int64_t& id) {
+    const std::int64_t floor_cents = kTopCents - (seed_levels - 1);
+    const std::string gone = level(px_at(kTopCents - step).c_str(), "0.00000000");
+    const std::string fresh = level(px_at(floor_cents - 1 - step).c_str(), "1.00000000");
+    a.on_frame(diff(id + 1, id + 2, gone + "," + fresh, ""), ev);
+    id += 2;
+}
+
+}  // namespace
+
+TEST_CASE("seeded coverage erodes where held depth does not, and the trigger fires on it") {
+    // THE MEASUREMENT THAT MOTIVATED THIS CODE, TURNED INTO AN ASSERTION.
+    // B1's `min_bid_levels` counts levels HELD and reads a flat, healthy 100
+    // through both committed captures in which the bid side walks clean out of
+    // the seeded range. It cannot fall: every diff that removes a level near the
+    // touch arrives alongside others adding prices the seed never contained.
+    // Reproduced here by construction — one removal and one new deeper price per
+    // frame, so held is CONSTANT to the level while coverage falls to zero.
+    Adapter a = make();
+    Events ev;
+    a->on_rest_body(deep_seed(1000, kTopCents, kDeepLevels), ev);
+
+    REQUIRE(a->has_baseline());
+    REQUIRE(a->cover_known());
+    REQUIRE(a->cover_trigger_armed());
+    CHECK(a->stats().seeds_below_margin == 0);
+    CHECK(a->bid_cover() == kDeepLevels);
+    CHECK(a->ask_cover() == kDeepLevels);
+    CHECK(a->stats().cover_triggers == 0);
+    CHECK_FALSE(a->reseed_wanted());
+
+    const std::uint32_t held_at_seed = a->bid_count();
+    std::int64_t id = 1000;
+    bool held_ever_fell = false;
+
+    for (int step = 0; step < kDeepLevels; ++step) {
+        retire_best_bid(*a, ev, step, kDeepLevels, id);
+        if (a->bid_count() != held_at_seed) { held_ever_fell = true; }
+        // COVERAGE FALLS, by exactly one a frame.
+        CHECK(a->bid_cover() == static_cast<std::uint32_t>(kDeepLevels - step - 1));
+    }
+
+    // HELD NEVER FELL — one out, one in, every frame.
+    CHECK_FALSE(held_ever_fell);
+    CHECK(a->stats().min_bid_levels == held_at_seed);
+    // B2's instrument saw it go to zero, and asked for a seed on the way down.
+    CHECK(a->stats().min_bid_cover == 0);
+    CHECK(a->stats().cover_triggers == 1);
+    CHECK(a->reseed_wanted());
+    // The ask side never moved, so it is not what fired.
+    CHECK(a->stats().min_ask_cover == static_cast<std::uint32_t>(kDeepLevels));
+}
+
+TEST_CASE("the trigger fires at the sized threshold and only once per seed") {
+    Adapter a = make();
+    Events ev;
+    a->on_rest_body(deep_seed(1000, kTopCents, kDeepLevels), ev);
+    REQUIRE(a->cover_trigger_armed());
+
+    const int to_threshold =
+        kDeepLevels - static_cast<int>(depthcharge::binance::kBinanceReseedCoverLevels);
+    REQUIRE(to_threshold > 0);
+    std::int64_t id = 1000;
+    auto retire_one = [&](int step) { retire_best_bid(*a, ev, step, kDeepLevels, id); };
+
+    // One short of the threshold: coverage is exactly kBinanceReseedCoverLevels,
+    // which is `>=` and therefore NOT a crossing. The boundary is asserted in
+    // both directions, because a trigger that fires one level early and one that
+    // fires one level late are otherwise the same green test.
+    for (int step = 0; step < to_threshold; ++step) { retire_one(step); }
+    CHECK(a->bid_cover() == depthcharge::binance::kBinanceReseedCoverLevels);
+    CHECK(a->stats().cover_triggers == 0);
+    CHECK_FALSE(a->reseed_wanted());
+
+    // One more crosses it.
+    retire_one(to_threshold);
+    CHECK(a->bid_cover() == depthcharge::binance::kBinanceReseedCoverLevels - 1);
+    CHECK(a->stats().cover_triggers == 1);
+    CHECK(a->reseed_wanted());
+
+    // ONCE PER SEED EPOCH, not once per frame. The adapter has no clock and
+    // cannot rate-limit itself; a re-fetch on every frame while coverage stayed
+    // low would spend 50 IP weight ten times a second, and the venue bans on
+    // breach. Bounding the SEEDS is the transport's job and is recorded as a
+    // required property of it.
+    a->clear_reseed_wanted();
+    for (int step = to_threshold + 1; step < to_threshold + 40; ++step) {
+        retire_one(step);
+    }
+    CHECK(a->stats().cover_triggers == 1);
+    CHECK_FALSE(a->reseed_wanted());
+}
+
+TEST_CASE("a seed that arrives below its own margin is reported, never re-asked") {
+    // THE SIZING RESULT, STATED AS A STATE. A 100-level seed cannot satisfy a
+    // 448-level margin however often it is fetched, so asking again would return
+    // the identical shortfall at 50 IP weight a time. On BTCUSDT at limit=100
+    // this fires on arrival — roughly a minute before the book actually goes
+    // wrong — which is the 82.4% failure class caught at the seed rather than at
+    // the ladder.
+    Adapter a = make();
+    Events ev;
+    a->on_rest_body(deep_seed(1000, kTopCents, 100), ev);
+
+    REQUIRE(a->has_baseline());
+    CHECK(a->cover_known());                // the bounds are still measured...
+    CHECK_FALSE(a->cover_trigger_armed());  // ...and the trigger is not armed on them
+    CHECK(a->stats().seeds_below_margin == 1);
+    CHECK(a->stats().cover_triggers == 0);
+    CHECK_FALSE(a->reseed_wanted());
+
+    // Coverage is still REPORTED as it collapses. That is the whole diagnostic
+    // value of the committed limit=100 captures, where it reaches zero.
+    std::int64_t id = 1000;
+    for (int step = 0; step < 100; ++step) {
+        a->on_frame(
+            diff(id + 1, id + 2, level(px_at(kTopCents - step).c_str(), "0.00000000"), ""),
+            ev);
+        id += 2;
+    }
+    CHECK(a->bid_cover() == 0);
+    CHECK(a->stats().min_bid_cover == 0);
+    // Still no request: a deeper seed is the answer, and this adapter cannot ask
+    // for one it is not configured to fetch.
+    CHECK(a->stats().cover_triggers == 0);
+}
+
+TEST_CASE("the seeded bounds die with the book") {
+    Adapter a = make();
+    Events ev;
+    a->on_rest_body(deep_seed(1000, kTopCents, kDeepLevels), ev);
+    REQUIRE(a->cover_known());
+    REQUIRE(a->cover_trigger_armed());
+
+    a->on_transport_gap(GapReason::Disconnect, ev);
+
+    // A coverage count against the dead seed's floor, taken over levels the next
+    // seed will replace outright, is a number about nothing.
+    CHECK_FALSE(a->cover_known());
+    CHECK_FALSE(a->cover_trigger_armed());
+    CHECK(a->bid_cover() == 0);
+    CHECK(a->ask_cover() == 0);
+}
+
+TEST_CASE("a re-snapshot on a live book is counted, and its loss is measured") {
+    // B1 discarded these in silence. B2 does not adopt them either — rolling one
+    // forward needs the diffs it is behind by, and buffering those for a 15 s
+    // fetch deadline is ~128 KiB, so the mechanism is D's. What this stage owes D
+    // is the measurement: how far behind the stream a body actually is when it
+    // lands, because that is what decides whether a buffer is needed at all.
+    Adapter a = make();
+    Events ev;
+    a->on_rest_body(deep_seed(1000, kTopCents, kDeepLevels), ev);
+    a->on_frame(diff(1001, 1010, level("49000.00000000", "1.00000000"), ""), ev);
+    REQUIRE(a->last_update_id() == 1010);
+
+    // Behind the stream: adopting would rewind the book past update ids this
+    // client has already applied and no longer holds the diffs for.
+    a->on_rest_body(deep_seed(1005, kTopCents, kDeepLevels), ev);
+    CHECK(a->stats().resnapshots_declined == 1);
+    CHECK(a->stats().resnapshots_adoptable == 0);
+
+    // Not behind: nothing sits between the body and the book, so adopting would
+    // lose nothing. Measured at 13 of 13 across the quiet pair and every
+    // limit=100 fetch in the corpus, and 0 of 7 at limit=1000 on BTCUSDT.
+    a->on_rest_body(deep_seed(1010, kTopCents, kDeepLevels), ev);
+    CHECK(a->stats().resnapshots_declined == 2);
+    CHECK(a->stats().resnapshots_adoptable == 1);
+
+    // Declining is not ignoring: the book is untouched and still the one the
+    // diffs built.
+    CHECK(a->last_update_id() == 1010);
+    CHECK(a->has_baseline());
+}
+
+// ---------------------------------------------------------------------------
 // The calibrated liveness path, reachable on the host for the first time
 // (M5 stage B2, deliverable 6)
 // ---------------------------------------------------------------------------

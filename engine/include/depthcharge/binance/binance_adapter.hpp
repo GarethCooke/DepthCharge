@@ -108,6 +108,124 @@ static_assert(kBinanceEmitDepth <= kBinanceMaxFrameLevels,
 inline constexpr std::uint32_t kBinanceBufferEvents = 64;
 inline constexpr std::uint32_t kBinanceBufferLevels = 2048;
 
+// ===========================================================================
+// THE RE-SNAPSHOT TRIGGER (M5 stage B2), AND WHY IT IS NOT B1'S LOW-WATER MARK
+// ===========================================================================
+//
+// B1 built an instrument and described it as *the seeded-window edge*: when the
+// market walks far enough that the rendered window approaches the edge of what
+// the seed contained, `min_bid_levels` / `min_ask_levels` is where it shows. The
+// description is the right quantity. **The counter is not that quantity**, and
+// B2 measured the gap rather than inheriting the sentence:
+//
+//     capture (limit=100)                low-water HELD   low-water COVERED
+//     binance_btcusdt_d1000ms_20260824      100 / 100          0 / 103
+//     binance_btcusdt_reconnect_20260824    100 / 100          0 / 100
+//
+// Both of those are the 82.4% failure class in progress -- the bid side walks
+// clean out of the seeded range -- and `min_bid_levels` reads a flat, healthy
+// **100** through all of it. It cannot fall: the count of levels HELD only ever
+// grows, because every diff that removes a level near the touch is accompanied
+// by others adding prices the seed never contained. A trigger on it would be a
+// trigger that never fires.
+//
+// WHAT ACTUALLY ERODES IS COVERAGE, AND IT IS A DIFFERENT NUMBER.
+// A `/api/v3/depth` body gives a complete picture of one price RANGE: from the
+// touch down to its worst bid, and up to its worst ask. Inside that range the
+// book is complete for ever after, because every subsequent change arrives as a
+// diff. **Outside it the client is permanently ignorant** -- a resting order
+// that predates the seed and is never restated never enters the diff stream, so
+// it is invisible until the next snapshot. So:
+//
+//     seeded coverage (bids) = held bids at px >= the seed's worst bid
+//     seeded coverage (asks) = held asks at px <= the seed's worst ask
+//
+// Those are the levels this client can vouch for. As the touch walks toward a
+// seeded boundary the levels between it and the boundary are consumed, coverage
+// falls, and when it falls below `kBinanceEmitDepth` the ladder is drawing rows
+// from the region the client was never told about. THAT is the observable, and
+// unlike a wall clock it is self-scaling by construction: a fast market
+// exhausts the window sooner and asks sooner, with no constant claiming to know
+// how fast the market is.
+//
+// ---------------------------------------------------------------------------
+// SIZING THE MARGIN -- AGAINST A BOUNDED FETCH, NOT AGAINST A PERCENTILE
+// ---------------------------------------------------------------------------
+//
+// The book is UNBRACKETED for the whole of a fetch, so the trigger has to fire
+// while enough coverage remains to survive one. The obvious sizing is
+// `margin >= walk rate x p99 fetch latency`, and the corpus cannot support the
+// second term: 27 committed REST records, two `limit` tiers, and the 99th
+// percentile of 27 samples IS the maximum.
+//
+// **It also does not need to, because the distribution has no tail worth sizing
+// against on this path.** Measured over every committed REST record, both tiers:
+//
+//     tier         n    median      max      max/median
+//     limit=100   22   1,009.4 ms  1,063.0 ms   1.05
+//     limit=1000  13   1,503.1 ms  1,590.7 ms   1.06
+//
+// Choosing max over median moves the margin by 87.6 ms -- $0.029 of BTCUSDT walk
+// against a $224.52 seeded window, 0.013% of it. A percentile is the wrong
+// instrument for a quantity that flat.
+//
+// **AND EVERY ONE OF THOSE 27 IS A DESK-BOX MEASUREMENT.** Wired ethernet,
+// CPython, urllib. The board is an ESP32-S3 on Wi-Fi doing TLS, and M4 stage B3
+// measured DNS failures on that platform at a flat 14,000 ms. A desk figure must
+// never stand as the board's, so the margin is sized against a DEADLINE THE
+// TRANSPORT IMPOSES rather than against a latency anybody measured:
+//
+//     margin >= walk rate x T,  T = kBinanceFetchDeadlineMs
+//
+// A fetch that exceeds T is abandoned and retried. That covers 100% of fetches
+// by construction instead of 99% of a sample of 27, and it converts an unbounded
+// unbracketed window into a bounded one -- which is where invariant #5 draws its
+// line, and the same move B1's remedies (a) and (b) both make.
+//
+// **T IS A REQUIRED TRANSPORT PROPERTY AND THIS FILE CANNOT ENFORCE IT.** The
+// adapter has no clock and issues no fetch; it latches `reseed_wanted()` and the
+// layer that can, does. Recorded here because the constant below is sized
+// against T, so a transport that does not impose one silently invalidates the
+// margin. ARCHITECTURE.md 9 carries it as a decision. Implementing it is C/D's.
+//
+// WHY 15 s. `tools/capture_binance.py` already runs this exact fetch at a 15 s
+// cadence behind `REST_DRAIN_TIMEOUT_S = 20`, so it is a value with an
+// implementation behind it rather than a fresh guess -- and it survives the
+// sanity check against the window it is protecting: at BTCUSDT's measured
+// $0.33/s walk, a `limit=1000` seed's $224.52 is ~677 s of walking and 15 s is
+// **2.2%** of it, while `limit=100`'s $15.63 is ~47 s and 15 s is **32%**. That
+// is an independent argument for `limit=1000` arriving from the schedule rather
+// than from the depth sweep.
+inline constexpr std::uint32_t kBinanceFetchDeadlineMs = 15000;
+
+// WHAT THE DEADLINE COSTS IN LEVELS. The worst loss of seeded coverage over any
+// window of `kBinanceFetchDeadlineMs` or less, measured across all nine
+// BTCUSDT and ATOMEUR captures in the corpus, is **168 levels** (mixed1). The
+// loss is burst-dominated rather than smooth -- the single worst event is one
+// 100 ms tick in `deepseed` that took the best bid down $15.99 and removed
+// **135** covered levels at once -- so a mean rate would understate it by an
+// order of magnitude and a max is the honest term.
+//
+// 192 is 168 plus 14%, and the 14% is not decoration: 168 is a maximum over nine
+// captures on two pairs on two days, which is a sample and not a distribution,
+// and this is the same market whose depth requirement moved 5x between two
+// witnesses an hour apart.
+inline constexpr std::uint32_t kBinanceReseedMarginLevels = 192;
+
+// THE TRIGGER. Below this many covered levels on either side, the seed is
+// exhausting and the adapter asks for another.
+//
+// The floor is `kBinanceEmitDepth` rather than the panel's 25 rows because the
+// emitted window is what the ENGINE holds, and a window policy chooses among
+// those 256 -- so a level that is wrong at rank 200 can be drawn. Sizing to the
+// rendered depth would be sizing to today's window policy.
+inline constexpr std::uint32_t kBinanceReseedCoverLevels =
+    kBinanceEmitDepth + kBinanceReseedMarginLevels;
+static_assert(kBinanceReseedCoverLevels <
+                  static_cast<std::uint32_t>(kBinanceRestLimit),
+              "the trigger must sit below the seed depth, or every seed fires it "
+              "on arrival and the client re-fetches for ever");
+
 // ---------------------------------------------------------------------------
 // THE DECLARED SYMBOLS, AND WHY THE SCALE IS NOT THE TICK SIZE
 // ---------------------------------------------------------------------------
@@ -210,13 +328,46 @@ public:
         std::uint64_t window_entries = 0;         // pulled into the window
         std::uint64_t deltas_before_seed = 0;     // arrived with no book AND no buffer
 
-        // ---- the seeded-window edge: REPORTED, NEVER ACTED ON --------------
-        // Deliverable 5's instrument. When the market walks far enough that the
-        // rendered window approaches the edge of what the seed contained, this
-        // is where it shows. The re-snapshot schedule that would respond to it
-        // is B2's and needs a measured basis, so nothing here branches on these.
+        // ---- the seeded-window edge -----------------------------------------
+        // B1's instrument, KEPT AND DEMOTED. It counts levels HELD, which only
+        // ever grows, so it reads a flat 100 through the very failure it was
+        // described as showing. Retained because it is what says the storage
+        // ladder is not being starved, and because deleting a counter whose
+        // reading turned out to mean something else is how the next reader
+        // repeats the mistake. Not the trigger. See `min_*_cover` below.
         std::uint32_t min_bid_levels = 0xFFFFFFFFu;
         std::uint32_t min_ask_levels = 0xFFFFFFFFu;
+
+        // ---- SEEDED COVERAGE: the trigger's observable (M5 stage B2) --------
+        // How few levels this client could still vouch for, per side, at the
+        // worst moment of the run. Falls as the touch walks toward a seeded
+        // boundary; reaching zero means the whole emitted window is outside
+        // anything the seed described.
+        std::uint32_t min_bid_cover = 0xFFFFFFFFu;
+        std::uint32_t min_ask_cover = 0xFFFFFFFFu;
+
+        // Trigger crossings: coverage fell below `kBinanceReseedCoverLevels`
+        // and a re-seed was asked for. Once per seed epoch, not once per frame.
+        std::uint64_t cover_triggers = 0;
+
+        // **THE SEED ARRIVED ALREADY BELOW ITS OWN MARGIN**, so the trigger was
+        // never armed for that epoch. Two causes and the adapter cannot tell
+        // them apart, because it does not know what `limit` was asked for:
+        // the request was too shallow (BTCUSDT at limit=100 -- a configuration
+        // fault), or the venue's whole book is shallower than the margin
+        // (ATOMEUR, which has 16 bids in total -- nothing is wrong at all).
+        // **It does not need to tell them apart, because the response is the
+        // same:** re-fetching at the same depth changes nothing, so asking again
+        // would spend IP weight to receive the identical shortfall. Reported,
+        // never looped on. Whoever holds the request can tell which it is.
+        std::uint64_t seeds_below_margin = 0;
+
+        // A REST body that arrived on a live book. Counted rather than silently
+        // dropped -- see `on_rest_body`. `adoptable` is the subset for which
+        // adopting would have lost nothing (`lastUpdateId >= last_u_`), which is
+        // the measurement D needs to choose a re-seed mechanism.
+        std::uint64_t resnapshots_declined = 0;
+        std::uint64_t resnapshots_adoptable = 0;
     };
 
     explicit BinanceAdapter(const SymbolConfig& cfg) noexcept : cfg_(cfg) {}
@@ -231,6 +382,34 @@ public:
     ParseStatus last_status() const noexcept { return last_status_; }
     std::uint32_t bid_count() const noexcept { return bid_count_; }
     std::uint32_t ask_count() const noexcept { return ask_count_; }
+
+    // ---- seeded coverage, live (M5 stage B2) --------------------------------
+    //
+    // The count of held levels inside the price range the seed described. A
+    // linear scan of the ladder per call, and it is called once per FRAME (from
+    // `note_depth`) rather than once per level -- <=1,024 integer comparisons at
+    // <=10 frames a second, which is microseconds on an LX7. It uses
+    // `ladder::rank_of` rather than a private loop because that header exists
+    // precisely so that "which of two prices ranks better" has one definition
+    // (M4 stage B1); a reverse scan here would be a second copy of `better()`.
+    // Zero when the bounds are unknown, ASSERTED HERE rather than inherited.
+    // It is already true without the guard, because `drop_book` zeroes the
+    // counts and a scan of an empty side returns 0 -- but that makes a reading
+    // here correct only because of an invariant two functions away, and a later
+    // change that leaves the levels in place would silently start counting them
+    // against a dead seed's floor.
+    std::uint32_t bid_cover() const noexcept {
+        return have_seed_bounds_ ? cover(bids_, bid_count_, seed_bid_floor_, Side::Bid) : 0;
+    }
+    std::uint32_t ask_cover() const noexcept {
+        return have_seed_bounds_ ? cover(asks_, ask_count_, seed_ask_ceil_, Side::Ask) : 0;
+    }
+    // Are the seeded bounds known at all? False before the first seed and after
+    // any `drop_book`, when there is no range to be inside.
+    bool cover_known() const noexcept { return have_seed_bounds_; }
+    // Is the TRIGGER live? False additionally when the seed arrived below its
+    // own margin, where asking again would buy nothing (see `seeds_below_margin`).
+    bool cover_trigger_armed() const noexcept { return cover_trigger_armed_; }
     const BookLevel* bids() const noexcept { return bids_; }
     const BookLevel* asks() const noexcept { return asks_; }
 
@@ -293,12 +472,32 @@ public:
             return;
         }
         ++stats_.rest_snapshots;
-        if (seed_ == SeedState::Unseeded) { adopt_seed(sink); }
-        // A re-snapshot onto a live book is deliberately NOT adopted here. It is
-        // a statement about a PAST instant — the round trip is ~1.0-1.5 s, so
-        // the stream has moved 10-15 events past the id it carries — and
-        // adopting it would rewind the book by that much. Grading one against
-        // the book as of its own id is the oracle's job (B2 sizes the schedule).
+        if (seed_ == SeedState::Unseeded) { return adopt_seed(sink); }
+
+        // A RE-SNAPSHOT ONTO A LIVE BOOK IS STILL NOT ADOPTED, AND B2 COUNTS
+        // WHAT B1 DROPPED IN SILENCE.
+        //
+        // It is a statement about a PAST instant — the round trip is ~1.0-1.5 s,
+        // so the stream has moved 10-15 events past the id it carries — and
+        // adopting it wholesale would rewind the book by that much. Rolling it
+        // forward instead needs the diffs covering `[lastUpdateId + 1, last_u_]`,
+        // and this adapter applied and discarded those; buffering them for the
+        // whole of a 15 s fetch deadline is ~150 events / 8,200 levels, about
+        // **128 KiB**, against the pre-seed buffer's measured 15 / 823. So the
+        // three candidate mechanisms are a 128 KiB buffer, a `Gap` and a grey
+        // flash, or a live-book merge — and choosing costs board memory (D's)
+        // and a rendered state (C's). **The board's re-seed behaviour is D**, so
+        // this stage supplies the measurement instead of the mechanism.
+        //
+        // `adoptable` is that measurement: adopting is LOSSLESS whenever the
+        // body is not older than the book, because there are then no events
+        // between them to lose. Never true on a busy pair at a 100 ms cadence;
+        // routinely true on a pair that goes 10 s between diffs. D needs to know
+        // which world it is in before it pays 128 KiB for a buffer.
+        ++stats_.resnapshots_declined;
+        if (have_last_u_ && frame_.last_update_id >= last_u_) {
+            ++stats_.resnapshots_adoptable;
+        }
     }
 
     // ---- a REST fetch that produced no body --------------------------------
@@ -389,6 +588,12 @@ private:
         buf_events_ = 0;
         buf_levels_ = 0;
         bracket_checked_ = false;
+        // The bounds die with the book. A coverage count against the previous
+        // seed's floor, taken over levels the next seed will replace, is a
+        // number about nothing.
+        have_seed_bounds_ = false;
+        cover_trigger_armed_ = false;
+        cover_trigger_latched_ = false;
         reseed_wanted_ = true;
         ++stats_.reseeds_requested;
         // A Gap is raised whether or not there was a book: the engine's book may
@@ -415,6 +620,32 @@ private:
         have_last_u_ = true;
         seed_ = SeedState::Seeded;
         reseed_wanted_ = false;
+
+        // THE SEEDED BOUNDS, LATCHED HERE AND NOWHERE ELSE. The worst price on
+        // each side of the body IS the edge of what this client will ever know
+        // completely: inside the range every later change arrives as a diff,
+        // outside it a resting order that predates the seed and is never
+        // restated is invisible until the next snapshot. Everything the trigger
+        // does is a count against these two numbers.
+        have_seed_bounds_ = bid_count_ > 0 && ask_count_ > 0;
+        seed_bid_floor_ = bid_count_ > 0 ? bids_[bid_count_ - 1].px : 0;
+        seed_ask_ceil_ = ask_count_ > 0 ? asks_[ask_count_ - 1].px : 0;
+
+        // ARM THE TRIGGER ONLY IF THE SEED CAN SATISFY ITS OWN MARGIN. If it
+        // cannot, asking again would return a body of the same depth with the
+        // same shortfall, at 50 IP weight a time — the "too eager" direction,
+        // and the venue bans on breach. The shortfall is reported instead, and
+        // it is the sizing result stated as a state: **the trigger cannot rescue
+        // a seed that never satisfied its own margin.** On BTCUSDT at limit=100
+        // that fires on arrival, ~60 s before the book actually goes wrong,
+        // which is the 82.4% failure class caught at the seed rather than at the
+        // ladder.
+        const std::uint32_t worst_seed_cover =
+            bid_count_ < ask_count_ ? bid_count_ : ask_count_;
+        cover_trigger_armed_ =
+            have_seed_bounds_ && worst_seed_cover >= kBinanceReseedCoverLevels;
+        if (have_seed_bounds_ && !cover_trigger_armed_) { ++stats_.seeds_below_margin; }
+        cover_trigger_latched_ = false;
         note_depth();
 
         // The Snapshot conveys the EMITTED window, not the stored book: the
@@ -666,12 +897,50 @@ private:
         return held < kBinanceEmitDepth ? held : kBinanceEmitDepth;
     }
 
-    // Deliverable 5's instrument: the low-water mark of book depth on each side.
-    // Nothing branches on it. It is how the seeded-window edge becomes visible
-    // without a rule that would need a calibration nobody has yet.
+    // How many held levels lie inside the seeded range on one side. `rank_of`
+    // returns the index of the first level that does NOT rank better than the
+    // boundary, so a level sitting exactly ON the boundary is the one case it
+    // excludes and the one case that is inside — hence the `holds` term.
+    static std::uint32_t cover(const BookLevel* side, std::uint32_t count,
+                               PriceTicks boundary, Side s) noexcept {
+        std::uint32_t at = ladder::rank_of(side, count, boundary, s);
+        if (ladder::holds(side, count, at, boundary)) { ++at; }
+        return at;
+    }
+
+    // B1's low-water marks, and B2's. Called once per frame, after the frame's
+    // levels have all been applied — a mid-frame reading would report the
+    // trough of a coalesced update that never existed as a book anyone saw.
     void note_depth() noexcept {
         if (bid_count_ < stats_.min_bid_levels) { stats_.min_bid_levels = bid_count_; }
         if (ask_count_ < stats_.min_ask_levels) { stats_.min_ask_levels = ask_count_; }
+        if (!have_seed_bounds_) { return; }
+
+        const std::uint32_t bc = bid_cover();
+        const std::uint32_t ac = ask_cover();
+        if (bc < stats_.min_bid_cover) { stats_.min_bid_cover = bc; }
+        if (ac < stats_.min_ask_cover) { stats_.min_ask_cover = ac; }
+
+        // THE TRIGGER. An observable, not a timer — and the whole reason it is
+        // one is that a constant cannot survive the 5x market-dependent spread
+        // `--window-sweep` measured. This asks the market how fast it is going
+        // by watching what it consumes.
+        if (!cover_trigger_armed_ || cover_trigger_latched_) { return; }
+        const std::uint32_t worst = bc < ac ? bc : ac;
+        if (worst >= kBinanceReseedCoverLevels) { return; }
+
+        // ONCE PER SEED EPOCH. The adapter cannot fetch and has no clock, so it
+        // latches and the transport acts — Kraken's `resync_wanted()` shape.
+        // **The rate limit is therefore the transport's and is a required
+        // property of it**, exactly like the fetch deadline the margin is sized
+        // against: a transport that re-fetches on every frame while coverage
+        // stays low would spend 50 weight ten times a second, and the venue bans
+        // on breach. This latch bounds it to one request per seed; bounding the
+        // seeds is the layer above.
+        cover_trigger_latched_ = true;
+        ++stats_.cover_triggers;
+        reseed_wanted_ = true;
+        ++stats_.reseeds_requested;
     }
 
     SymbolConfig cfg_;
@@ -694,6 +963,15 @@ private:
     bool have_last_u_ = false;
     bool bracket_checked_ = false;
     bool reseed_wanted_ = false;
+
+    // The seeded range, and the trigger's two flags. `armed` is a property of
+    // the seed (could it ever satisfy the margin); `latched` is a property of
+    // this epoch (has the ask already been made).
+    PriceTicks seed_bid_floor_ = 0;
+    PriceTicks seed_ask_ceil_ = 0;
+    bool have_seed_bounds_ = false;
+    bool cover_trigger_armed_ = false;
+    bool cover_trigger_latched_ = false;
     ParseStatus last_status_ = ParseStatus::Ok;
 };
 
