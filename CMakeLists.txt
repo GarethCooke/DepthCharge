@@ -255,7 +255,12 @@ target_compile_definitions(dc_tests PRIVATE
   # The silent-stream defect fixture, named here so the test and the build agree
   # on one spelling. See DC_BINANCE_FIXTURE_NAME below for what it is and why it
   # is excluded from the graded lists.
-  DC_BINANCE_FIXTURE="binance_btcusdt_DEFECT_silent_stream_20260826.ndjson")
+  DC_BINANCE_FIXTURE="binance_btcusdt_DEFECT_silent_stream_20260826.ndjson"
+  # The one committed capture long enough to CALIBRATE the liveness clock at a
+  # ~20 s ping cadence (M5 stage B2). Spelled here rather than in the test for
+  # the reason above it: a rename becomes a configure-time question instead of a
+  # test that quietly stops reading the file it is named after.
+  DC_BINANCE_LIVENESS_TRACE="binance_atomeur_d100ms_liveness_20260826.ndjson")
 # M3 stages C, D, E and the transport rebuild: the firmware's WebSocket frame
 # parser and reassembler, its gap histograms,
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
@@ -543,7 +548,13 @@ set(DC_BINANCE_TRACE_NAMES
   # taxonomy rows for these two files, which say the same thing where a reader
   # cutting a window would be standing.
   binance_btcusdt_mixed1_20260825.ndjson
-  binance_btcusdt_mixed2_20260825.ndjson)
+  binance_btcusdt_mixed2_20260825.ndjson
+  # --- THE CALIBRATION CAPTURE (M5 stage B2) ---------------------------------
+  # 221 s on the quiet pair, and the length is the property: nothing shorter can
+  # reach `kMinSamples = 8` ping intervals, so nothing shorter lets a host test
+  # enter the self-calibrating branch C has to tune. Also named separately as
+  # DC_BINANCE_LIVENESS_TRACE for dc_tests.
+  binance_atomeur_d100ms_liveness_20260826.ndjson)
 set(DC_BINANCE_TRACES "")
 foreach(dc_trace IN LISTS DC_BINANCE_TRACE_NAMES)
   set(dc_trace_path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${dc_trace})

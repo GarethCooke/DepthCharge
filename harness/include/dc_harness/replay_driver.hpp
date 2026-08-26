@@ -281,6 +281,24 @@ struct ReplayResult {
     double liveness_median_ms = 0.0;
     std::size_t liveness_arrivals = 0;
 
+    // DID THE CLOCK ACTUALLY CALIBRATE? (M5 stage B2.)
+    //
+    // Reported because at Binance `threshold_ms` CANNOT ANSWER IT. The
+    // calibrated threshold is `clamp(4 x median)` and the venue's ping median is
+    // ~19,970 ms, so 4x is 79,880 ms and clamps to `kThresholdCeilingMs` —
+    // which is the identical 30,000 ms `kUncalibratedThresholdMs` already holds.
+    // A test asserting on the threshold alone would pass whether or not the
+    // calibrated path was ever entered, which is the coincidence class this log
+    // keeps meeting (ARCHITECTURE §9, 2026-08-18) and is exactly the shape of a
+    // test that cannot fail.
+    //
+    // It matters now because a committed trace finally reaches calibration:
+    // `kMinSamples = 8` intervals is ~160 s at a 20 s cadence, and until
+    // `binance_atomeur_d100ms_liveness_20260826` (221 s, 11 pings, 10 intervals)
+    // nothing in the corpus was long enough — so C would have been tuning the
+    // multiplier and the ceiling against a mechanism no host test could enter.
+    bool liveness_calibrated = false;
+
     std::int64_t first_rx_ns = 0;
     std::int64_t last_rx_ns = 0;
     double span_seconds() const {

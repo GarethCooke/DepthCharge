@@ -34,6 +34,10 @@ KNOWN_ANSWERS = {
     # are rates over the complete capture. See ARCHITECTURE.md 9.
     "binance_btcusdt_mixed1_20260825.ndjson": dict(
         frames=989, payload_bytes=1609880, level_entries=54283, exponent_tokens=0, rest_ok=4, pings=4, seq_ok=898, seq_break=0, removals=16766, phantom_removals=4813),
+    # M5 stage B2: the calibration capture. 221 s on the quiet pair so that
+    # kMinSamples = 8 ping intervals is reachable at all; `pings=11` is the row.
+    "binance_atomeur_d100ms_liveness_20260826.ndjson": dict(
+        frames=83, payload_bytes=11135, level_entries=233, exponent_tokens=0, rest_ok=1, pings=11, seq_ok=82, seq_break=0, removals=34, phantom_removals=5),
     "binance_btcusdt_mixed2_20260825.ndjson": dict(
         frames=991, payload_bytes=1130760, level_entries=39301, exponent_tokens=0, rest_ok=4, pings=4, seq_ok=900, seq_break=0, removals=10102, phantom_removals=3055),
 }

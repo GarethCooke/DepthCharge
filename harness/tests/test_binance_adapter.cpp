@@ -416,3 +416,135 @@ TEST_CASE("the silent stream draws a LIVE ladder over a feed that never spoke") 
     CHECK(r.final_snapshot.bid_count > 0);
     CHECK(r.final_snapshot.ask_count > 0);
 }
+
+// ---------------------------------------------------------------------------
+// The calibrated liveness path, reachable on the host for the first time
+// (M5 stage B2, deliverable 6)
+// ---------------------------------------------------------------------------
+//
+// **THE MECHANISM C IS BEING ASKED TO TUNE HAD NO TEST THAT COULD ENTER IT.**
+// `kMinSamples = 8` intervals is ~160 s of wall clock at this venue's ~20 s ping
+// cadence, and the longest committed Binance capture was 88 s with 5 pings — so
+// every slice ran on `kUncalibratedThresholdMs` and the self-calibrating branch
+// was dead code as far as the suite was concerned. C has to decide, against
+// measurement, whether the ceiling rises, the multiplier falls, or the two
+// become per-venue (ARCHITECTURE §9, 2026-08-25, stage A). None of those is a
+// decision anybody should take against a path no test executes.
+//
+// `binance_atomeur_d100ms_liveness_20260826` exists only to close that: 221 s on
+// the quiet pair, single-stream, one seed, 11 pings, deliberately not gradeable.
+// 20 KiB.
+
+TEST_CASE("the calibrated liveness path is reachable, and a committed trace enters it") {
+    const std::string path =
+        std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
+    depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;
+    const dc::harness::ReplayResult r =
+        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
+
+    REQUIRE(r.meta.venue == dc::harness::Venue::Binance);
+    // What the capture is. If these move it has been re-captured and every claim
+    // below is about a different file — the length IS the property being pinned.
+    CHECK(r.liveness_arrivals == 11);
+    CHECK(r.span_seconds() > 160.0);
+    REQUIRE(r.liveness_arrivals > depthcharge::kMinSamples);
+
+    // THE ASSERTION THE FILE EXISTS FOR.
+    CHECK(r.liveness_calibrated);
+
+    // AND THE CONTROL, WITHOUT WHICH THE LINE ABOVE PROVES NOTHING. The longest
+    // Binance capture that predates this one carries 5 pings — 4 intervals
+    // against kMinSamples' 8 — and must NOT calibrate. A flag that is true
+    // everywhere is not evidence that a path was entered.
+    const dc::harness::ReplayResult before = dc::harness::run_replay_file(
+        std::string(DC_REPLAY_DIR) + "/binance_atomeur_d100ms_20260824.ndjson", spec,
+        dc::harness::ReplayOptions{});
+    CHECK(before.liveness_arrivals == 5);
+    CHECK_FALSE(before.liveness_calibrated);
+}
+
+TEST_CASE("...and what it calibrates to is INERT, which is the measurement C needs") {
+    // The ping is the most metronomic signal of the three venues, and this
+    // capture measures it over ten intervals rather than four: 19,957.0 to
+    // 20,068.0 ms, worst/median 1.005 against Kraken's 1.12.
+    //
+    // Four times that is ~79,900 ms and the clock clamps at
+    // `kThresholdCeilingMs = 30,000` — which is the identical number
+    // `kUncalibratedThresholdMs` already held. So calibrating changes the
+    // threshold by exactly zero, and the self-calibration the 2026-08-17 ruling
+    // rests on is, at this venue, a constant wearing a calibration's clothes.
+    //
+    // **THIS IS ASSERTED RATHER THAN OBSERVED SO THAT C'S CHANGE BREAKS IT.**
+    // Raise the ceiling, or drop the multiplier below ~1.5, and this test goes
+    // red and has to be rewritten deliberately — which is the whole point of
+    // pinning an inertness. A run that merely reported 30,000 ms would stay
+    // green through either change and say nothing.
+    const std::string path =
+        std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
+    depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;
+    const dc::harness::ReplayResult r =
+        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
+
+    REQUIRE(r.liveness_calibrated);
+    // 19,963.97 AND NOT 19,969.4, AND THE DIFFERENCE IS THE POINT.
+    //
+    // `LivenessClock` takes the LOWER median by nearest rank — the convention
+    // `sample_window.hpp` says has one home, because an interpolated median
+    // invents an interval that never occurred on the wire. Over these ten
+    // intervals the two answer 19,964.0 and 19,969.4, and the first draft of
+    // this test asserted the second with a relative epsilon wide enough to
+    // accept the first. A tolerance that spans both candidate answers is a test
+    // that cannot fail; this one is tight enough to name which instrument
+    // produced the number.
+    CHECK(r.liveness_median_ms == doctest::Approx(19963.97).epsilon(1e-6));
+    CHECK(r.liveness_median_ms * depthcharge::kThresholdMultiple >
+          depthcharge::kThresholdCeilingMs);
+    CHECK(r.threshold_ms == doctest::Approx(depthcharge::kThresholdCeilingMs));
+    CHECK(depthcharge::kUncalibratedThresholdMs ==
+          doctest::Approx(depthcharge::kThresholdCeilingMs));
+
+    // And it never fires, over 221 s containing a 26.8 s book silence on a
+    // socket whose pings never missed a beat. The Binance twin of Kraken's
+    // MINA/GBP 25,843 ms hole, and the same verdict: market information, not the
+    // book's age, and never a grey signal.
+    CHECK(r.episodes.empty());
+}
+
+TEST_CASE("the report's median and the clock's median are two conventions, and they differ here") {
+    // **PINS A DIVERGENCE, NOT A CONTRACT, AND IS EXPECTED TO INVERT.** Same
+    // shape as the silent-stream fixture's expiry clause, and for the same
+    // reason: the thing recorded is wrong, and a test is how the correction
+    // announces itself instead of going unnoticed.
+    //
+    // `sample_window.hpp` says the median convention "matters enough to have one
+    // home" — a LOWER median by nearest rank, because an interpolated one
+    // invents an interval that never occurred on the wire — and
+    // `liveness_clock.hpp` and `age_estimator.hpp` both use it.
+    // **`harness/src/trace.cpp`'s statistics pass carries a second copy and
+    // interpolates.** The two agree to 0.1 ms at Anvil and Kraken, whose liveness
+    // cadences are flat, so the divergence was invisible for three milestones —
+    // the coincidence class again. At Binance they disagree on every committed
+    // capture with an even interval count, and **every Binance cadence figure
+    // this project has quoted came from the interpolated one**: 19,951.7,
+    // 20,011.6, 20,013.3 in `taxonomy_pins.inc`, and 20,004.8 in B1's log.
+    //
+    // NOT FIXED HERE, deliberately: `median_gap_ms` shares that code path and is
+    // quoted across three NOTES files and a dozen briefs, so changing the
+    // convention is a documentation sweep with its own scope, not a line in a
+    // stage about the re-snapshot schedule. When it is fixed, this case must be
+    // INVERTED rather than deleted or relaxed. ARCHITECTURE §9, 2026-08-26.
+    const std::string path =
+        std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
+    depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;
+    const dc::harness::ReplayResult r =
+        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
+    const dc::harness::TraceStats t = dc::harness::read_trace(path);
+
+    // Same signal, same ten intervals, same file.
+    CHECK(r.liveness_arrivals == 11);
+    CHECK(t.liveness_events == 11);
+
+    CHECK(r.liveness_median_ms == doctest::Approx(19963.97).epsilon(1e-6));
+    CHECK(t.median_liveness_gap_ms == doctest::Approx(19969.35).epsilon(1e-6));
+    CHECK(r.liveness_median_ms != doctest::Approx(t.median_liveness_gap_ms));
+}

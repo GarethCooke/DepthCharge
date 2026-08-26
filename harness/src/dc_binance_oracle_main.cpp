@@ -183,6 +183,14 @@ constexpr Expect kExpect[] = {
     {"binance_btcusdt_mixed2_20260825.ndjson", 88, 0, 2,
      "the ruling's second, independent witness, whole -- identical figures an "
      "hour apart"},
+    // The calibration capture (M5 stage B2). Single-stream by design, so there
+    // is no `@depth20` and nothing to grade -- VACUOUS, exactly like the
+    // reconnect slice above and for the identical reason. It is in this table
+    // rather than excluded from it because an unpinned committed trace is a
+    // FAILURE and not a skip, and because a file that CANNOT be graded should
+    // say so here rather than be absent and look forgotten.
+    {"binance_atomeur_d100ms_liveness_20260826.ndjson", 0, 0, 0,
+     "VACUOUS: single-stream 221 s calibration capture, no @depth20"},
 };
 
 const Expect* expected_for(const std::string& file) {

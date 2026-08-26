@@ -335,3 +335,39 @@
      /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
      /*liveness_events=*/4, /*liveness_firings=*/0,
      "depthUpdate=901 partialDepth=90 ping=4 rest=4"},
+
+// --- THE CALIBRATION CAPTURE (M5 stage B2, 2026-08-26) ----------------------
+// **THE LENGTH IS THE PROPERTY.** Every other Binance file is 15-90 s, and
+// `kMinSamples = 8` intervals at this venue's ~20 s ping cadence is ~160 s of
+// wall clock -- so until this file existed the self-calibrating branch of
+// `liveness_clock.hpp` was unreachable from the host suite, and C was being
+// asked to choose between raising the ceiling, dropping the multiplier and
+// making both per-venue against a path no test executed.
+//
+// `liveness_events=11` is therefore the row's whole point: ten intervals against
+// kMinSamples' eight. `test_binance_adapter.cpp` asserts the calibrated flag on
+// this file and asserts its ABSENCE on the 5-ping capture above, because a flag
+// that is true everywhere proves nothing.
+//
+// DELIBERATELY NOT GRADEABLE, and that is a choice rather than a shortfall.
+// Single-stream `/ws/atomeur@depth@100ms`, so no `@depth20` and nothing for the
+// oracle to compare against -- same shape as the reconnect slice, pinned VACUOUS
+// for the same reason. One opening REST seed at limit=100, `snapshot_every_s: 0`,
+// weight 5 for the whole capture.
+//
+//   wd_anvil=37       the withdrawn 1,000 ms record-arrival rule inventing 37
+//                     disconnects in 221 s on a market that never lost a packet.
+//                     The quiet pair's case at four times the length of the
+//                     earlier one, and the same verdict.
+//   book_wd_anvil=37  a **26,807.8 ms** book silence with the ping keeping
+//                     19,957-20,068 ms time straight through it. The Binance
+//                     twin of Kraken's MINA/GBP 25,843 ms hole.
+//   liveness_firings=0
+//                     over 221 s, calibrated. Not the same statement as the
+//                     zeros above it, which are all uncalibrated.
+    {"binance_atomeur_d100ms_liveness_20260826.ndjson", "binance",
+     /*records=*/95, /*tx=*/0, /*untyped=*/84, /*book_events=*/84,
+     /*snapshots=*/1, /*resyncs=*/0,
+     /*wd_declared=*/0, /*wd_anvil=*/37, /*book_wd_declared=*/0, /*book_wd_anvil=*/37,
+     /*liveness_events=*/11, /*liveness_firings=*/0,
+     "depthUpdate=83 ping=11 rest=1"},

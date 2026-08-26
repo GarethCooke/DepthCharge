@@ -153,6 +153,7 @@ public:
         result.worst_age_ms = age_.worst_ms();
         result.age_baseline_ms = age_.baseline_ms();
         result.liveness_median_ms = liveness_.median_ms();
+        result.liveness_calibrated = liveness_.calibrated();
         // The TOTAL, not the clock's 32-sample window: a report that says "32 x
         // summary" over a two-minute trace looks like a thin feed.
         result.liveness_arrivals = liveness_arrivals_;
