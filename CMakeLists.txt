@@ -206,6 +206,17 @@ add_executable(dc_binance_oracle harness/src/dc_binance_oracle_main.cpp)
 target_link_libraries(dc_binance_oracle PRIVATE
   dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings)
 
+# WHAT `age_ms` READS THROUGH A KNOWN BACKLOG (M5 stage B2, section 5).
+# The desk twin of tools/kraken_backpressure_probe.py: that one settled
+# queue-versus-shed on a live socket, because the question was about the venue's
+# send queue. This one is about WHICH SUBSYSTEM EMITS THE SIGNAL THE METER
+# COUNTS, which is answerable from a committed file — and it injects a lag it
+# therefore knows exactly, which is what anvil_freshness_probe.py needed two
+# sockets to obtain.
+add_executable(dc_age_probe harness/src/dc_age_probe_main.cpp)
+target_link_libraries(dc_age_probe PRIVATE
+  dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings)
+
 # The record taxonomy of every committed trace, and its pin (M4 stage A).
 # It links a parser implementation only because dc_harness leaves
 # parse_anvil_frame unresolved for the replay driver; the taxonomy pass itself
@@ -656,6 +667,23 @@ file(GLOB DC_COMMITTED_TRACES
 add_test(NAME binance_adapter_oracle
   COMMAND dc_binance_oracle --check ${DC_BINANCE_TRACES})
 set_tests_properties(binance_adapter_oracle PROPERTIES TIMEOUT 300)
+
+# THE ANSWER IS PINNED IN BOTH DIRECTIONS AND AT ALL THREE VENUES, because a
+# probe that only ever printed BLIND would be a probe that had stopped working.
+# The socket-backlog column must TRACK everywhere — the arithmetic is venue-free
+# and this is what says so — and the feed-backlog column must be BLIND
+# everywhere, which is a statement about the ESTIMATOR rather than about Binance.
+# What is Binance-only is that a feed-only backlog is a state the venue can
+# actually be in; at Anvil and Kraken the liveness record and the book come from
+# one subsystem and the column is a fiction. That distinction is the whole
+# content of ARCHITECTURE.md 9's transport-versus-feed row, and it is here as
+# three rows rather than a sentence.
+add_test(NAME binance_age_probe
+  COMMAND dc_age_probe --check
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_atomeur_d100ms_liveness_20260826.ndjson
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson
+          ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_btcusd_d25_20260816.ndjson)
+set_tests_properties(binance_age_probe PROPERTIES TIMEOUT 300)
 
 add_test(NAME trace_taxonomy_selfcheck
   COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES} ${DC_BINANCE_TRACES}
