@@ -162,6 +162,27 @@ constexpr Expect kExpect[] = {
     // disagree about must not read as a passing one.
     {"binance_btcusdt_reconnect_20260824.ndjson", 0, 0, 0,
      "VACUOUS: single-stream capture, no @depth20, nothing to grade"},
+    // --- THE RULING'S EVIDENCE, AND THE FIRST GRADING AT THE BOARD'S CADENCE --
+    // (M5 stage B2.) The two complete 90 s captures the 2026-08-25 audit-stream
+    // ruling was signed on, committed whole rather than sliced -- see the
+    // taxonomy rows for why a window cut out of one would evidence a different
+    // claim. Both are `limit=1000` on the liquid pair with `@depth20` at the
+    // **1000 ms tick**, which is the configuration decision 2 puts on the board
+    // and which no row above tests: every other witness runs the audit stream at
+    // 100 ms.
+    //
+    // 88/88 both times, and it is the SAME 88 the ruling quotes and the same 88
+    // `tools/binance_oracle.py` reports -- so the figure is now reproduced by two
+    // implementations out of a committed file, which is what the clause asked
+    // for. The 2 unverifiable are the two partial payloads that arrive before the
+    // seed lands; the Python tool skips those rather than counting them, which is
+    // the documented `seen` difference above and not a disagreement.
+    {"binance_btcusdt_mixed1_20260825.ndjson", 88, 0, 2,
+     "the ruling's first witness, whole: 90/90 coincidence, 88/88 GREEN at the "
+     "1000 ms audit tick"},
+    {"binance_btcusdt_mixed2_20260825.ndjson", 88, 0, 2,
+     "the ruling's second, independent witness, whole -- identical figures an "
+     "hour apart"},
 };
 
 const Expect* expected_for(const std::string& file) {

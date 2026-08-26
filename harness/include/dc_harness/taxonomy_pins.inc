@@ -283,3 +283,55 @@
      /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
      /*liveness_events=*/3, /*liveness_firings=*/0,
      "ping=3 rest=1"},
+
+// --- THE RULING'S EVIDENCE (M5 stage B2, 2026-08-26) ------------------------
+// **THESE TWO ARE NOT SLICES, AND THE DISTINCTION IS THE ROW.** Every other
+// Binance file above is a window cut out of a longer local capture, sized to the
+// smallest stretch that exercises the property it pins. These are the complete
+// 90 s captures the 2026-08-25 audit-stream ruling was signed on, committed
+// byte-for-byte, and they are here because that ruling's clause said its figures
+// were "the one set of numbers in this table with no committed trace behind
+// them".
+//
+// A GUARD TRACE PINS A BEHAVIOUR and should be cut to the smallest window that
+// exercises it -- M4 stage 0's capture recipe. A RULING'S EVIDENCE PINS A
+// DECISION and cannot be cut at all, because the figure IS a rate over a
+// complete capture: 90 partial payloads, 90 coinciding with a diff `u`, 88
+// graded GREEN. Take 40 s out of the middle and the numbers that come back are
+// 40/40 and 38/38, which evidence a different (weaker) claim than the one the
+// ruling was taken on. Two categories, two slicing rules, and this is the first
+// time the corpus has carried the second.
+//
+// SO: `records` here is the whole capture and must never shrink. If a future
+// stage wants a mixed-cadence GUARD trace, it cuts one from `_local/` under a
+// new name and pins it as a guard -- it does not re-cut these.
+//
+// What the columns say, and every one of them is the venue rather than a quirk:
+//   records=997/999   the complete captures, 89.9 s and 90.0 s.
+//   partialDepth=90   the 1000 ms audit tick over 90 s. **The first committed
+//                     traces at that cadence**; every earlier Binance file runs
+//                     `@depth20@100ms` and reports ~10x this. It is the
+//                     configuration decision 2 put on the board.
+//   depthUpdate=899/901   the diff stream is UNCHANGED at 100 ms, which is the
+//                     other half of decision 2: the audit stream is 9.98x
+//                     cheaper because it is the same payload at a tenth of the
+//                     rate, not a smaller one.
+//   snapshots=4       four `limit=1000` fetches at the tool's 25 s cadence. The
+//                     first seeds; the other three are graded as re-snapshots.
+//   ping=4            three intervals -- not enough to calibrate anything, which
+//                     is why `liveness_firings=0` here is a fact about a 90 s
+//                     window and not about the venue (see venue.hpp, and the
+//                     ~200 s capture B2 took for the case that IS long enough).
+//   wd_anvil=0        the busy pair never goes 1,000 ms between records.
+    {"binance_btcusdt_mixed1_20260825.ndjson", "binance",
+     /*records=*/997, /*tx=*/0, /*untyped=*/993, /*book_events=*/993,
+     /*snapshots=*/4, /*resyncs=*/4,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/4, /*liveness_firings=*/0,
+     "depthUpdate=899 partialDepth=90 ping=4 rest=4"},
+    {"binance_btcusdt_mixed2_20260825.ndjson", "binance",
+     /*records=*/999, /*tx=*/0, /*untyped=*/995, /*book_events=*/995,
+     /*snapshots=*/4, /*resyncs=*/4,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/4, /*liveness_firings=*/0,
+     "depthUpdate=901 partialDepth=90 ping=4 rest=4"},

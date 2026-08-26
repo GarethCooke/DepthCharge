@@ -26,4 +26,14 @@ KNOWN_ANSWERS = {
         frames=500, payload_bytes=617326, level_entries=19548, exponent_tokens=0, rest_ok=1, pings=1, seq_ok=249, seq_break=0, removals=2667, phantom_removals=904),
     "binance_btcusdt_reconnect_20260824.ndjson": dict(
         frames=548, payload_bytes=707989, level_entries=21696, exponent_tokens=0, rest_ok=6, pings=2, seq_ok=546, seq_break=1, removals=8473, phantom_removals=2419),
+    # --- M5 stage B2: the ruling's evidence, committed WHOLE -----------------
+    # The only two rows in this table taken from a complete capture rather than
+    # from a window cut out of one, and the only two at the 1000 ms audit tick.
+    # `frames` is the whole 90 s and must stay that way: these files pin a
+    # DECISION rather than a behaviour, and the figures the decision was taken on
+    # are rates over the complete capture. See ARCHITECTURE.md 9.
+    "binance_btcusdt_mixed1_20260825.ndjson": dict(
+        frames=989, payload_bytes=1609880, level_entries=54283, exponent_tokens=0, rest_ok=4, pings=4, seq_ok=898, seq_break=0, removals=16766, phantom_removals=4813),
+    "binance_btcusdt_mixed2_20260825.ndjson": dict(
+        frames=991, payload_bytes=1130760, level_entries=39301, exponent_tokens=0, rest_ok=4, pings=4, seq_ok=900, seq_break=0, removals=10102, phantom_removals=3055),
 }

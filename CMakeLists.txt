@@ -532,7 +532,18 @@ set(DC_BINANCE_TRACE_NAMES
   binance_btcusdt_d100ms_20260824.ndjson
   binance_btcusdt_d1000ms_20260824.ndjson
   binance_atomeur_d100ms_20260824.ndjson
-  binance_btcusdt_reconnect_20260824.ndjson)
+  binance_btcusdt_reconnect_20260824.ndjson
+  # --- THE RULING'S EVIDENCE, COMMITTED WHOLE (M5 stage B2) ------------------
+  # These two are NOT slices and must not be re-cut. They are the captures the
+  # 2026-08-25 audit-stream ruling was signed on, and its figures -- 90/90
+  # coincidence and 88/88 GREEN, twice -- are RATES OVER A COMPLETE CAPTURE. Cut
+  # a window out of one and it no longer evidences the decision it was taken
+  # for; you would be amending the ruling to fit the artefact. See
+  # ARCHITECTURE.md 9's guard-trace-versus-ruling's-evidence row, and the
+  # taxonomy rows for these two files, which say the same thing where a reader
+  # cutting a window would be standing.
+  binance_btcusdt_mixed1_20260825.ndjson
+  binance_btcusdt_mixed2_20260825.ndjson)
 set(DC_BINANCE_TRACES "")
 foreach(dc_trace IN LISTS DC_BINANCE_TRACE_NAMES)
   set(dc_trace_path ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${dc_trace})
@@ -764,6 +775,19 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_btcusdt_deepseed_20260824.ndjson
             ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_btcusdt_deepseed2_20260824.ndjson
             ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_atomeur_deepseed_20260824.ndjson
+            # THE TWO MIXED-CADENCE CAPTURES, ADDED AT M5 STAGE B2, AND THEY
+            # CLOSE A GAP IN THE MUTANT SUITE'S REACH RATHER THAN ADDING A
+            # FOURTH AND FIFTH COPY OF ITS EXISTING ONE. Every witness above
+            # runs `@depth20@100ms`. **The board runs the audit stream at the
+            # 1000 ms tick** (the 2026-08-25 ruling, decision 2), so until this
+            # stage NO mutant had ever been run at the cadence the shipped
+            # configuration will actually use -- a coalesced second of changes
+            # per audit payload rather than a tenth. All three are exercised and
+            # RED on both, measured before either file was pinned, which is the
+            # 2026-08-16 clause discharged for them the same way it was for the
+            # three above.
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_btcusdt_mixed1_20260825.ndjson
+            ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/binance_btcusdt_mixed2_20260825.ndjson
             --check)
   set_tests_properties(binance_oracle_mutants PROPERTIES TIMEOUT 300)
 else()
