@@ -212,6 +212,7 @@ B2's to measure, not anyone's to guess.**
 | **B2** | the seed, the walk, and the schedule | 256 is not enough, and no fixed window survives indefinitely | B1 |
 | **C** | liveness at a venue that declares none | Where decision 1 actually lands | A, decision 1 |
 | **D** | the bench | The soak must outlive the venue's own 24 h connection limit | B2, C |
+| **close-out** | the sweeps that must not travel inside another stage's diff | **Added 2026-08-26 at B2, because B2 assigned a clause to it and it did not exist.** M3 and M4 both had one (`M3-closeout-transport-and-docs.md`, `M4-closing-bench-sitting.md`); M5's table did not, so *"owner: M5 close-out"* named nothing and was functionally the blank the B2 approval note forbade. **It carries the median-convention change** — `harness/src/trace.cpp` interpolates where `sample_window.hpp` says nearest rank, so every Binance cadence figure quoted in the repository is not the one the shipped clock computes — which cannot ride inside another stage because it rewrites figures in `taxonomy_pins.inc` and *no existing golden moves* is what makes a split reviewable. Expiry and tripwire in ARCHITECTURE §9, 2026-08-26; carried in three places. | D |
 
 ### A · the trace dialect, and the two records that are not frames
 

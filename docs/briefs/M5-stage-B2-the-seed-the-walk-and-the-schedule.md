@@ -522,3 +522,17 @@ was issued from this session, there is no hook in `.git/hooks/`, and no push-rel
 so the push came from outside it. **The ladder subsequently returned all-green for 1–7, so what is
 on origin is verified; it was verified after landing rather than before**, which is the ordering the
 rule exists to enforce. Commits 8–11 are local only and are not pushed.
+
+**And the owner I assigned did not exist — checked rather than assumed, and made real.** The
+approval note said *owner's call; override this line if you disagree, but do not leave it blank*,
+and warned in the same paragraph that *"its own scope" is unowned, and commit 2 of this very split
+exists to close an unowned clause in §9 — do not open a second one in the session that closes the
+first.* I took **M5 close-out** as given and then looked for it: `M5-the-shape-and-the-two-decisions.md`'s
+stage table runs **0, A, B1, B2, C, D** and has no close-out, so the clause was owned by a stage
+that does not exist — which is the same blank wearing a name.
+
+M3 and M4 both had one (`M3-closeout-transport-and-docs.md`, `M4-closing-bench-sitting.md`), so the
+shape is established and the fix is to make the owner real rather than to re-assign the clause: the
+stage table and the ROADMAP M5 line both now carry **close-out**, depending on D, with the
+median-convention change named as what it holds and why that change cannot travel inside another
+stage's diff. Commit 12, documentation only.
