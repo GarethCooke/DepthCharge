@@ -51,6 +51,9 @@ main tree is one of the three failures behind the mutation-verification rule in 
 §9 (2026-08-18) — it passed, and it was measuring the wrong tree. Delete stale worktrees when done:
 a stale one is precisely where a green build comes from the wrong source.
 
+**A sentinel-token check cannot live in a file that quotes its sentinel.** A guard like `grep -rn SHA-PENDING` returning nothing is impossible while the instruction that *names* the token is in the tree — and the danger is not the spurious match, it is the wave-through, which is indistinguishable from waving through a real leftover. Scope the search to the files that can carry the token:
+`git grep -n SHA-PENDING -- . ':!docs/briefs/<the-stage-brief>*'`. Tooling rather than architecture, so no §9 row. (M5 stage B2 got a clean unscoped result only because the instruction was rewritten the moment it was carried out — which works and depends on somebody remembering, so the scoped form is the one to write.)
+
 **Run the verification loop INLINE. `powershell -File <script>` fails at `CMakeTestCXXCompiler`** —
 the compiler check dies during configure, for reasons nobody has rooted out, so a loop written as a
 script and launched that way reports a red build that has nothing to do with the commit under test.

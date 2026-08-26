@@ -413,3 +413,92 @@ rather than fixed for `trace.cpp`**: `median_gap_ms` shares that path and its fi
 quoted across three NOTES files and a dozen briefs, so the convention change is a
 documentation sweep with its own scope. Pinned meanwhile by a test that must be **inverted**
 when the fix lands. ARCHITECTURE §9, 2026-08-26; `NOTES-binance.md`'s closing section.
+
+### 2026-08-26 · Claude Opus 5 (1M context) · follow-up: one fix and three records
+
+The owner's approval note (`SEND-TO-depthcharge-cc-B2-approve.md`) arrived **after** the seven
+commits had been created and while their per-commit verification was running, so its four items
+land as commits 8–10 on top rather than folded into the split. Nothing in them is behaviour.
+
+**§0 — the `SHA-PENDING` check, and the honest correction to the note's premise.** The note says
+the check cannot pass because the brief carries the token at lines 384–385. **It did when the
+split was proposed and it does not now**: executing the split rewrote that paragraph into a
+description of what had been done, so the token left the tree with the instruction that named it.
+Both the scoped and the unscoped forms return **0**.
+
+That is a *weaker* resolution of the same hazard than scoping, because it worked only because the
+instruction happened to be rewritten — so the rule earns its place regardless, and is recorded in
+`CLAUDE.md` beside the `powershell -File` note as tooling rather than architecture:
+
+> **A sentinel-token check cannot live in a file that quotes its sentinel.** Scope the search to
+> the files that can carry the token, or the guard reports a hit for ever and gets waved through.
+
+The danger named — *the wave-through is indistinguishable from waving through a real leftover* —
+is the same shape as the three-way family in §3 below, and it is a fourth way a green check is
+wrong: a guard whose expected output is a known false positive.
+
+**§1 — the `trace.cpp` deferral now carries the right reason, and an owner.** The reason recorded
+at proposal was sweep size; the load-bearing one is **golden movement**: adopting the shared
+convention rewrites the cadence figures quoted inside `taxonomy_pins.inc`, and *no existing golden
+moves* is what makes a seven-commit split reviewable — bundled in, nothing in the diff would
+distinguish a convention change from a defect. **A convention change that moves pins must be its
+own stage, so the moved pins have nothing else to hide behind.** The sweep is the consequence.
+
+**Owner: M5 close-out**, taken as proposed and not left blank — *"its own scope" is unowned, and
+commit 2 of this very split exists to close an unowned clause in §9.* **Expiry:** when `harness/`
+and `engine/` compute the median by one convention. **Tripwire:** if any stage before the
+close-out needs to quote or re-pin a Binance cadence figure, this closes first. Carried in three
+places with invert-not-delete wording: `test_binance_adapter.cpp`'s two-conventions case,
+`taxonomy_pins.inc`'s Binance comment, and DESIGN strain 29.
+
+One precision worth having on record rather than overclaiming: the convention change moves figures
+**quoted inside** `taxonomy_pins.inc`, not a pinned *column*. No median is a pinned column, and
+`liveness_firings` is computed from the clock's own threshold rather than from the report's median,
+so it would not move either. The reviewability argument stands unchanged — a diff that touches a
+pin file in a stage about something else is unreviewable whether the moved text is a column or a
+comment — and the taxonomy carrier says so explicitly, so that whoever closes it does not go
+looking for a column that was never at risk.
+
+**§2 — the sample-counted-constant class, and the instance nobody had named.** One §9 row, all
+three instances tabulated at all three venues, measured rather than asserted:
+
+| constant | value | Anvil | Kraken | Binance | found at |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `kMinSamples` | 8 | 4.0 s | 8.0 s | **159.7 s** | M5 stage A |
+| `kBaselineSamples` = `kWindowSamples` | 32 | 16.0 s | 32.0 s | **638.8 s** | M5 stage B2 |
+| `kAgeWindowSamples` | 256 | 128.0 s | 256.0 s | **85.2 min** | **this note** |
+
+The Anvil column is not new arithmetic — 16 s and 128 s are already stated in
+`age_estimator.hpp`'s own text, which is what makes the Binance column's absence the finding
+rather than the numbers themselves. The third constant's comment says why the number is what it
+is: *"256 × 8 B = 2 KiB, which is the whole reason it is not larger"* — **a memory budget, never
+a time span** — and it is the window the age supremum is taken over. **Handed to C undecided**,
+with the multiplier and the ceiling.
+
+**638.8 s, not the note's 639.0 s.** The difference is the median correction the note itself
+endorses: 32 × 19,963.97 ms rather than 32 × 19.97 s. Stated because a figure that moves between
+two documents in the same evening is exactly what this stage spent its review pass chasing.
+
+**§3 — the green-suite family, grouped.** One §9 row naming three ways a suite is green about the
+wrong thing, referencing the existing two rows rather than restating them: the input cannot
+discriminate (coincidence class), the corpus never contained it (never-observed frame kind), or
+the bound admits both answers (new — a relative `epsilon` spanning ±20 ms on 19,969 accepts
+19,964.0 too). The row also names what defeats each, and the shared property that makes them one
+family: **none of the three fails, so each is found by something other than the suite.**
+
+**§2's one line that was mine rather than C's**, taken as an eighth commit so commit 4's diff
+stays the trigger and nothing else: `age_estimator.hpp`'s *"the meter reads `-` for the first 16 s
+of an Anvil connection and 32 s of a Kraken one"* was a per-venue cost sentence written before the
+venue where it is 638.8 s existed — the stale-line shape B1 named twice, sitting inside the file
+this stage's own finding is about.
+
+**Commits 8–10, no behaviour in any of them.**
+
+| # | commit | contents |
+| --- | --- | --- |
+| 8 | `engine: name the venue the age meter's no-reading window was never sized for` | `age_estimator.hpp` comment; no code path moves |
+| 9 | `harness: carry the median-convention expiry in three places, with an owner` | the inverting test's wording, `taxonomy_pins.inc`'s comment, DESIGN strain 29, the NOTES reason |
+| 10 | `docs: three §9 records — the deferral's real reason, sample counts as durations, and the green-suite family` | `ARCHITECTURE.md`, `CLAUDE.md`, this log |
+
+**Nothing pushed.** Per-commit verification as before: fresh detached worktree,
+`CMAKE_HOME_DIRECTORY` confirmed and normalised, loop inline.
