@@ -42,6 +42,7 @@
 // third set of conventions, THAT is the point at which extracting a scanner
 // pays, because three instances distinguish the general primitives from the two
 // venues' accidents. Recorded as a strain point in docs/DESIGN.html §08.
+#include "depthcharge/json_scan.hpp"
 #include "depthcharge/kraken/kraken_frame.hpp"
 
 #include <cstdint>
@@ -53,36 +54,22 @@
 namespace depthcharge::kraken {
 namespace {
 
-constexpr bool is_digit(unsigned char c) noexcept { return c >= '0' && c <= '9'; }
+// The venue grammar. The JSON token layer it stands on is
+// depthcharge/json_scan.hpp, extracted at M5 stage B1 -- see that header for
+// why Binance reuses this scanner rather than getting a third one of its own.
+//
+// `using` rather than a qualified name at every use site: these three are the
+// scanner's vocabulary and were unqualified in this file for a milestone before
+// they moved, so importing them is what keeps the grammar bodies below
+// byte-identical through the extraction.
+using depthcharge::json::is_digit;
+using depthcharge::json::NumberToken;
+using depthcharge::json::StringToken;
 
-// Longest token this parser ever copies rather than slices. Only an ESCAPED
-// string needs a copy, and the only escaped string that could matter is a
-// symbol; "BTC/USD" is 7 bytes and no Kraken symbol approaches this.
-constexpr std::size_t kMaxTokenChars = 64;
-
-// Containers a single skip_value() may nest. Held in one uint64_t as a bit per
-// level (0 = object, 1 = array), which is what keeps the skipper heap-free.
-// Kraken's deepest frame is 4 levels.
-constexpr int kMaxSkipDepth = 64;
-
-// A decoded string: a view into the input when it had no escapes (the case in
-// every captured frame — the book channel has never sent one), or into `scratch`
-// when it did.
-struct StringToken {
-    std::string_view text{};
-    bool too_long = false;  // an escaped string past kMaxTokenChars
-};
-
-// A number, UNCONVERTED. `text` is the verbatim token, which is the whole point:
-// it goes to parse_scaled, not to strtod.
-struct NumberToken {
-    std::string_view text{};
-};
-
-class FrameParser {
+class FrameParser : public depthcharge::json::Scanner {
 public:
     FrameParser(std::string_view text, const SymbolConfig& cfg, KrakenFrame& out) noexcept
-        : p_(text.data()), end_(text.data() + text.size()), cfg_(cfg), out_(out) {}
+        : depthcharge::json::Scanner(text), cfg_(cfg), out_(out) {}
 
     ParseStatus run() noexcept {
         skip_ws();
@@ -91,294 +78,6 @@ public:
     }
 
 private:
-    // ---- input -------------------------------------------------------------
-
-    bool at_end() const noexcept { return p_ == end_; }
-    unsigned char peek() const noexcept { return static_cast<unsigned char>(*p_); }
-
-    void skip_ws() noexcept {
-        while (p_ != end_) {
-            const unsigned char c = static_cast<unsigned char>(*p_);
-            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++p_; } else { break; }
-        }
-    }
-
-    // A token is required next; end of input means the document was truncated.
-    bool want() noexcept {
-        skip_ws();
-        return !at_end();
-    }
-
-    bool eat(char c) noexcept {
-        if (!want() || *p_ != c) { return false; }
-        ++p_;
-        return true;
-    }
-
-    // ---- scalars -----------------------------------------------------------
-
-    void push(unsigned char b) noexcept {
-        if (scratch_len_ < kMaxTokenChars) { scratch_[scratch_len_++] = static_cast<char>(b); }
-        else { scratch_over_ = true; }
-    }
-
-    // \uXXXX -> UTF-8. Surrogate pairs are decoded rather than rejected: a lone
-    // surrogate is written through as the replacement character, which is what a
-    // symbol comparison wants (it will simply not match) and never a parse
-    // failure, because a malformed escape in a field we do not read must not
-    // reject the frame.
-    bool read_hex4(std::uint32_t& cp) noexcept {
-        cp = 0;
-        for (int i = 0; i < 4; ++i) {
-            if (at_end()) { return false; }
-            const unsigned char c = static_cast<unsigned char>(*p_++);
-            std::uint32_t v = 0;
-            if (is_digit(c)) { v = c - '0'; }
-            else if (c >= 'a' && c <= 'f') { v = 10u + (c - 'a'); }
-            else if (c >= 'A' && c <= 'F') { v = 10u + (c - 'A'); }
-            else { return false; }
-            cp = (cp << 4) | v;
-        }
-        return true;
-    }
-
-    void push_codepoint(std::uint32_t cp) noexcept {
-        if (cp < 0x80u) {
-            push(static_cast<unsigned char>(cp));
-        } else if (cp < 0x800u) {
-            push(static_cast<unsigned char>(0xC0u | (cp >> 6)));
-            push(static_cast<unsigned char>(0x80u | (cp & 0x3Fu)));
-        } else if (cp < 0x10000u) {
-            push(static_cast<unsigned char>(0xE0u | (cp >> 12)));
-            push(static_cast<unsigned char>(0x80u | ((cp >> 6) & 0x3Fu)));
-            push(static_cast<unsigned char>(0x80u | (cp & 0x3Fu)));
-        } else {
-            push(static_cast<unsigned char>(0xF0u | (cp >> 18)));
-            push(static_cast<unsigned char>(0x80u | ((cp >> 12) & 0x3Fu)));
-            push(static_cast<unsigned char>(0x80u | ((cp >> 6) & 0x3Fu)));
-            push(static_cast<unsigned char>(0x80u | (cp & 0x3Fu)));
-        }
-    }
-
-    // On entry p_ is at the opening quote. `capture` is false for a string whose
-    // value nobody reads, which is most of them (timestamps, statuses, the
-    // status frame's version): the bytes are validated and discarded.
-    bool scan_string(StringToken& tok, bool capture) noexcept {
-        if (!want() || *p_ != '"') { return false; }
-        ++p_;
-        const char* start = p_;
-        bool escaped = false;
-        scratch_len_ = 0;
-        scratch_over_ = false;
-
-        while (true) {
-            if (at_end()) { return false; }
-            const unsigned char c = peek();
-            if (c == '"') {
-                ++p_;
-                break;
-            }
-            if (c == '\\') {
-                if (!escaped) {
-                    // First escape: everything before it is verbatim, so seed
-                    // the scratch with it and switch to copying.
-                    escaped = true;
-                    scratch_len_ = 0;
-                    scratch_over_ = false;
-                    for (const char* q = start; q != p_; ++q) {
-                        push(static_cast<unsigned char>(*q));
-                    }
-                }
-                ++p_;
-                if (at_end()) { return false; }
-                const unsigned char e = static_cast<unsigned char>(*p_++);
-                switch (e) {
-                    case '"':  push('"');  break;
-                    case '\\': push('\\'); break;
-                    case '/':  push('/');  break;
-                    case 'b':  push('\b'); break;
-                    case 'f':  push('\f'); break;
-                    case 'n':  push('\n'); break;
-                    case 'r':  push('\r'); break;
-                    case 't':  push('\t'); break;
-                    case 'u': {
-                        std::uint32_t cp = 0;
-                        if (!read_hex4(cp)) { return false; }
-                        if (cp >= 0xD800u && cp <= 0xDBFFu) {
-                            // High surrogate: a low one must follow, or this is
-                            // a lone surrogate and becomes U+FFFD.
-                            if (end_ - p_ >= 2 && p_[0] == '\\' && p_[1] == 'u') {
-                                const char* save = p_;
-                                p_ += 2;
-                                std::uint32_t lo = 0;
-                                if (read_hex4(lo) && lo >= 0xDC00u && lo <= 0xDFFFu) {
-                                    cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
-                                } else {
-                                    p_ = save;
-                                    cp = 0xFFFDu;
-                                }
-                            } else {
-                                cp = 0xFFFDu;
-                            }
-                        } else if (cp >= 0xDC00u && cp <= 0xDFFFu) {
-                            cp = 0xFFFDu;
-                        }
-                        push_codepoint(cp);
-                        break;
-                    }
-                    default: return false;  // an escape JSON does not define
-                }
-                continue;
-            }
-            if (c < 0x20u) { return false; }  // raw control byte in a string
-            if (escaped) { push(c); }
-            ++p_;
-        }
-
-        if (!capture) {
-            tok.text = std::string_view{};
-            tok.too_long = false;
-            return true;
-        }
-        if (escaped) {
-            tok.too_long = scratch_over_;
-            tok.text = std::string_view(scratch_, scratch_len_);
-        } else {
-            tok.too_long = false;
-            tok.text = std::string_view(start, static_cast<std::size_t>(p_ - 1 - start));
-        }
-        return true;
-    }
-
-    // Validate a JSON number's syntax and hand back its verbatim bytes. NOTHING
-    // IS CONVERTED HERE — not even the ones this parser will later reject.
-    //
-    // Exponent notation is accepted as SYNTAX and refused as a VALUE: the token
-    // is sliced whole, and parse_scaled rejects an 'e' as BadFormat, which
-    // surfaces as BadPrice/BadQty. That is deliberate and it is the honest
-    // answer, because a price in exponent notation is a scale disagreement the
-    // declared SymbolSpec cannot hold exactly (ARCHITECTURE §4: report, never
-    // round). The book channel has never sent one in 9,932 frames; the
-    // `instrument` channel does (`1e-08`, `5e-05`), which is precisely why the
-    // syntax must scan and the value must not silently become something else.
-    bool scan_number(NumberToken& tok) noexcept {
-        if (!want()) { return false; }
-        const char* start = p_;
-        if (peek() == '-') { ++p_; }
-        if (at_end() || !is_digit(peek())) { return false; }
-        if (peek() == '0') {
-            ++p_;
-        } else {
-            while (!at_end() && is_digit(peek())) { ++p_; }
-        }
-        if (!at_end() && peek() == '.') {
-            ++p_;
-            if (at_end() || !is_digit(peek())) { return false; }
-            while (!at_end() && is_digit(peek())) { ++p_; }
-        }
-        if (!at_end() && (peek() == 'e' || peek() == 'E')) {
-            ++p_;
-            if (!at_end() && (peek() == '+' || peek() == '-')) { ++p_; }
-            if (at_end() || !is_digit(peek())) { return false; }
-            while (!at_end() && is_digit(peek())) { ++p_; }
-        }
-        tok.text = std::string_view(start, static_cast<std::size_t>(p_ - start));
-        return true;
-    }
-
-    bool scan_literal(const char* lit, std::size_t n) noexcept {
-        if (static_cast<std::size_t>(end_ - p_) < n) { return false; }
-        if (std::memcmp(p_, lit, n) != 0) { return false; }
-        p_ += n;
-        return true;
-    }
-
-    // true / false / null / string / number — anything that is not a container.
-    bool scan_scalar(bool* boolean_out = nullptr) noexcept {
-        if (!want()) { return false; }
-        switch (peek()) {
-            case '"': {
-                StringToken t;
-                return scan_string(t, /*capture=*/false);
-            }
-            case 't':
-                if (!scan_literal("true", 4)) { return false; }
-                if (boolean_out != nullptr) { *boolean_out = true; }
-                return true;
-            case 'f':
-                if (!scan_literal("false", 5)) { return false; }
-                if (boolean_out != nullptr) { *boolean_out = false; }
-                return true;
-            case 'n':
-                return scan_literal("null", 4);
-            default: {
-                NumberToken t;
-                return scan_number(t);
-            }
-        }
-    }
-
-    // Skip one value of any shape, iteratively. The container-kind stack is one
-    // uint64_t: bit k is 1 if the container at depth k is an array.
-    bool skip_value() noexcept {
-        if (!want()) { return false; }
-        if (peek() != '{' && peek() != '[') { return scan_scalar(); }
-
-        std::uint64_t kinds = 0;
-        int depth = 0;
-        const auto open = [&](bool is_array) noexcept {
-            if (is_array) { kinds |= (std::uint64_t{1} << depth); }
-            else { kinds &= ~(std::uint64_t{1} << depth); }
-            ++depth;
-            ++p_;
-        };
-
-        open(peek() == '[');
-
-        while (depth > 0) {
-            if (depth > kMaxSkipDepth) { return false; }
-            if (!want()) { return false; }
-            const bool in_array = (kinds & (std::uint64_t{1} << (depth - 1))) != 0;
-
-            // An empty container, or the end of a populated one.
-            if ((in_array && peek() == ']') || (!in_array && peek() == '}')) {
-                ++p_;
-                --depth;
-                if (depth > 0) {
-                    if (!want()) { return false; }
-                    if (peek() == ',') { ++p_; }
-                }
-                continue;
-            }
-
-            if (!in_array) {
-                StringToken key;
-                if (!scan_string(key, /*capture=*/false)) { return false; }
-                if (!eat(':')) { return false; }
-            }
-
-            if (!want()) { return false; }
-            if (peek() == '{' || peek() == '[') {
-                open(peek() == '[');
-                continue;
-            }
-            if (!scan_scalar()) { return false; }
-            if (!want()) { return false; }
-            if (peek() == ',') { ++p_; }
-        }
-        return true;
-    }
-
-    // ---- key classification -------------------------------------------------
-    //
-    // Compared as views against literals rather than hashed or interned: the key
-    // set is six long and a memcmp of a 7-byte string is cheaper than any of the
-    // alternatives on an LX7.
-
-    static bool key_is(const StringToken& k, std::string_view lit) noexcept {
-        return k.text == lit;
-    }
-
     // ---- the frame grammar --------------------------------------------------
 
     ParseStatus scan_top_object() noexcept {
@@ -503,12 +202,6 @@ private:
     ParseStatus finish(FrameKind k) noexcept {
         out_.kind = k;
         return ParseStatus::Ok;
-    }
-
-    static std::size_t copy_small(char* dst, std::size_t cap, std::string_view src) noexcept {
-        const std::size_t n = src.size() < cap ? src.size() : cap;
-        for (std::size_t i = 0; i < n; ++i) { dst[i] = src[i]; }
-        return n;
     }
 
     // The subscribe ack's `result` object: only `depth` is read. `channel`,
@@ -709,14 +402,9 @@ private:
         }
     }
 
-    const char* p_;
-    const char* end_;
     const SymbolConfig& cfg_;
     KrakenFrame& out_;
     ParseStatus status_ = ParseStatus::Ok;
-    char scratch_[kMaxTokenChars]{};
-    std::size_t scratch_len_ = 0;
-    bool scratch_over_ = false;
 };
 
 }  // namespace
