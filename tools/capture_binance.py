@@ -580,6 +580,16 @@ def selfcheck() -> int:
                 failures.append("a failed fetch recorded a body")
             if "error" not in r.wrapper["req"]:
                 failures.append("a failed fetch recorded no error")
+            # BOTH ENDS OF THE ROUND TRIP SURVIVE A FAILURE (M5 stage B2).
+            # `sent_ns` is stamped before the try and `recv_ns` after it, on
+            # every path -- so a fetch that failed still says how long it took
+            # to fail. `binance_frame_economics.py --selfcheck` ASSERTS that
+            # over the committed corpus, and the corpus contains no failed
+            # fetch, so without this case that assertion would be a rule nobody
+            # had checked against the one record shape that could break it.
+            for stamp in ("sent_ns", "recv_ns"):
+                if stamp not in r.wrapper["req"]:
+                    failures.append(f"a failed fetch recorded no req.{stamp}")
 
     # The pong must have gone back with the ping's own payload, observed at the
     # server rather than inferred from our own record.

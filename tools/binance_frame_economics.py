@@ -246,6 +246,10 @@ def measure(trace: Path) -> tuple[dict, dict]:
 
     streams: dict[str, StreamStats] = {}
     rest_ok = rest_fail = 0
+    # BOTH ENDS OF THE ROUND TRIP, COUNTED. See selfcheck() for why this is an
+    # assertion over the corpus rather than a pinned figure.
+    rest_stamped = 0
+    rest_seen = 0
     rest_ids: list[tuple[int, int]] = []   # (rx_ns, lastUpdateId)
     rest_levels: list[int] = []
     controls: Counter[str] = Counter()
@@ -263,6 +267,10 @@ def measure(trace: Path) -> tuple[dict, dict]:
                 ping_latencies_ms.append((ctl["pong_ns"] - ctl["recv_ns"]) / 1e6)
             continue
         if rec.kind == "rest":
+            req = rec.wrapper.get("req", {})
+            rest_seen += 1
+            if "sent_ns" in req and "recv_ns" in req:
+                rest_stamped += 1
             if rec.frame is None or "lastUpdateId" not in rec.frame:
                 rest_fail += 1
                 continue
@@ -306,6 +314,8 @@ def measure(trace: Path) -> tuple[dict, dict]:
         "header_bytes": sum(s.header_bytes for s in streams.values()),
         "rest_ok": rest_ok,
         "rest_fail": rest_fail,
+        "rest_seen": rest_seen,
+        "rest_stamped": rest_stamped,
         "rest_levels_each": rest_levels[0] if rest_levels else 0,
         "rest_ids": rest_ids,
         "controls": dict(controls),
@@ -503,8 +513,30 @@ def selfcheck(traces: list[Path]) -> int:
             if got.get(k) != v:
                 print(f"  {t.name}: {k} = {got.get(k)}, pinned {v}   MOVED")
                 failures += 1
+        # BOTH ENDS OF EVERY REST ROUND TRIP, ASSERTED RATHER THAN PINNED
+        # (M5 stage B2). `req.recv_ns` is what stage A set `event_ns` from and is
+        # named in ARCHITECTURE 9; `req.sent_ns` is not named anywhere, and a
+        # round trip needs both. B2 counted them and found 35 of 35 present
+        # across the committed corpus -- so the honest thing is not to celebrate
+        # the count but to make it impossible to lose quietly, because a fetch
+        # schedule that cannot be replayed is a fetch schedule that cannot be
+        # covered.
+        #
+        # NOT A PINNED FIGURE, DELIBERATELY. A `rest_stamped` column would mean
+        # adding a key to all eleven existing rows, and this table's first rule
+        # is ADD ROWS ONLY -- a table-wide edit is exactly the regeneration it
+        # forbids. An invariant over every row does not need a per-row number.
+        if summary["rest_stamped"] != summary["rest_seen"]:
+            missing = summary["rest_seen"] - summary["rest_stamped"]
+            print(f"  {t.name}: {missing} of {summary['rest_seen']} REST records "
+                  f"are missing req.sent_ns or req.recv_ns -- the round trip is "
+                  f"not measurable from this file, so the re-snapshot schedule "
+                  f"sized against it cannot be replayed (M5 stage B2)")
+            failures += 1
         if all(got.get(k) == v for k, v in want.items()):
-            print(f"  {t.name}: OK ({len(want)} figures)")
+            print(f"  {t.name}: OK ({len(want)} figures, "
+                  f"{summary['rest_stamped']}/{summary['rest_seen']} REST round "
+                  f"trips fully stamped)")
     print(f"selfcheck: {checked - failures}/{checked} pinned figures reproduced")
     return 1 if failures else 0
 
