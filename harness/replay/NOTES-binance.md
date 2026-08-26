@@ -788,6 +788,24 @@ and it reproduces stage 0's live figures:
 
 **B2 does not need a live run to size the re-snapshot schedule.**
 
+> **THESE ARE THE ROUND-TRIP NUMBERS. THE SECTION BELOW HAS A DIFFERENT PAIR AND
+> THEY ARE ONE PARAGRAPH APART.** (Marker added M5 stage B2, because the wrong pair
+> is the more memorable one.)
+>
+> `recv_ns − sent_ns` is **how long the venue took to answer** — a property of the
+> venue and the path, present on the board, and the only one of the two that may
+> appear in the shipped client's margin.
+>
+> `rx_ns − recv_ns` — the next section — is **how late the capture tool wrote the
+> record down**, because it flushes when the next message arrives. **The board
+> writes no trace file**, so that number cannot be a term in anything the board
+> does. It is a *slicing* constraint and nothing else.
+>
+> This is the third appearance of §9's oldest drift shape — *a record's `rx_ns` is
+> not the instant it describes* (2026-08-07, and again at M5 stage A). The first
+> two were caught in code. This one would be caught in a quotation, which is why
+> the marker is here rather than in a commit message.
+
 ### The REST lag has a two-order-of-magnitude tail, and it is B2's single most important input
 
 **Stage A said a REST record lands "~1–1.5 s after the instant it describes". Measured
@@ -810,6 +828,30 @@ on precisely the pair where the book is thinnest and the walk is hardest to boun
 
 The tail is a property of the *quiet* pair rather than the busy one, which is the opposite
 of where a byte-budget intuition would look for it.
+
+> **THIS PAIR IS FOR CUTTING SLICES. IT IS NOT THE MARGIN.** (Marker added M5 stage
+> B2, and the heading above it was wrong about which input it was.)
+>
+> The heading calls 439 ms / 42,721 ms *B2's single most important input*, and B2
+> found it is the input to **section 1 and to nothing else**. `rx_ns − recv_ns` is
+> the interval between the venue answering and **the capture tool getting round to
+> writing the record down** — it flushes when the next message arrives, so on a
+> pair that goes quiet the record can land 42 s after the instant it describes, and
+> on a stream that goes *silent* it lands at end of capture. The corpus maximum is
+> now **48,969 ms**, from `binance_btcusdt_DEFECT_silent_stream_20260826`, where
+> there was no next message at all — which is the mechanism stated as plainly as it
+> can be.
+>
+> **The board writes no trace file.** There is no flush schedule on the board, so
+> this quantity does not exist there and cannot be a term in the shipped client's
+> re-snapshot margin. Sizing that margin against 42,721 ms would be sizing the
+> firmware against `capture_binance.py`.
+>
+> The paragraph above is still right about everything except whose input it is: the
+> book IS unbracketed for the whole of a fetch, and a slice cut without allowing for
+> this lag loses the diffs that bring its snapshot forward. Section 1 needs the max.
+> The margin needs the section above's round trip — and, as it turns out, not even
+> that: see the B2 addendum, *the round trip has no tail worth sizing against*.
 
 ### Known unknown 1 — a misspelled stream is a healthy, silent, ping-answering socket
 
@@ -861,3 +903,412 @@ What it lacks is a *planted* one: a `--mutant` mode of its own. The three mutant
 against it by hand at B1 (qty-0-not-a-removal, sides-swapped, book-bounded-at-256 — each
 takes 235 matched to 0), and automating them wants a second link configuration, which is
 the `dc_tests_streaming` shape and a stage of its own.
+
+---
+
+## Addendum — M5 stage B2, 2026-08-26: the seed, the walk, and the schedule
+
+B1's addendum is what the adapter found. This is what the **schedule** found, and the
+first thing it found is that the instrument B1 built for this stage measures a different
+quantity from the one its own comment describes. Same rule as always: **the notes win**,
+because they were measured.
+
+### The ruling's evidence is in the repository, and it was committed WHOLE
+
+`binance_btcusdt_mixed{1,2}_20260825` are now committed — byte-for-byte the captures the
+2026-08-25 audit-stream ruling was signed on, not windows cut out of them. Both reproduce
+the ruling's figures exactly, in two implementations:
+
+| | partial payloads | `lastUpdateId == some diff u` | oracle (a), honest | `U`/`u` |
+| --- | ---: | ---: | --- | --- |
+| `mixed1` | 90 | **90 (100.0%)** | **88/88 GREEN** | 888/888 clean |
+| `mixed2` | 90 | **90 (100.0%)** | **88/88 GREEN** | 890/890 clean |
+
+`dc_binance_oracle` — the real C++ adapter — grades **88 matched / 0 failed / 2
+unverifiable** on both, the same 88 as `tools/binance_oracle.py`. The 2 are the partial
+payloads that arrive before the seed lands, which the Python tool skips rather than
+counting; that is the documented `seen` difference and not a disagreement.
+
+**Why whole and not sliced, since every other Binance file is a slice.** The clause being
+discharged says the ruling's figures are *"the one set of numbers in this table with no
+committed trace behind them"*. Cut a 40 s window out of each and the numbers that come back
+are 40/40 and 38/38 — which evidence a weaker claim than the one the ruling was taken on,
+so the row would have to be amended to fit the artefact rather than the artefact supplied
+to satisfy the row. **A guard trace pins a BEHAVIOUR and should be cut to the smallest
+window that exercises it** (M4 stage 0's capture recipe). **A ruling's evidence pins a
+DECISION and cannot be cut at all**, because the figure is a rate over a complete capture.
+Two categories, two slicing rules; the corpus had never carried the second. Recorded in
+ARCHITECTURE §9 and in the taxonomy rows for these two files, so a future stage looking for
+a mixed-cadence *guard* trace cuts a new one from `_local/` rather than re-cutting these.
+
+The cost was priced before it was accepted rather than after: **gzip −9 makes the two
+1,905,142 B and 1,426,098 B captures 246,677 B and 178,652 B**, so committing them whole
+costs the pack about 425 KB against about 199 KB for 40 s slices. A quarter of a megabyte,
+in a tree that already carries `anvil_101_baseline_20260809` at 10.4 MB raw. And the ≤900 KB
+"convention" was not one: both ATOMEUR files are already byte-identical to their `_local`
+originals, which was checked rather than assumed.
+
+They also survive their own writer's contract: `slice_trace.py --mode baseline --window 120
+--require-baseline` accepts both and emits a **byte-identical** file, so committing them
+whole is not a way of dodging the guard that exists because a window cut *at* a baseline
+record took the oracle from 884/884 green to 250/250 red. **And the mixed-cadence
+coincidence question does not arise:** nothing was cut, which is the answer and the reason.
+
+Both were mutation-verified **before** being pinned — honest GREEN, 3/3 mutants exercised
+and RED, the asserted no-op still a no-op — and both joined `binance_oracle_mutants`. That
+closes a gap in the mutant suite nobody had named: **every previous witness runs `@depth20`
+at 100 ms, and the board runs it at 1000 ms.** Until this stage, no mutant had ever been run
+at the cadence the shipped configuration will actually use.
+
+### B1's low-water mark is not the seeded-window edge, and the difference is the whole trigger
+
+B1 built `min_bid_levels` / `min_ask_levels` and described them as showing the seeded-window
+edge — *when the market walks far enough that the rendered window approaches the edge of
+what the seed contained, this is where it shows*. The description names the right quantity.
+The counter is a different one, and on the two committed captures where the failure class
+actually happens it reads perfect health:
+
+| capture (`limit=100`) | low-water HELD | low-water COVERED | oracle |
+| --- | ---: | ---: | --- |
+| `binance_btcusdt_d1000ms_20260824` | 100 / 100 | **0** / 103 | RED (28/32) |
+| `binance_btcusdt_reconnect_20260824` | 100 / 100 | **0** / 63 | VACUOUS |
+
+**A count of levels HELD cannot fall**, because every diff that retires a level near the
+touch arrives alongside others adding prices the seed never contained. It bottoms out at the
+seed depth and stays there. A trigger on it is a trigger that never fires.
+
+What erodes is **coverage**. A `/api/v3/depth` body is a complete picture of one price
+*range* — from the touch down to its worst bid, up to its worst ask. Inside that range the
+book stays complete for ever, because every later change arrives as a diff. Outside it the
+client is permanently ignorant: a resting order that predates the seed and is never restated
+never enters the diff stream. So
+
+```
+seeded coverage (bids) = held bids at px >= the seed's worst bid
+seeded coverage (asks) = held asks at px <= the seed's worst ask
+```
+
+and when that falls below the emitted depth, the ladder is drawing rows from the region
+nobody ever told us about. On the reconnect capture the bid side goes from 100 to **0 in
+1.2 seconds** — the best bid fell $21.99 while the seed's floor was $15.68 below it — which
+is **faster than a single REST round trip**. Both counters are kept and `dc_ladder` prints
+them one line apart, because deleting a counter whose reading turned out to mean something
+else is how the next reader repeats the mistake.
+
+Coverage falls for two reasons and both are real losses of knowledge: the touch walking
+toward a seeded boundary, and the 1,024-slot ladder evicting covered levels to make room for
+better ones. The second is a storage bound rather than a market fact and `levels_evicted`
+is beside it on the same report.
+
+### Sizing the margin — and the round trip has no tail worth sizing against
+
+The brief asked for `margin ≥ walk rate × p99 fetch latency`. **The p99 is not the right
+instrument and the corpus does not need to supply one.** Measured over every committed REST
+record after this stage — 36 of them, every one carrying both `req.sent_ns` and
+`req.recv_ns`:
+
+| tier | n | min | median | max | max/median |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `limit=100` | 23 | 958.0 ms | **1,009.4 ms** | 1,063.0 ms | **1.053** |
+| `limit=1000` | 13 | 973.0 ms | **1,503.1 ms** | 1,590.7 ms | **1.058** |
+
+Two tiers, ~5% spread both times. Choosing the max over the median moves the margin by
+87.6 ms — $0.029 of BTCUSDT walk against a $224.52 seeded window, **0.013% of it**. So the
+finding is not a percentile: **the round trip has no tail worth sizing against on this
+path.**
+
+**AND EVERY ONE OF THOSE 36 IS A DESK-BOX MEASUREMENT.** Wired ethernet, CPython, urllib.
+The board is an ESP32-S3 on Wi-Fi doing TLS, and M4 stage B3 measured DNS failures on that
+platform at a flat **14,000 ms**. A desk figure must never stand as the board's, which is
+exactly the trap the 439 ms figure set one section earlier. So the margin is sized against a
+**deadline the transport imposes**, not against a latency anybody measured:
+
+```
+margin  >=  walk rate  x  T          T = kBinanceFetchDeadlineMs = 15,000 ms
+```
+
+A fetch that exceeds T is abandoned and retried. That covers **100% of fetches by
+construction** rather than 99% of a sample of 36, and it converts an unbounded unbracketed
+window into a bounded one — where invariant #5 draws its line, and the same move B1's
+remedies (a) and (b) both make. **T is a required property of the transport**; the adapter
+has no clock and issues no fetch. Recorded in ARCHITECTURE §9; implementing it is C/D's.
+
+**Why 15 s.** `tools/capture_binance.py` already runs this exact fetch on a 15 s cadence
+behind `REST_DRAIN_TIMEOUT_S = 20`, so it is a value with an implementation behind it rather
+than a fresh guess — and it survives the sanity check against the window it protects. At
+BTCUSDT's measured $0.33/s walk, `limit=1000`'s $224.52 is ~677 s of walking and 15 s is
+**2.2%** of it; `limit=100`'s $15.63 is ~47 s and 15 s is **32%**. That is an independent
+argument for `limit=1000` arriving from the schedule rather than from the depth sweep.
+
+**The walk rate, in the units the trigger counts.** Worst loss of seeded coverage over any
+window of 15 s or less, across all nine BTCUSDT and ATOMEUR captures:
+
+| window | worst coverage lost |
+| ---: | ---: |
+| 1.5 s | 154 levels |
+| 5 s | 154 |
+| **15 s** | **168** |
+| 30 s | 168 |
+
+It is **burst-dominated, not smooth**: the single worst event is one 100 ms tick in
+`deepseed` that took the best bid down $15.99 and removed **135 covered levels at once**, so
+a mean rate would understate it by an order of magnitude and the max is the honest term.
+
+```
+margin    = 192 levels    (168 measured, +14% because 168 is a max over nine captures
+                           on two pairs on two days — a sample, not a distribution, in
+                           the same market whose depth requirement moved 5x in an hour)
+threshold = kBinanceEmitDepth + margin = 256 + 192 = 448 covered levels
+```
+
+The floor is the **emitted** depth rather than the panel's 25 rows, because 256 is what the
+engine holds and a window policy chooses among them; sizing to 25 would be sizing to today's
+window policy.
+
+**What it costs when it is wrong, in each direction.**
+
+* **Too eager** is wire and IP weight — 5 / 25 / 50 / 250 by `limit` tier, 50 for the
+  shipped seed, against a 6,000/min budget — and the venue **bans on breach**. The adapter
+  latches once per seed epoch and cannot do more, because it has no clock; **bounding the
+  seeds is the transport's**, and is recorded beside T as the second required property.
+* **Too late** is the 82.4% failure class stage 0 measured at `limit=100`: a clean `U`/`u`
+  sequence over a book that is wrong, with nothing in the client saying so.
+
+**And the trigger cannot rescue a seed that never satisfied its own margin.** A 100-level
+seed is below the 448 threshold on arrival, and re-fetching would return the identical
+shortfall at 50 weight a time — so the adapter does not arm the trigger for that epoch, it
+counts `seeds_below_margin` and reports the coverage collapsing anyway. On BTCUSDT at
+`limit=100` that fires **on arrival**, about a minute before the book actually goes wrong,
+which is the 82.4% failure caught at the seed rather than at the ladder. On ATOMEUR it fires
+because the venue's whole book is 16 bids deep and nothing is wrong at all — the adapter
+cannot tell those apart, because it does not know what `limit` was asked for, **and it does
+not need to: the response is the same either way.** Whoever holds the request can tell.
+
+Measured across the corpus, with the trigger at 448:
+
+| capture | seed | low-water coverage | trigger |
+| --- | --- | ---: | --- |
+| `btcusdt_deepseed` | 1000 | 888 / 923 | armed, never fired |
+| `btcusdt_deepseed2` | 1000 | 981 / 922 | armed, never fired |
+| `btcusdt_mixed1` | 1000 | 834 / 811 | armed, never fired |
+| `btcusdt_mixed2` | 1000 | 771 / 973 | armed, never fired |
+| `atomeur_deepseed` | 1000 | 14 / 304 | not armed (venue's book is 16 deep) |
+| `btcusdt_d100ms` | 100 | 97 / 99 | not armed |
+| `btcusdt_d1000ms` | 100 | **0** / 103 | not armed |
+| `btcusdt_reconnect` | 100 | **0** / 63 | not armed |
+| `atomeur_d100ms` | 100 | 12 / 100 | not armed |
+
+**No committed capture exercises the firing path, and that is a fact about the corpus rather
+than a gap in it**: every `limit=1000` seed stays at 771 or better and every `limit=100` seed
+is below its margin on arrival. The crossing is synthesised in `test_binance_adapter.cpp`,
+which is §9's 2026-08-18 rule as written — where the code and every available file agree,
+synthesise the input that discriminates. Three mutants were applied and each was caught.
+
+### A re-snapshot on a live book: measured, not adopted
+
+B1 discarded these in silence; B2 counts them, and measures the thing D needs before it can
+choose a re-seed mechanism. Adopting a body wholesale rewinds the book to the instant it
+names. Rolling it forward instead needs the diffs it is behind by — and buffering those for
+the whole of a 15 s deadline is ~150 events / ~8,200 levels, **about 128 KiB**, against the
+pre-seed buffer's measured worst case of 15 events / 823 levels. So the three candidates are
+a 128 KiB buffer, a `Gap` and a grey flash, or a live-book merge; the choice costs board
+memory (**D's**) and a rendered state (**C's**), and *the board's re-seed behaviour is D*.
+
+Adopting is **loss-free** whenever the body is not older than the book, and that is measured
+two ways — against the stream at the record's position in the file, and against the stream at
+`req.recv_ns`, which is the board's position. **Both agree on every capture**, so the answer
+is not an artefact of the capture tool's flush schedule:
+
+| | fetches on a live book | loss-free to adopt | worst deficit |
+| --- | ---: | ---: | ---: |
+| `limit=1000`, BTCUSDT | 7 | **0** | 783 update-ids |
+| `limit=100`, any pair | 18 | **18** | 0 |
+| `limit=1000`, ATOMEUR | 1 | **1** | 0 |
+
+**And the discriminator is not the round trip.** Locating `lastUpdateId` between the stream
+at `sent_ns` (0.0) and at `recv_ns` (1.0):
+
+| tier | position of the snapshot's instant within the round trip |
+| --- | --- |
+| `limit=100` | **1.00** on every fetch — the body names the instant it was received |
+| `limit=1000` | **0.21 – 0.86**, median ~0.76 |
+
+So **the deeper the seed, the older it is when it lands**: at `limit=1000` the venue
+snapshots the book roughly three quarters of the way through the round trip and spends the
+rest serialising and shipping ~120 KB. That is a cost of `limit=1000` nobody had priced, it
+is why the pre-seed buffer is not optional, and it says a `limit=1000` re-snapshot is a
+statement about an instant ~370 ms in the past — never about now.
+
+### What a scheduled re-snapshot does to every capture this project takes
+
+M4 stage 0 left a paragraph for whoever met a **scheduled** healing event. This is it.
+
+At Anvil and Kraken a healing event is an *incident*: a socket drops, a resync arrives, and
+a capture window that contains none is the normal case — which is why the recipe reads
+*liquid pair, shallowest depth, no healing event in the committed window*. **At Binance the
+re-snapshot IS the healing event**, and once the client re-seeds on its own trigger the
+healing event becomes **constant rather than incidental**.
+
+Three consequences, and they are not hypothetical — the corpus already shows them, because
+`capture_binance.py --snapshot-every` has been producing scheduled re-snapshots since stage 0
+and every Binance row in the taxonomy reads `resyncs = the REST fetch count`:
+
+1. **A Binance capture with no healing event in the window stops existing** at any depth
+   where the trigger can fire. It can still be *made* to exist, by fetching once at connect
+   and never again — `--snapshot-every 0`, which is exactly how this stage's own calibration
+   capture was taken — but that is a client behaving differently from the shipped one.
+2. **So a Binance guard trace is one of two things, and it has to say which.** Either it is
+   captured with the trigger disabled and is a trace of a client that does not re-seed — in
+   which case the healing path is not covered by it and something else must cover that — or
+   it contains re-seeds and cannot also be the control for a defect that a re-seed would
+   heal. There is no third file that is both.
+3. **The fidelity cost of option one is real and belongs here rather than in a footnote.** A
+   trace taken with the re-snapshot trigger disabled is a trace of a book that was allowed to
+   decay past the point the shipped client would have acted — which is precisely what
+   `binance_btcusdt_d1000ms` and `binance_btcusdt_reconnect` are, and precisely why they
+   grade RED and VACUOUS. Those two are *useful* as decay witnesses and are **not** witnesses
+   for anything the shipped client does. The corpus should keep saying so.
+
+The recipe therefore gains a line at this venue: **state the seed depth and the re-snapshot
+cadence in the filename or the taxonomy row**, because at Binance they are not capture
+settings, they are the client under test.
+
+### Section 5 — `age_ms` at this venue, measured through a throttled replay
+
+The Kraken twin settled queue-versus-shed by measurement rather than carrying an assumption
+into M5. Same move here, and the answer is **two answers**, which is the part the hypothesis
+did not have.
+
+`dc_age_probe` replays a committed trace, injects a backlog it therefore knows exactly —
+which is what `anvil_freshness_probe.py` needed two sockets to obtain — and reports what the
+real `AgeEstimator` makes of it. At 25% of the broadcast rate, throttled only after the
+baseline has latched on clean stream:
+
+| trace | socket backlog | feed backlog |
+| --- | --- | --- |
+| `binance_atomeur_d100ms_liveness_20260826` | **TRACKS** — 1,797.1 s read against 1,796.8 s injected, 1.00× | **BLIND** — 0.3 s peak through the same 1,797 s |
+| `anvil_101_baseline` (control) | TRACKS — 382.4 s against a 384.4 s window ceiling, 0.99× | BLIND — 0.5 s |
+| `kraken_btcusd_d25_20260816` (control) | TRACKS — 765.2 s against a 768.1 s ceiling, 1.00× | BLIND — 0.1 s |
+
+**The hypothesis is CONFIRMED, and its scope was wider than the thing it is true of.** §9's
+stage-B1 row predicted `age_ms` reads approximately zero through an arbitrarily large
+backlog at Binance. It does — through a **feed** backlog. It does not through a **socket**
+backlog, and the reason is the mechanism the row itself names: the ping is a WebSocket
+control frame on the same TCP stream as the depth frames, so a socket that cannot be drained
+delays it by exactly the same amount and the deficit appears normally.
+
+So the correct statement is narrower and more useful than "the meter is broken here":
+
+* **A socket backlog** — this client or the path to it cannot drain the wire. Physical at all
+  three venues, and the meter reads it at all three.
+* **A feed backlog** — the venue's publisher falls behind, or the subscription stops, while
+  the WebSocket layer keeps its 20 s timer. **Physical at Binance and NOT CONSTRUCTIBLE at
+  Anvil or Kraken**, where the subsystem that emits the liveness record is the subsystem that
+  emits the book. The meter is blind to it everywhere; Binance is the first venue where
+  "everywhere" includes a state the venue can actually be in.
+
+The Anvil and Kraken columns are in the pin as controls, not as findings — a probe that only
+ever printed BLIND would be a probe that had stopped working. Their socket figures land at
+0.99× and 1.00× of the **documented window ceiling** rather than of the injected lag, and the
+ceiling is computed from `age_estimator.hpp`'s own formula: that header's worked table says
+384 s at Anvil and 768 s at Kraken for a 25% drain, and the probe independently reads 382.4 s
+and 765.2 s. Binance's 20 s cadence puts its ceiling at 15,332 s, far above the injected lag
+— the one thing the slow ping buys.
+
+Mutation-verified: replacing the baseline term in the deficit with the rolling elapsed term —
+the exact mistake `age_estimator.hpp`'s header argues at length against — turns all three
+socket columns BLIND and `--check` red.
+
+**AND A FINDING THAT ARRIVES BEFORE EITHER MODE DOES, WHICH NOTHING HAD NAMED.** The age
+baseline latches on the `kBaselineSamples` = 32nd interval. At Anvil that is **16 s** and at
+Kraken **32 s**. At Binance's 19,964 ms ping cadence it is **639 s after the first ping, so
+about eleven minutes after connect** — during which the panel's age meter reads `-`, not
+because anything is wrong but because the mechanism has not started. That is a 20–40×
+regression of the same shape the ruling already accepted for grey latency, and it had not
+been written down anywhere. **C's**, with the threshold work.
+
+The probe's arrival cadence is measured from the committed trace; its **length** is
+synthesised at that measured median, because no capture reaches 639 s and taking an
+eleven-minute one to watch a metronome would be paying for a number the cadence already
+gives. The report says how many arrivals were real and how many were not, on the same line as
+the verdict.
+
+### Two captures the later stages could not proceed without
+
+**`binance_atomeur_d100ms_liveness_20260826`** — 221 s, quiet pair, single-stream, one
+opening seed at `limit=100`, `snapshot_every_s: 0`, total IP weight **5**. 20,604 bytes.
+**11 pings, 10 intervals**, against `kMinSamples`' 8 — so this is the first committed trace
+at any venue that lets the host suite **enter the self-calibrated liveness branch at
+Binance**, which C has to tune. Before it, every slice ran on `kUncalibratedThresholdMs` and
+the branch was dead code as far as ctest was concerned.
+
+Ping intervals: 19,957.0 / 20,057.6 / 19,963.3 / 19,974.7 / 20,062.8 / 19,956.9 / 19,964.0 /
+20,068.0 / 19,977.5 / 19,962.6 ms. Median **19,964.0**, worst/median **1.005** — tighter than
+the 1.01× stage A measured over four, and the tightest cadence of the three venues by a
+distance.
+
+**What it calibrates to is inert, and that is now asserted rather than observed.** 4 ×
+19,964.0 = 79,856 ms clamps to `kThresholdCeilingMs` = 30,000, which is the identical number
+`kUncalibratedThresholdMs` already held — so calibrating changes the threshold by exactly
+zero. `test_binance_adapter.cpp` asserts the inertness in the form that C's change will
+break: raise the ceiling or drop the multiplier below ~1.5 and the test goes red and has to
+be rewritten deliberately. A test that merely reported 30,000 ms would stay green through
+either change and say nothing. `ReplayResult::liveness_calibrated` exists for the same
+reason — at this venue `threshold_ms` **cannot** distinguish calibrated from uncalibrated,
+so a test asserting on it would be a test that cannot fail.
+
+It also carries a **26,807.8 ms** book silence with the ping keeping 19,957–20,068 ms time
+straight through it: the Binance twin of Kraken's MINA/GBP 25,843 ms hole, and the same
+verdict — market information, not the book's age, and never a grey signal.
+
+**`req.sent_ns` — answered, and then guarded.** Present on **36 of 36** committed REST
+records along with `req.recv_ns`, so nothing was owed and nothing was fixed. What was added
+is a corpus-wide assertion in `binance_frame_economics.py --selfcheck`: a REST record missing
+either stamp fails the build, because a fetch schedule that cannot be replayed is a fetch
+schedule that cannot be covered. It is an assertion rather than a pinned column deliberately
+— a `rest_stamped` figure would mean editing all eleven existing rows, and that table's first
+rule is add rows only.
+
+### Found at review: the cadence figures in this file came from the wrong median
+
+**`sample_window.hpp` says the median convention "matters enough to have one home" — a
+lower median by nearest rank, because an interpolated one invents an interval that never
+occurred on the wire. `harness/src/trace.cpp`'s statistics pass carries a second copy and
+interpolates.** `LivenessClock` and `AgeEstimator` use the shared rule; `dc_replay`'s
+report line does not, and it is `dc_replay`'s number that has been quoted.
+
+| trace | intervals | the clock (`lower_median`) | the report (interpolated) |
+| --- | ---: | ---: | ---: |
+| `anvil_101_baseline` | 180 | 500.1 ms | 500.1 ms |
+| `kraken_*` (all four) | 59–95 | — agree to 0.1 ms — | |
+| `binance_atomeur_d100ms_20260824` | 4 | 19,947.7 | **19,951.7** |
+| `binance_atomeur_deepseed_20260824` | 4 | 19,962.8 | **20,011.6** |
+| `binance_btcusdt_d1000ms_20260824` | 2 | 19,973.9 | **20,013.3** |
+| `binance_btcusdt_DEFECT_silent_stream_20260826` | 2 | 19,950.6 | **20,004.8** |
+| `binance_atomeur_d100ms_liveness_20260826` | 10 | **19,964.0** | 19,969.4 |
+
+The right-hand column is what `taxonomy_pins.inc`'s Binance comment quotes
+(*19,951.7 / 20,011.6 / 20,013.3*) and what B1's session log quotes for the silent-stream
+fixture (*20,004.8*). **So the cadence recorded for this venue is not the cadence the clock
+on the board computes.** At Anvil and Kraken the two agree, because those cadences are flat
+— the coincidence class again, and the reason this survived three milestones.
+
+It is ~5 ms at worst and changes no decision. What it costs is the property
+`sample_window.hpp` asserts outright: that a C++ figure and a Python figure over the same
+trace are comparable, *"which is how several of this project's numbers have been checked"*.
+On the report path that is false today.
+
+**Recorded, not fixed, and the reason is scope rather than reluctance.** `median_gap_ms`
+shares the same code path, and its figures are quoted across `NOTES.md`, `NOTES-kraken.md`,
+this file and a dozen briefs — so adopting the shared convention is a documentation sweep,
+not a line change, and doing it at the end of an evening in a stage about the re-snapshot
+schedule is how a correction becomes the next silent drift. Pinned meanwhile by
+`test_binance_adapter.cpp`'s two-conventions case, which must be **inverted** when the fix
+lands. ARCHITECTURE §9, 2026-08-26.
+
+**How it was found, which is the part worth keeping.** `dc_age_probe` was written with its
+own interpolated median and quoted 19,969.4 ms as this venue's cadence into five documents
+and one test — and the test passed, because `Approx(19969.4).epsilon(0.001)` is a relative
+tolerance spanning 19.97 ms and therefore accepts 19,964.0 as well. **A tolerance wide
+enough to accept both candidate answers is a test that cannot fail.** Every figure in the
+B2 addendum above now comes from `lower_median`.
