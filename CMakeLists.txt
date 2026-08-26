@@ -198,6 +198,14 @@ target_link_libraries(dc_replay PRIVATE dc_harness dc_engine_anvil dc_engine_kra
 add_executable(dc_ladder harness/src/dc_ladder_main.cpp)
 target_link_libraries(dc_ladder PRIVATE dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings Threads::Threads)
 
+# THE REAL ADAPTER, GRADED AGAINST THE VENUE'S OWN BOOK (M5 stage B1).
+# tools/binance_oracle.py grades a PYTHON reference and proves the oracle
+# discriminates; this grades `depthcharge::binance::BinanceAdapter`, which is the
+# book that will actually be drawn. Different question, same instrument.
+add_executable(dc_binance_oracle harness/src/dc_binance_oracle_main.cpp)
+target_link_libraries(dc_binance_oracle PRIVATE
+  dc_harness dc_engine_anvil dc_engine_kraken dc_engine_binance dc_warnings)
+
 # The record taxonomy of every committed trace, and its pin (M4 stage A).
 # It links a parser implementation only because dc_harness leaves
 # parse_anvil_frame unresolved for the replay driver; the taxonomy pass itself
@@ -572,6 +580,17 @@ unset(dc_trace_stem)
 file(GLOB DC_COMMITTED_TRACES
   ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_*.ndjson
   ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/kraken_*.ndjson)
+# THE REAL ADAPTER, GRADED (M5 stage B1). Pinned per slice rather than merely
+# required to be green: one of the seven is RED by construction -- it was
+# captured at `rest_limit: 100`, which stage 0 measured as wrong within 90 s on
+# BTCUSDT -- and a check that demanded green everywhere would have to drop that
+# slice or lie about it. Every matched count equals tools/binance_oracle.py's for
+# the same file, which is two implementations in two languages agreeing on a
+# book at every opportunity the venue gives.
+add_test(NAME binance_adapter_oracle
+  COMMAND dc_binance_oracle --check ${DC_BINANCE_TRACES})
+set_tests_properties(binance_adapter_oracle PROPERTIES TIMEOUT 300)
+
 add_test(NAME trace_taxonomy_selfcheck
   COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES} ${DC_BINANCE_TRACES})
 set_tests_properties(trace_taxonomy_selfcheck PROPERTIES TIMEOUT 300)
