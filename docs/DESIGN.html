@@ -374,7 +374,7 @@
     <span class="status green">host gate <b>ctest green</b></span>
     <span class="status green">M3 <b>done 2026-08-16 — live Anvil on the panel</b></span>
     <span class="status green">M4 <b>done 2026-08-24 &mdash; Kraken adapter · deltas, CRC32 and the dense-window book · inherits two rules from M3: size the venue's byte rate before writing the adapter (strain 19), and put at least one criterion in the DoD that the harness cannot stage (strain 20) · <b>stage 0 done 2026-08-16</b> — the wire is priced (depth 25 = 6.12 KiB/s, a fifth of Anvil's 30.8), <code>depth: 27</code> is refused rather than rounded, and the 1000 ms watchdog is wrong here by 4.5× · <b>stage A done 2026-08-17</b> — the reader speaks two dialects: <code>venue</code> in the metadata (additive, absent = anvil), one reader dispatching to per-venue decoders with the sink shape pinned by <code>static_assert</code>s, Kraken's decoder a classifier that emits nothing, the record taxonomy pinned, and the disconnect threshold venue-declared (25 invented disconnects on the quiet pair → 0) · <b>stage A2 done 2026-08-17</b> — the age meter: <code>age_ms</code> on <code>DisplaySnapshot</code>, a sliding-window deficit against a baseline the connection measures for itself, rendered to minutes, and nothing branches on it (strain 17) · <b>stage B1 done 2026-08-18</b> — the second adapter links: decimal strings to integer ticks with no float in the path, the venue's book held and TRUNCATED in the adapter, evictions emitted as <code>Delta{qty=0}</code>, the phase-1 book taught to apply a delta (not the dense window — that is stage C), <code>run_replay</code>'s venue guard removed and the two defects it was hiding fixed, and decoder identity pinned in every Kraken golden with the dispatch mutation run and red (strain 3, strain 21)</b> · <b>stage B2 done 2026-08-18</b> — the healing path: the venue's CRC32 verified after every applied book message (<b>4,878 / 4,878</b> on the committed slices, from integer ticks, no wire text retained), a mismatch raising <code>Gap{ChecksumFail}</code> and dropping the book with a resubscribe latched for the transport, and the coverage of that check <em>stated</em> rather than inferred — it validates the top 10 levels a side and nothing below them. A resync slice captured deliberately (one connection, one unsubscribe/re-subscribe, a genuine mid-stream snapshot <b>byte-shape identical to the on-connect one</b>, so position is the only signal there is), which found a parser that read every <code>method</code> frame as a subscribe ack. And <b>Kraken QUEUES</b> — measured under a throttled socket, so <code>age_ms</code> at this venue is a lag and stands (strain 17) · <b>stage C done 2026-08-19</b> — the render window: three row policies behind one interface, compile-time selected on the board and runtime-selectable in the harness, with every §1 invariant property-tested across all three and three mutations run red. <b>The measurement reshaped the stage</b>: real books are sparse in price — one adjacent level pair in five is a single tick from its neighbour, and 25 levels span 182 ticks on BTC/USD and 6,613 on MINA/GBP — so a 27-row panel cannot be a price axis, and the two price-axis candidates were measured out of the set before being built. <b>And at the shipped depth of 25 into 27 rows all three policies are byte-identical</b>, so the choice only exists if the firmware subscribes deeper than it can draw (strain 24) · <b>stage D Part A done 2026-08-20</b> — the board that Part B benches: <code>staleness.hpp</code> and <code>kRxWatchdogMs</code> DELETED and the two clocks lifted into <code>engine/</code>, so host and target compute the book&rsquo;s age with one implementation and the panel greys on the venue&rsquo;s own liveness signal against a threshold that signal calibrates (~2 s at Anvil, ~4 s at Kraken) rather than on 1,000 ms of book silence — <b>strain 23 closed by deletion, which was always the only way it could close</b>; the firmware finally ACTS on <code>resync_wanted()</code>, so a CRC failure heals instead of greying for ever; one venue per build behind <code>DC_VENUE</code> with the Kraken image compiling, linking and pinned against the committed corpus byte for byte; and the age reaches the panel and a one-line-per-interval <code>SOAK</code> record reaches the serial log. The adversarial review found <b>three criticals, all one species</b>: a cross-task request that can be refused must be a LEVEL and not an edge, or four separate paths destroy it and the panel stays grey over a healthy heartbeating socket until a power cycle · <b>A5 ran — 1,860 s on MINA/GBP</b>, and it found the one defect no host test could: the upgrade header buffer was Anvil-sized at 512 B and Cloudflare's 101 is 1,002, so the first Kraken image never connected at all. Fixed and re-run: <b>the panel held colour through a 160,373 ms book silence</b> (criterion: 26 s) with <b>183 book silences over 1 s and zero watchdog firings</b> — the deleted 1,000 ms constant would have greyed it 183 times — and <b>three genuine CRC32 failures healed in 1.6–2.1 s each over a socket that never dropped</b>. Heap flat, threshold settled at 4,006 ms from a measured 1,001 ms heartbeat median. <b>What is still unproven is the grey TRANSITION — cutting the connection and timing it — and the soak. Both are Part B's &middot; <b>stage D Part B and the closing bench sitting done 2026-08-22/24</b> &mdash; the 25.39 h soak, the half-open case observed unprovoked (the liveness watchdog beat the transport by 141 s and 291 s), the heal/drop loop measured at 8.4&times; its own baseline, and the two rendering decisions taken by eye because no host test could take them: uninitialised is grey, and depth stays 25</b></span>
-    <span class="status amber">next <b>M5 &mdash; Binance adapter &middot; <b>stage 0 done 2026-08-24</b> &mdash; the venue publishes no checksum, so the stage's real work was inventing the oracle. It is the venue's own <code>@depth20</code> stream: its <code>lastUpdateId</code> coincides exactly with a diff <code>u</code> on <b>every payload of every complete capture (899/899, 901/901, 90/90, 29/29)</b> &mdash; a committed <em>slice</em> can hold one trailing partial that cannot be graded, and one does, which is a cut artefact chased to its line and not a venue behaviour &mdash; it grades a correct client <b>884/884</b>, and it is red against all three mutants while <b>U/u bracketing catches 0 of 3</b> &mdash; U/u detects transport loss (it caught the deliberate reconnect's 2,204 missed updates) and says nothing about book correctness. It caught an undesigned defect on its first run: seeded at the obvious <code>limit=100</code> a correct client scores <b>82.4%</b> while U/u is 890/890 clean, because 100 levels is a <b>$16 price window</b> and BTCUSDT moved <b>$29.85 in 90 s</b>. Priced: <b>22.84 KiB/s</b> for both streams at the 100 ms tick (1.3&times; / 2.5&times; headroom), 9.47 KiB/s diff-only, and the oracle costs <b>+141%</b> and is the majority of the wire. Precision is a uniform <b>8 decimals, not <code>tickSize</code></b> (202,012/202,012 entries, zero exponents, zero floats) and <code>kMaxSnapshotLevels = 256</code> <b>is not enough</b> (33/884 failures in 90 s). <b>And the constraint with teeth: Binance declares no liveness signal at all</b> &mdash; both depth streams go silent, 30 messages in 90 s on a quiet pair with a 10.5 s worst gap &mdash; so the 2026-08-17 grey ruling has nothing to arm on and M5 must either publish the venue's 20 s server PING across the &sect;4 boundary or grey by socket death alone &middot; <b>stage A done 2026-08-25</b> &mdash; <b>the two records that are not frames</b>: the trace record grew an optional <code>kind</code> (absent = <code>frame</code>), so a <b>REST body</b> can carry the request that produced it and a <b>WebSocket PING</b> can be a record at all &mdash; one widening, because <code>classify()</code> had to become answerable about a record with no frame and the <code>static_assert</code> moved with it. <code>Venue::Binance</code> lands with its decoder a <b>classifier</b> (0 FeedEvents, counted not claimed) and the driver refusing the venue by name, exactly where Kraken sat between stage A and B1. <b>All seven committed slices read end to end, none reshaped; eleven pre-existing traces byte-identical and no golden moved</b> (dc_replay's output over them differs in six lines, all Kraken, all one parenthetical, no count). <b>Strain 22 closed</b>: unmatched venue is now a hard failure in both languages. The ping is counted in a committed file for the first time &mdash; <b>17 across the seven, every one answered</b> &mdash; and its cadence reproduces stage 0's 19,970 ms from the files themselves (19,951.7 / 20,011.6 / 20,013.3 ms), which is only obtainable from <code>event_ns</code>: three pings 20 s apart share one <code>rx_ns</code>. <b>Two findings handed to C</b>: the ruling's ~80 s threshold is <b>clamped to 30 s</b> by <code>kThresholdCeilingMs</code>, and at a 20 s cadence <code>kMinSamples = 8</code> needs ~160 s so <b>no committed slice calibrates at all</b> &mdash; the two values coincide, so nothing misbehaves and the self-calibration is simply inert. And the pre-<code>48ba299</code> trailing-snapshot question is answered: <b>one of the seven lost one</b> (<code>binance_atomeur_d100ms</code>), and it costs nothing</b></span>
+    <span class="status amber">next <b>M5 &mdash; Binance adapter &middot; <b>stage 0 done 2026-08-24</b> &mdash; the venue publishes no checksum, so the stage's real work was inventing the oracle. It is the venue's own <code>@depth20</code> stream: its <code>lastUpdateId</code> coincides exactly with a diff <code>u</code> on <b>every payload of every complete capture (899/899, 901/901, 90/90, 29/29)</b> &mdash; a committed <em>slice</em> can hold one trailing partial that cannot be graded, and one does, which is a cut artefact chased to its line and not a venue behaviour &mdash; it grades a correct client <b>884/884</b>, and it is red against all three mutants while <b>U/u bracketing catches 0 of 3</b> &mdash; U/u detects transport loss (it caught the deliberate reconnect's 2,204 missed updates) and says nothing about book correctness. It caught an undesigned defect on its first run: seeded at the obvious <code>limit=100</code> a correct client scores <b>82.4%</b> while U/u is 890/890 clean, because 100 levels is a <b>$16 price window</b> and BTCUSDT moved <b>$29.85 in 90 s</b>. Priced: <b>22.84 KiB/s</b> for both streams at the 100 ms tick (1.3&times; / 2.5&times; headroom), 9.47 KiB/s diff-only, and the oracle costs <b>+141%</b> and is the majority of the wire. Precision is a uniform <b>8 decimals, not <code>tickSize</code></b> (202,012/202,012 entries, zero exponents, zero floats) and <code>kMaxSnapshotLevels = 256</code> <b>is not enough</b> (33/884 failures in 90 s). <b>And the constraint with teeth: Binance declares no liveness signal at all</b> &mdash; both depth streams go silent, 30 messages in 90 s on a quiet pair with a 10.5 s worst gap &mdash; so the 2026-08-17 grey ruling has nothing to arm on and M5 must either publish the venue's 20 s server PING across the &sect;4 boundary or grey by socket death alone &middot; <b>stage A done 2026-08-25</b> &mdash; <b>the two records that are not frames</b>: the trace record grew an optional <code>kind</code> (absent = <code>frame</code>), so a <b>REST body</b> can carry the request that produced it and a <b>WebSocket PING</b> can be a record at all &mdash; one widening, because <code>classify()</code> had to become answerable about a record with no frame and the <code>static_assert</code> moved with it. <code>Venue::Binance</code> lands with its decoder a <b>classifier</b> (0 FeedEvents, counted not claimed) and the driver refusing the venue by name, exactly where Kraken sat between stage A and B1. <b>All seven committed slices read end to end, none reshaped; eleven pre-existing traces byte-identical and no golden moved</b> (dc_replay's output over them differs in six lines, all Kraken, all one parenthetical, no count). <b>Strain 22 closed</b>: unmatched venue is now a hard failure in both languages. The ping is counted in a committed file for the first time &mdash; <b>17 across the seven, every one answered</b> &mdash; and its cadence reproduces stage 0's 19,970 ms from the files themselves (19,951.7 / 20,011.6 / 20,013.3 ms), which is only obtainable from <code>event_ns</code>: three pings 20 s apart share one <code>rx_ns</code>. <b>Two findings handed to C</b>: the ruling's ~80 s threshold is <b>clamped to 30 s</b> by <code>kThresholdCeilingMs</code>, and at a 20 s cadence <code>kMinSamples = 8</code> needs ~160 s so <b>no committed slice calibrates at all</b> &mdash; the two values coincide, so nothing misbehaves and the self-calibration is simply inert. And the pre-<code>48ba299</code> trailing-snapshot question is answered: <b>one of the seven lost one</b> (<code>binance_atomeur_d100ms</code>), and it costs nothing &middot; <b>stage B1 done 2026-08-25</b> &mdash; <b>the third adapter, graded on day one</b>: `dc_binance_oracle` drives the REAL adapter over every committed slice and compares its ladder against the venue's own <code>@depth20</code>, and <b>every matched count equals tools/binance_oracle.py's for the same file</b> &mdash; two implementations, two languages, identical grades (<b>235/235 GREEN</b> on both deep-seed witnesses). <b>Strain 25 closed</b>: no third scanner, Kraken's lifted verbatim into <code>json_scan.hpp</code> and reused with <b>no venue flag</b>, 327 lines moved and none changed, held still by an assertion count identical to the byte (<b>3,609,744</b>). Mutation-verified against the oracle: <b>qty-0-not-a-removal, sides-swapped and book-bounded-at-256 all go 235&rarr;0 matched</b>. <b>TWO TRUNCATION BOUNDARIES</b>, which is new &mdash; storage must be 1,024 deep because the sweep says the requirement is a property of how far the market walked (<b>the two witnesses disagree by 5&times;</b>: 100 clean on one, 500 needed on the other), while emission cannot exceed the engine's 256. Cost stated: <b>~96 KiB</b> fixed, never allocated. <b>The crossed-book question answered with a count: 0 crossed, 0 touched across all seven</b>, tightest spread one tick. And <b>strain 26 opened</b>, which is the finding with teeth: a <b>misspelled stream returns HTTP 101, answers pings in 0.107 ms and delivers nothing for ever</b> &mdash; invariant #5's frozen ladder arriving through the mechanism installed to prevent it, and the liveness ruling cannot see it</b></span>
     <span class="status">first-party C++ <b>~19,600 lines</b></span>
     <span class="status">drawn from source at <b>dd9ce87</b> + M5 stage A working tree</span>
   </div>
@@ -2203,8 +2203,9 @@ classDiagram
   </div>
 
   <div class="strain">
-    <h4>25 · Two hand-rolled JSON scanners, sharing a grammar and not a line of code
-        — <em>incurred at M4 stage B1</em></h4>
+    <h4><s>25 · Two hand-rolled JSON scanners, sharing a grammar and not a line of code</s>
+        — <em>incurred at M4 stage B1; CLOSED 2026-08-25 at M5 stage B1, by the third
+        venue reusing the second's scanner rather than getting one of its own</em></h4>
     <p>
       <code>anvil_frame_streaming.cpp</code> (984 lines) and
       <code>kraken_frame_streaming.cpp</code> (~600) are both allocation-free
@@ -2236,7 +2237,33 @@ classDiagram
     </p>
     <p class="verdict">Resolves: <b>M5, if Binance needs a third scanner — and the
       extraction is then a refactor with two golden suites already holding it still</b>
-      &mdash; <b>ANSWERED 2026-08-24 (M5 stage 0): the trigger arrived and did NOT fire. Binance needs no third scanner.</b> Measured over the captures rather than eyeballed, its wire carries <b>zero float tokens, zero exponent tokens, zero string escapes, zero <code>true</code>/<code>false</code>/<code>null</code> literals, and nests at most 4 deep</b>; every number is a plain integer (largest ~9.9&times;10<sup>10</sup>, comfortably inside uint64) and every price and quantity is an unescaped string. That is a <b>strict subset</b> of what both existing scanners already handle: it needs neither Anvil's nlohmann-bug-compatible float path nor Kraken's bare-number path. <b>So the duplication stands, and the case for extracting it must now come from somewhere other than a third venue</b> &mdash; which was this card's stated trigger and its only one. The reasoning is not refuted, and that is the uncomfortable part: three instances would still distinguish the general primitives from two venues' accidents, but <em>the third instance turned out not to need building</em>, so it contributes no evidence about which primitives are general. The card therefore cannot be closed by this milestone and cannot be advanced by it either. Caveat: measured over depth streams and <code>/api/v3/depth</code> bodies, which share one grammar. <code>/api/v3/exchangeInfo</code> is far richer (booleans, nested filter objects) but is a one-shot config fetch that need not be parsed on the target at all &mdash; if M5 decides it must be, this answer re-opens on that decision and not on the wire.</p>
+      &mdash; <b>ANSWERED 2026-08-24 (M5 stage 0): the trigger arrived and did NOT fire. Binance needs no third scanner.</b> Measured over the captures rather than eyeballed, its wire carries <b>zero float tokens, zero exponent tokens, zero string escapes, zero <code>true</code>/<code>false</code>/<code>null</code> literals, and nests at most 4 deep</b>; every number is a plain integer (largest ~9.9&times;10<sup>10</sup>, comfortably inside uint64) and every price and quantity is an unescaped string. That is a <b>strict subset</b> of what both existing scanners already handle: it needs neither Anvil's nlohmann-bug-compatible float path nor Kraken's bare-number path. <b>So the duplication stands, and the case for extracting it must now come from somewhere other than a third venue</b> &mdash; which was this card's stated trigger and its only one. The reasoning is not refuted, and that is the uncomfortable part: three instances would still distinguish the general primitives from two venues' accidents, but <em>the third instance turned out not to need building</em>, so it contributes no evidence about which primitives are general. The card therefore cannot be closed by this milestone and cannot be advanced by it either. Caveat: measured over depth streams and <code>/api/v3/depth</code> bodies, which share one grammar. <code>/api/v3/exchangeInfo</code> is far richer (booleans, nested filter objects) but is a one-shot config fetch that need not be parsed on the target at all &mdash; if M5 decides it must be, this answer re-opens on that decision and not on the wire.
+      <br><br>
+      <b>CLOSED 2026-08-25 (M5 stage B1), and by the opposite of what the card expected.</b>
+      The card's trigger was a third venue; the trigger arrived, fired at nothing, and the
+      card was left unable to close OR advance. B1 closes it by acting on that answer
+      rather than waiting for a better one: <b>Binance reuses Kraken's scanner</b>, which
+      was lifted verbatim into <code>engine/include/depthcharge/json_scan.hpp</code>, and
+      <b>the reuse needed no venue flag</b> &mdash; the brief's stop-and-raise condition,
+      untriggered. The extraction moved 327 lines and changed none of them; the Kraken
+      goldens, the taxonomy pins and the suite's assertion count
+      (<b>3,609,744, identical before and after</b>) are what held it still, which is
+      exactly the refactor this card's original verdict said it would be.
+      <br><br>
+      <b>The subset claim was RE-MEASURED rather than inherited</b>, over the seven
+      committed slices rather than stage 0's capture window: <b>0 string escapes, 0
+      exponent characters outside a string, 0 bare <code>.</code> outside a string, 0
+      <code>true</code>/<code>false</code>/<code>null</code> literals, maximum nesting 4,
+      and 188,372 price/quantity entries every one of which is exactly 8 decimals.</b>
+      Anvil's scanner was the wrong one to reuse and the reason is kept: it is
+      deliberately bug-compatible with nlohmann 3.11.3's float handling, a specification
+      this venue has no use for.
+      <br><br>
+      <b>What the card was right about does not change.</b> Three instances still do not
+      prove which primitives are general &mdash; the third one contributed a
+      <em>consumer</em> rather than evidence, because it needed no scanner of its own. It
+      closes because its named question (build a third, or reuse) has an answer and that
+      answer is implemented, not because the deeper one was settled.</p>
   </div>
 
   <div class="strain">
@@ -3376,6 +3403,96 @@ classDiagram
       <i>what counts as liveness</i>, and that is exactly what the 2026-08-17 ruling governs and
       what stage D's brief freezes. It is <b>B2's</b>, with the measurement above as its input.
     </p>
+  </div>
+
+  <div class="strain">
+    <h4>26 · The ping proves the socket and never the feed, and the seed colours the panel
+        before the feed has spoken —
+        <em>opened 2026-08-25 at M5 stage B1, measured on the wire and reproduced through
+        the real adapter</em></h4>
+    <p>
+      <b>This is invariant #5's one unacceptable output arriving through the mechanism
+      installed to prevent it.</b> Probed rather than reasoned about, with a control run:
+      <code>wss://data-stream.binance.vision/ws/btcusdt@depth@100mss</code> — one character
+      wrong — returns <b>HTTP/1.1 101 Switching Protocols</b>, holds the socket open, sends
+      its server PING on the normal ~20 s cadence which the transport answers in
+      <b>0.107 ms</b>, and delivers <b>zero depth frames</b>. The REST seed is a different
+      host and <b>succeeds</b>. The correct-stream control took <b>121 frames</b> in the
+      same 12 s.
+    </p>
+    <p>
+      <b>The capture was then replayed through the real adapter and the real book, and the
+      result is not subtle:</b> <code>adapter events=1</code>,
+      <code>seed bracket ok=0</code>, <code>snapshots_adopted=1</code>,
+      <code>0 stale episode(s)</code>, and a populated 100-level ladder rendered
+      <b>● LIVE</b>.
+    </p>
+    <p>
+      <b>THE MECHANISM IS THE EMISSION POINT, NOT A MISSING DETECTOR</b>, and the card was
+      first written before that was pinned down. <code>adopt_seed()</code> emits the
+      <code>Snapshot</code> at seed time, from the REST body, <b>before any WebSocket event
+      has arrived</b>. <code>Book::adopt</code> sets <code>FeedStatus::Live</code> off the
+      seed alone, and <code>bracket_checked_</code> stays false for ever because no diff
+      ever comes to satisfy it. Nothing is missing and nothing failed — every counter reads
+      healthy, because the adapter did exactly what it was told and the thing it was told
+      is a lie.
+    </p>
+    <p>
+      <b>THE GENERAL STATEMENT, which is larger than one misspelled stream.</b> At Anvil
+      and at Kraken the same subsystem emits the liveness record and the book, so
+      <em>the feed is alive</em> and <em>the socket is alive</em> coincide and the
+      2026-08-17 ruling never had to distinguish them. <b>At Binance the ping is emitted by
+      the WebSocket layer, below the subscription: it proves the socket and it never proves
+      the feed.</b> A misspelled stream is merely the cheapest way to stage that —
+      <b>a server-side subscription drop on a socket that stays up presents
+      identically</b>, and no amount of care with stream names prevents that one. The venue
+      publishes no subscription-state signal on the market-data streams at all.
+      ARCHITECTURE §9 carries this as a correction to decision 1's <em>premise</em> and not
+      to its conclusion: greying on socket death alone was priced at B3 and lost by 141 s
+      and 291 s, so arming on the ping is still right. What changes is what a green
+      liveness clock is entitled to mean.
+    </p>
+    <p>
+      <b>FOUR CANDIDATE REMEDIES, AND B1 BUILT NONE OF THEM</b> — choosing is a
+      rendered-state decision and inventing a rule here needs a calibration nobody has yet,
+      which is the discipline stage C used for the window policies.
+    </p>
+    <p>
+      <b>(a) Defer the <code>Snapshot</code> to bracket time.</b> Emit nothing until the
+      first diff has satisfied <code>U &lt;= L+1 &lt;= u</code>. Between seed and bracket
+      the book is <em>uninitialised</em>, which has been an explicit state since M4 stage C
+      and has been <em>grey</em> since M4 stage D — so <b>the lie greys with no threshold,
+      no detector and no new <code>GapReason</code></b>. It is the cheapest of the four and
+      the only one that needs no new concept at all. Cost: a fraction of a second of grey
+      on a healthy connect, and <b>up to ~10 s on a quiet pair</b>, which is this venue's
+      measured worst legitimate inter-message gap.
+      <br><br>
+      <b>(b) The ping does not stamp liveness until the bracket has been satisfied
+      once.</b> The panel draws the seed immediately — no added grey on a healthy connect —
+      and on a lying socket the liveness clock is never fed, so <b>the lie self-terminates
+      at the threshold</b> rather than persisting. Costs the ~30 s the threshold currently
+      clamps to (see the ceiling row in §9), against (a)'s ~10 s worst case.
+      <br><br>
+      (c) <em>Seeded but zero <code>depthUpdate</code> events since</em> — never-started,
+      which is a different question from went-quiet and one no venue in this project has
+      needed before. A real detector, and therefore a real threshold to calibrate.
+      <br><br>
+      (d) The <code>@depth20</code> grading the board is already paying 1.33 KiB/s for: a
+      seeded book graded against the audit stream fails immediately. A second reason that
+      stream earns its keep, and it costs nothing new.
+    </p>
+    <p>
+      <b>NEITHER (a) NOR (b) CLOSES THE GENERAL HOLE, and saying so is the point of listing
+      them.</b> The ping stays transport-only <em>after</em> the bracket too, so a
+      subscription dropped server-side an hour into a session is still invisible to both.
+      What they buy is the conversion of <b>permanent</b> into <b>bounded</b> — and bounded
+      is where invariant #5 draws its line, because a panel that greys late is honest and a
+      panel that never greys is the one unacceptable output.
+    </p>
+    <p class="verdict">Resolves: <b>C</b>, with the threshold work — it is a rendered-state
+      decision and not an adapter one. B1 recorded the measurement, the control run, the
+      mechanism and four candidate remedies, and deliberately built none.
+      ARCHITECTURE §9, 2026-08-25, both rows.</p>
   </div>
 
   <div class="strain">

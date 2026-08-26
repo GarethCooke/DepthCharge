@@ -650,3 +650,183 @@ byte-identical to the committed ones — which is exactly why they are the only 
 oracle golden; both deep-seed goldens are unaffected, and their `U`/`u` bracketing and 235/235
 GREEN results do not involve the missing record. **This adds no reason to re-capture** — that
 is B2's, with the rest of the pin work.
+
+---
+
+## Addendum — M5 stage B1, 2026-08-25: the adapter, and what it measured
+
+Stage A's addendum is what the C++ *reader* found. This is what the C++ *adapter*
+found, and it is where this document and the B1 brief disagree. Same rule: **the notes
+win**, because they were measured.
+
+### The grammar is still a strict subset — re-measured, not inherited
+
+Stage 0 measured Binance's wire over a capture window. Deliverable 1 asks for the claim
+to be re-taken over the **seven committed slices**, because a grammar claim that was true
+of one window is not automatically true of the venue. Every verbatim frame and every REST
+body:
+
+| | |
+| --- | ---: |
+| string escapes | **0** |
+| exponent characters outside a string | **0** |
+| bare `.` outside a string (a float token would appear here) | **0** |
+| `true` / `false` / `null` literals | **0** |
+| maximum container nesting | **4** |
+| price / quantity entries | **188,372**, every one exactly 8 decimals, 0 in exponent notation, widest integer part 6 digits |
+
+So the subset holds and **no third scanner was written**. Kraken's was lifted unchanged
+into `engine/include/depthcharge/json_scan.hpp` and Binance reuses it — **with no venue
+flag**, which was the brief's stop-and-raise condition. Anvil's was the wrong one to
+reuse and the reason is worth keeping: it is deliberately bug-compatible with nlohmann
+3.11.3's float handling, a specification this venue has no use for.
+
+The 188,372 here and stage 0's 202,012 are different corpora — committed slices against
+full captures — and agree on every proportion.
+
+### The tick filters were verified before being declared
+
+The scale is a **venue constant of 8 decimals** and `tickSize` is a **validator**, which
+inverts what the same field meant at Kraken. A validator that rejects valid frames is
+worse than none, so the declared filters were checked against the corpus first: the GCD
+of every price and every quantity IS the declared filter.
+
+| symbol | entries | price GCD | = tick | qty GCD | = step |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BTCUSDT | 91,665 | 1,000,000 | 0.01 | 1,000 | 0.00001 |
+| ATOMEUR | 2,521 | 100,000 | 0.001 | 1,000,000 | 0.01 |
+
+### How deep the book must be is a property of the market, not of the venue
+
+`binance_oracle.py --window-sweep` bounds a correct client's maintained book and grades
+it against `@depth20`. **The two deep-seed witnesses disagree by a factor of five**, on
+the same pair, the same day, an hour apart:
+
+| window | `deepseed` | `deepseed2` |
+| ---: | --- | --- |
+| 100 | 21/235 | **235/235 GREEN** |
+| 256 | 202/235 (33 fail) | 235/235 |
+| 500 | **235/235 GREEN** | 235/235 |
+| 1,000 | 235/235 | 235/235 |
+
+A book bounded at `kMaxSnapshotLevels` (256) is clean on one witness and fails 33 graded
+ticks on the other — the *bounded window cannot refill* mutant occurring **by accident
+rather than by design**. 500 is a 2.4% margin over a number that moved 5× between two
+adjacent windows. The only size that is not a bet is one that holds the whole seed, so
+the adapter's ladder is **1,024**.
+
+**The cost is stated rather than buried**: 32 KiB of ladder, 32 KiB of staging frame and
+32 KiB of pre-seed buffer — **~96 KiB of fixed, never-allocated state** against the
+~144 KiB the whole Anvil image uses today. Invariant #7 holds (nothing is allocated);
+where it lives on the board is **D's** decision.
+
+### The pre-seed buffer, sized from measurement
+
+The venue's documented procedure buffers diffs while the REST fetch is in flight. That is
+not a nicety: a round trip is ~1.0–1.5 s, so the snapshot names an instant the stream has
+already moved 10–15 events past. Measured worst case across the corpus: **15 events
+carrying 823 levels (12.9 KiB)**, of which at most 5 events / 537 levels survive the
+snapshot. Bounds are 64 events / 2,048 levels, ~2.5×, and an overflow raises
+`Gap{Overflow}` rather than passing silently.
+
+Largest single diff measured: **537 levels** in one `b` or `a`, on the 1000 ms tick where
+a second of changes coalesces into one message.
+
+### Deliverable 6 — no committed slice crosses, and none touches
+
+Asked of the venue's **own published books** (REST bodies and `@depth20` partials) rather
+than of a book we maintained, so the answer is about the venue and not about our
+arithmetic. Across all seven slices: **0 crossed, 0 touched.** Tightest spread observed is
+one tick — 1,000,000 ticks (0.01) on BTCUSDT and 200,000 (0.002) on ATOMEUR.
+
+The rule therefore remains uncalibrated **for the same reason it did at Kraken** — and
+unlike Kraken, the instrument to settle it now exists: a crossed book that grades clean
+against `@depth20` is the venue's truth and must be drawn; one that grades RED is our
+error. The next observation settles it rather than deferring again.
+
+### Known unknown 4 — `event_ns` reaches REST records, and B2 can stop measuring live
+
+Stage A set a REST record's `event_ns` from `req.recv_ns`, and both `sent_ns` and
+`recv_ns` are in the trace. So the round trip is a **committed-file** measurement now,
+and it reproduces stage 0's live figures:
+
+| seed | fetches | min | median | max |
+| --- | ---: | ---: | ---: | ---: |
+| `limit=100` | 21 | 958.0 ms | ~995 ms | 1,059.9 ms |
+| `limit=1000` | 5 | 973.0 ms | 1,481.8 ms | 1,539.9 ms |
+
+**B2 does not need a live run to size the re-snapshot schedule.**
+
+### The REST lag has a two-order-of-magnitude tail, and it is B2's single most important input
+
+**Stage A said a REST record lands "~1–1.5 s after the instant it describes". Measured
+across 26 committed records: median 439 ms, MAX 42,721 ms.** The record is written when the
+*next message arrives*, so on the quiet pair it can be **forty-two seconds** late.
+
+| | median | max |
+| --- | ---: | ---: |
+| fetch round trip (`recv_ns - sent_ns`) | 1,008.6 ms | 1,539.9 ms |
+| record lag (`rx_ns - recv_ns`) | **439 ms** | **42,721 ms** |
+
+**Why this is the number B2 has to size against, and not the median.** A re-snapshot
+schedule chosen on 439 ms is wrong in the tail by two orders of magnitude — and the
+consequence is not merely a late figure. **The book is UNBRACKETED for the whole of that
+interval**: the fetch has been issued, the snapshot names an instant already receding, and
+until the record lands and its first surviving event satisfies `U <= L+1 <= u` there is
+nothing tying the maintained book to the venue's. A schedule that assumes a sub-second
+turnaround will re-fetch into a window where the previous fetch has not yet been reconciled,
+on precisely the pair where the book is thinnest and the walk is hardest to bound.
+
+The tail is a property of the *quiet* pair rather than the busy one, which is the opposite
+of where a byte-budget intuition would look for it.
+
+### Known unknown 1 — a misspelled stream is a healthy, silent, ping-answering socket
+
+**Probed on the wire, with a control run.** `…/ws/btcusdt@depth@100mss` (one character
+wrong) returns **HTTP/1.1 101 Switching Protocols**, holds the socket, sends its server
+PING on the normal cadence — answered in 0.107 ms — and delivers **zero frames** in 12 s.
+The REST seed is a different host and **succeeds**. The correct-stream control took **121
+frames** over the same window.
+
+There is no ack, no error and no close, because this venue names its subscription in the
+URL path. **Nothing whatever confirms that the subscription succeeded**, and the
+2026-08-25 liveness ruling arms the grey on the ping — which keeps arriving. Full
+reasoning and the hand-off are in ARCHITECTURE §9; the short form is that this is
+invariant #5's frozen-ladder-that-looks-live arriving through the mechanism installed to
+prevent it, and the distinguishing signal is *never-started*, not *went-quiet*.
+
+### Known unknown 2 — the trade ring is Anvil-only, and that is not an M5 question
+
+The brief asks whether a Binance ladder renders trade prints and treats it as possibly a
+third venue-shaped hole beside the liveness one. **The framing is wrong and the correction
+matters more than the answer: the hole is already there at Kraken and M4 shipped with it.**
+Kraken puts trades on a `trade` channel DepthCharge does not subscribe, so
+`is_trade("kraken", …)` is always False on a book capture — `tools/tracefile.py` says so in
+its own docstring. Binance is identical: `@trade` and `@aggTrade` are separate streams and
+nothing subscribes them.
+
+So the accurate statement is that **the trade ring is Anvil-only**, and has been since M4
+without being written down. Nothing about it is new at the third venue, nothing was
+subscribed to establish it, and nothing needs to be.
+
+**It is therefore not an item on any M5 stage.** It is a §1-versus-reality question for the
+owner — whether a terminal whose §1 describes trade prints, on a build where two of three
+venues have none, is design or debt — and it is recorded as **ROADMAP backlog D0**.
+
+### The C++ grader's evidential position, stated rather than hedged
+
+`dc_binance_oracle` grades the real adapter and **agrees with `tools/binance_oracle.py` on
+every count across the whole corpus** — including the slice that fails, where both report
+28 matched and 32 failed. That agreement is worth naming precisely, because the modest
+version of it undersells what has been shown:
+
+- `binance_oracle.py` is **mutation-verified**: `binance_oracle_mutants` runs an honest
+  control green and three deliberate breakages red, in the normal build loop.
+- The C++ grader tracks that instrument exactly, on seven files, in both directions —
+  green where it is green and **red where it is red, by the identical count**.
+
+So the grader **has been shown red on a real failure**, not merely green on healthy data.
+What it lacks is a *planted* one: a `--mutant` mode of its own. The three mutants were run
+against it by hand at B1 (qty-0-not-a-removal, sides-swapped, book-bounded-at-256 — each
+takes 235 matched to 0), and automating them wants a second link configuration, which is
+the `dc_tests_streaming` shape and a stage of its own.
