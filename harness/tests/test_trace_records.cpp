@@ -311,7 +311,7 @@ TEST_CASE("the decoder answers the driver's question about a control record") {
         depth_update(4000, 12).c_str(),
     });
     TraceReader reader(text, in_memory);
-    BinanceTraceDecoder decoder;
+    BinanceTraceDecoder decoder(depthcharge::binance::kBinanceBtcUsdt);
     TraceRecord rec;
     std::vector<std::pair<std::string, bool>> seen;
     while (reader.next(rec)) {
@@ -462,57 +462,55 @@ TEST_CASE("the venue table says which clock each threshold is about") {
 // ---------------------------------------------------------------------------
 // Deliverable 3 — the unmatched venue
 // ---------------------------------------------------------------------------
+// The adapter (M5 stage B1)
+// ---------------------------------------------------------------------------
 
-TEST_CASE("an unmatched venue is a hard failure, not a confident wrong answer") {
-    // `RecordClassifier::classify` used to end `return {};  // unreachable`, and
-    // a `RecordKind{}` is not a refusal — it is "this record reaches nothing,
-    // snapshots nothing and proves nothing", which is indistinguishable from a
-    // real answer. A fourth venue added without a branch would have measured
-    // every record in its capture as inert and reported a plausible empty file.
+TEST_CASE("the seam stage A froze is the seam B1 filled, not reshaped") {
+    // THE STAGE-A CASE THIS REPLACES ASSERTED THE OPPOSITE, and that is the
+    // point rather than a regression. It read `CHECK(events.empty())` and
+    // `decoder.events_emitted() == 0`, because at stage A the Binance decoder
+    // was a CLASSIFIER and "emits nothing" was a claim worth a counter. B1 makes
+    // it false on purpose. What must NOT have changed is the shape: the same
+    // `decode(record, sink)` the classifier took, the same sink contract, the
+    // same `on_transport_gap`. The declaration is unchanged; only the body is.
     //
-    // `Venue` has a fixed underlying type, so a value outside the enumerators is
-    // a well-defined value of the type — which is what makes this testable at
-    // all, and what makes the runtime half of the guard worth having beside the
-    // -Wswitch half that cannot be tested from inside a build that compiles.
-    RecordClassifier classifier(static_cast<Venue>(99));
-    TraceRecord rec;
-    CHECK_THROWS_AS(classifier.classify(rec), std::logic_error);
-}
-
-TEST_CASE("the replay driver refuses Binance by name rather than replaying it empty") {
-    // The loud refusal, back for one venue — the holding position Kraken sat in
-    // between M4 stage A and B1. This venue's decoder is a CLASSIFIER, so
-    // driving a book with it would produce an empty ladder over a real capture
-    // and call it a replay: a decoder that emits nothing looks exactly like a
-    // feed that said nothing.
-    const std::string text = binance_trace({depth_update(1000, 8).c_str()});
-    depthcharge::SymbolSpec spec{1, 2, 8};
-    CHECK_THROWS_AS(run_replay_text(text, spec, ReplayOptions{}, {}), TraceError);
-}
-
-TEST_CASE("a Binance decoder emits no FeedEvent, and says so by counting") {
-    // "This stage emits no FeedEvents" is a claim; a counter is the difference
-    // between a claim and a test. Same shape Kraken's decoder held at M4 stage
-    // A, kept for the same reason: B1 fills this signature rather than
-    // reshaping it.
+    // The counters moved with the behaviour — from the decoder to the adapter —
+    // which is exactly where Kraken's went at M4 B1.
     const std::string text = binance_trace({
         depth_update(1000, 8).c_str(),
         control(2000, "ping", 1900).c_str(),
-        rest_record(3000, 2900, 99076734902).c_str(),
+        rest_record(3000, 2900, 500).c_str(),
     });
     TraceReader reader(text, in_memory);
-    BinanceTraceDecoder decoder;
+    BinanceTraceDecoder decoder(depthcharge::binance::kBinanceBtcUsdt);
     TraceRecord rec;
     std::vector<depthcharge::FeedEvent> events;
     auto sink = [&events](const depthcharge::FeedEvent& e) { events.push_back(e); };
     while (reader.next(rec)) { decoder.decode(rec, sink); }
-    decoder.on_transport_gap(depthcharge::GapReason::Disconnect, sink);
 
-    CHECK(events.empty());
-    CHECK(decoder.events_emitted() == 0);
-    CHECK(decoder.records() == 3);
-    CHECK(decoder.book_events() == 2);      // the diff and the REST body
-    CHECK(decoder.liveness_records() == 1);  // the ping
-    CHECK(decoder.transport_gaps() == 1);
+    const auto& st = decoder.adapter().stats();
+    CHECK(st.diff_frames == 1);
+    CHECK(st.rest_snapshots == 1);
+    // A CONTROL RECORD REACHES NO ADAPTER AT ALL. It stamps the liveness clock
+    // through `classify()` and there is nothing for a book to do with it, so the
+    // adapter never sees one — `frames_in` counts the diff and the REST body.
+    CHECK(st.frames_in == 2);
+    CHECK(decoder.adapter().has_baseline());
+
+    // The seed emitted a Snapshot. Before it, the diff was BUFFERED rather than
+    // dropped, which is the venue's documented procedure and the reason a book
+    // seeded 1.4 s late is still correct.
+    REQUIRE_FALSE(events.empty());
+    CHECK(events[0].kind == depthcharge::FeedEvent::Kind::Snapshot);
+    CHECK(st.buffered_events == 1);
     CHECK(BinanceTraceDecoder::name() == "binance");
+
+    // And the transport gap still reaches the adapter through the frozen
+    // signature, which is the other half of "filled, not reshaped".
+    const std::size_t before = events.size();
+    decoder.on_transport_gap(depthcharge::GapReason::Disconnect, sink);
+    REQUIRE(events.size() == before + 1);
+    CHECK(events.back().kind == depthcharge::FeedEvent::Kind::Gap);
+    CHECK(events.back().reason == depthcharge::GapReason::Disconnect);
+    CHECK_FALSE(decoder.adapter().has_baseline());
 }

@@ -135,8 +135,10 @@ public:
         // Adding an empty third branch now would replace that with silence.
         if constexpr (Decoder::kVenue == Venue::Anvil) {
             result.adapter = decoder_.adapter().stats();
-        } else {
+        } else if constexpr (Decoder::kVenue == Venue::Kraken) {
             result.kraken = decoder_.adapter().stats();
+        } else {
+            result.binance = decoder_.adapter().stats();
         }
         result.book = book_.stats();
         result.episodes = episodes_;
@@ -381,23 +383,25 @@ depthcharge::SymbolSpec symbol_for(const TraceMeta& meta) {
             }
             return cfg.spec;
         }
-        case Venue::Binance:
-            // M5 STAGE A DELIBERATELY DOES NOT INVENT ONE. The wire's precision
-            // is measured and uniform — 8 decimals on price and on quantity,
-            // both pairs, both ticks (NOTES-binance.md §7) — so a spec could be
-            // written here in one line and it would be a scale nothing has
-            // agreed to. Kraken's rule applies unchanged: a scale that is not
-            // declared by the venue's own adapter does not fail, it draws a
-            // wrong ladder. B1 brings the adapter and its symbol table with it.
+        case Venue::Binance: {
+            // B1 BROUGHT THE ADAPTER AND ITS SYMBOL TABLE, so the refusal stage A
+            // stood here is gone the way Kraken's was: not relaxed, simply the
+            // absence of the feature it was protecting against.
             //
-            // Nothing this stage claims needs this: `dc_replay` reads a trace
-            // through `read_trace`, which holds no book at all, and the seven
-            // committed slices are read end to end without one.
-            throw TraceError(1,
-                             "this build has no Binance adapter, so it cannot drive a "
-                             "book from a Binance trace (M5 stage A is the reader; the "
-                             "adapter is B1). `dc_replay` reads these traces; "
-                             "`dc_ladder` cannot yet render them.");
+            // The scale is a VENUE constant of 8 decimals rather than a
+            // per-symbol one, which is this venue's inversion of §4's
+            // declare-and-verify rule — see binance_adapter.hpp, where the
+            // declarations and the corpus GCDs that verify them live together.
+            depthcharge::binance::SymbolConfig cfg{};
+            if (!depthcharge::binance::symbol_config_for(meta.symbol, cfg)) {
+                throw TraceError(1, "this build declares no scale for Binance symbol \"" +
+                                        meta.symbol +
+                                        "\" (engine/include/depthcharge/binance/"
+                                        "binance_adapter.hpp). A guessed scale would not "
+                                        "fail, it would draw a wrong ladder.");
+            }
+            return cfg.spec;
+        }
     }
     unhandled_venue(meta.venue, "symbol_for");
 }
@@ -454,21 +458,20 @@ ReplayResult run_replay(TraceReader& reader, const depthcharge::SymbolSpec& symb
                 KrakenTraceDecoder(symbol, cfg.wire_symbol, depth), symbol, opts, observer);
             return replay.run(reader);
         }
-        case Venue::Binance:
-            // THE LOUD REFUSAL, BACK FOR ONE VENUE — the same holding position
-            // Kraken sat in between M4 stage A and B1, and correct for the same
-            // reason: this venue's decoder is a CLASSIFIER, so driving a book
-            // with it would produce an empty ladder over a real capture and call
-            // it a replay. `dc_replay` and `dc_taxonomy` read these traces
-            // through `read_trace`, which needs no adapter and no book.
-            //
-            // It is a refusal rather than a silent empty run because the mistake
-            // this guards is the one M4 stage A's own comment names: a decoder
-            // that emits nothing looks exactly like a feed that said nothing.
-            throw TraceError(reader.name(), 1,
-                             "this build has no Binance adapter (M5 stage A is the "
-                             "reader; B1 is the adapter). The trace is readable -- try "
-                             "dc_replay or dc_taxonomy, which do not drive a book.");
+        case Venue::Binance: {
+            // The refusal stage A stood here is gone at B1, exactly as Kraken's
+            // was at M4 B1 — and `ReplayResult::decoder` is what keeps the
+            // dispatch honest now that it is silent rather than loud.
+            depthcharge::binance::SymbolConfig cfg{};
+            if (!depthcharge::binance::symbol_config_for(reader.meta().symbol, cfg)) {
+                throw TraceError(reader.name(), 1,
+                                 "this build declares no scale for Binance symbol \"" +
+                                     reader.meta().symbol + "\"");
+            }
+            Replay<BinanceTraceDecoder> replay(BinanceTraceDecoder(cfg), symbol, opts,
+                                               observer);
+            return replay.run(reader);
+        }
     }
     unhandled_venue(reader.venue(), "run_replay");
 }

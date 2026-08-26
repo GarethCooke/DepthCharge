@@ -189,6 +189,65 @@ void print_anvil_adapter(const ReplayResult& r) {
                 ull(a.wire_seq_backward));
 }
 
+// Binance's adapter block (M5 stage B1). A THIRD BLOCK for the same reason there
+// was a second: printing another venue's counters would not fail, it would print
+// a page of zeros for a replay that worked.
+//
+// Three things here are deliverables rather than curiosities:
+//
+//   * THE SEED — its bracket, the events buffered while the fetch was in flight,
+//     and how many of them the snapshot already contained. A REST round trip is
+//     ~1.0-1.5 s, so a seed adopted without buffering is a book missing a second
+//     and a half of amendments.
+//   * `absent` REMOVALS, which are documented venue behaviour and CONSTANT: the
+//     venue's book is deeper than anything it sends, so removals for levels
+//     outside the seeded window arrive continuously. A zero here would be the
+//     surprising reading.
+//   * THE SEEDED-WINDOW EDGE, reported and deliberately NOT acted on. When the
+//     market walks far enough that the rendered window approaches the edge of
+//     what the seed contained, it shows as the book's low-water depth falling
+//     and as evictions. The re-snapshot schedule that would answer it is B2's
+//     and needs a measured basis, so nothing branches on these — the same
+//     discipline stage C used for the window policies: record per policy, solve
+//     nowhere.
+void print_binance_adapter(const ReplayResult& r) {
+    const auto& b = r.binance;
+    std::printf("adapter   : events=%llu  diff=%llu partial=%llu rest=%llu(+%llu no-body) "
+                "ack=%llu unknown=%llu\n",
+                ull(b.events_out), ull(b.diff_frames), ull(b.partial_frames),
+                ull(b.rest_snapshots), ull(b.rest_no_body), ull(b.acks),
+                ull(b.unknown_kind));
+    std::printf("            parse_errors=%llu price_errors=%llu qty_errors=%llu "
+                "other_symbol=%llu overflow=%llu\n",
+                ull(b.parse_errors), ull(b.price_errors), ull(b.qty_errors),
+                ull(b.other_symbol), ull(b.overflow_frames));
+    std::printf("seed      : bracket ok=%llu failed=%llu   buffered=%llu "
+                "(dropped by seed=%llu, overflow=%llu)   reseeds=%llu\n",
+                ull(b.seed_bracket_ok), ull(b.seed_bracket_failed),
+                ull(b.buffered_events), ull(b.buffered_dropped_by_seed),
+                ull(b.buffer_overflows), ull(b.reseeds_requested));
+    std::printf("            U/u seq breaks=%llu -> Gap{SeqGap}. A TRANSPORT CHECK: it "
+                "caught 2,204 missed updates at a reconnect and 0 of 3 book mutants\n",
+                ull(b.seq_breaks));
+    std::printf("levels    : applied=%llu removed=%llu unchanged=%llu   absent "
+                "removals=%llu (NORMAL: the venue's book is deeper than it sends)\n",
+                ull(b.levels_applied), ull(b.levels_removed), ull(b.levels_unchanged),
+                ull(b.levels_absent_removals));
+    std::printf("edge      : book low-water bid=%u ask=%u of %u held   evicted=%llu   "
+                "window exits=%llu entries=%llu   outside emit=%llu\n",
+                b.min_bid_levels == 0xFFFFFFFFu ? 0u : b.min_bid_levels,
+                b.min_ask_levels == 0xFFFFFFFFu ? 0u : b.min_ask_levels,
+                static_cast<unsigned>(depthcharge::binance::kBinanceMaxFrameLevels),
+                ull(b.levels_evicted), ull(b.window_exits), ull(b.window_entries),
+                ull(b.levels_outside_emit));
+    // WHAT THE ORACLE REACHES, on the line rather than in a comment. `@depth20`
+    // validates the top 20 a side while the panel draws 25 — the same shape of
+    // gap as Kraken's CRC-10-of-25, and smaller. `dc_binance_oracle` performs
+    // the comparison; this run does not.
+    std::printf("            oracle: @depth20 covers the top 20 of the 25 rows drawn; "
+                "grading is dc_binance_oracle's, not this run's\n");
+}
+
 // THE WINDOW (M4 stage C). Printed for every venue and every policy, because
 // the question stage D has to answer at the panel — is this window worth looking
 // at — is not answerable from the ladder alone.
@@ -288,7 +347,11 @@ void print_report(const Args& args, const ReplayResult& r) {
     std::printf("dc_ladder — DepthCharge replay\n\n");
     std::printf("trace     : %s\n", args.path.c_str());
     std::printf("decoder   : %s\n", r.decoder.c_str());
-    if (r.meta.venue == dc::harness::Venue::Kraken) {
+    // Both symbol-identified venues; Binance records no `depth` (its
+    // subscription is named by `streams` in the header), so it prints -1 the way
+    // a Kraken capture predating the field does.
+    if (r.meta.venue == dc::harness::Venue::Kraken ||
+        r.meta.venue == dc::harness::Venue::Binance) {
         std::printf("metadata  : symbol=%s  depth=%lld  captured_at=%s\n",
                     r.meta.symbol.c_str(), static_cast<long long>(r.meta.depth),
                     r.meta.captured_at.c_str());
@@ -299,10 +362,12 @@ void print_report(const Args& args, const ReplayResult& r) {
                     r.meta.captured_at.c_str());
     }
     std::printf("frames    : %zu over %.1f s\n", r.frames, r.span_seconds());
-    if (r.meta.venue == dc::harness::Venue::Kraken) {
-        print_kraken_adapter(r);
-    } else {
-        print_anvil_adapter(r);
+    // No `default:`, so a fourth venue is a -Wswitch error rather than a page of
+    // another venue's zeros (M5 stage A, deliverable 3).
+    switch (r.meta.venue) {
+        case dc::harness::Venue::Kraken:  print_kraken_adapter(r); break;
+        case dc::harness::Venue::Binance: print_binance_adapter(r); break;
+        case dc::harness::Venue::Anvil:   print_anvil_adapter(r); break;
     }
     std::printf("book      : snapshots_adopted=%llu trades=%llu gaps=%llu  "
                 "deltas applied=%llu removed=%llu absent=%llu\n",

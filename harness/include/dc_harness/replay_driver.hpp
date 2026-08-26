@@ -27,6 +27,7 @@
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/book.hpp>
+#include <depthcharge/binance/binance_adapter.hpp>
 #include <depthcharge/kraken/kraken_adapter.hpp>
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/snapshot_channel.hpp>
@@ -210,6 +211,11 @@ struct ReplayResult {
     // Exactly one of the two is populated, and `decoder` says which.
     depthcharge::anvil::AnvilAdapter::Stats adapter;
     depthcharge::kraken::KrakenAdapter::Stats kraken;
+    // THREE FIELDS NOW, AND THE ARGUMENT AGAINST A VARIANT IS UNCHANGED: the
+    // three Stats types share no base and never will, exactly one is populated
+    // per run, and `decoder` says which. A variant would buy type safety over a
+    // question no caller asks and cost every reader an extra indirection.
+    depthcharge::binance::BinanceAdapter::Stats binance;
 
     depthcharge::Book::Stats book;
     std::vector<StaleEpisode> episodes;

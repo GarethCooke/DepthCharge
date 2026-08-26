@@ -63,6 +63,7 @@
 
 #include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/feed_event.hpp>
+#include <depthcharge/binance/binance_adapter.hpp>
 #include <depthcharge/kraken/kraken_adapter.hpp>
 #include <depthcharge/symbol.hpp>
 
@@ -393,19 +394,37 @@ private:
 // Kraken's does.
 RecordKind binance_classify(const TraceRecord& r, std::string& scratch);
 
-// Binance records -> nothing, yet.
+// Binance records -> FeedEvents, through the real adapter (M5 stage B1).
 //
-// THE SAME SHAPE KRAKEN'S DECODER HELD AT M4 STAGE A, and held deliberately: it
-// takes the sink, asserts the sink's contract, and emits no FeedEvent, because
-// the signature is the one B1's adapter fills in. A decoder written now without
-// a sink parameter is a decoder B1 has to reshape, and reshaping the seam is how
-// two adapters drift from a third.
+// **THE SIGNATURE STAGE A FROZE IS THE SIGNATURE B1 FILLED**, which is the third
+// time this seam has been filled without being reshaped: `decode()` kept its
+// sink parameter while emitting nothing, precisely so that dropping the adapter
+// in would not move it. It did not — the declaration below is unchanged from
+// stage A and the body is now `adapter_.on_frame(...)`, the same line Anvil's
+// decoder has had since M1 and Kraken's since M4 B1.
 //
-// The counters are not decoration either. "This stage emits no FeedEvents" is a
-// claim, and `events_emitted()` is the difference between a claim and a test.
+// THE ONE THING THAT IS GENUINELY NEW HERE, and it is stage A's doing: this
+// decoder is handed records that are NOT frames, and it must route them by form
+// rather than by content. A REST body goes to `on_rest_body`, a REST record that
+// carried none goes to `on_rest_missing` — *the seed has not arrived yet*, which
+// is a state and not a failure — and a control frame reaches the adapter at all.
+// The other two venues have one entry point because their venues have one kind
+// of thing to say.
+//
+// **THE ADAPTER IS ~96 KiB AND IS HELD BY VALUE.** 32 KiB of ladder, 32 KiB of
+// staging frame and 32 KiB of pre-seed buffer, all fixed and never allocated
+// (invariant #7 holds). It is fine on the desk and it is a real number for the
+// board; where it lives there is D's decision, and binance_adapter.hpp carries
+// the measurements behind each of the three.
 class BinanceTraceDecoder {
 public:
     static constexpr Venue kVenue = Venue::Binance;
+
+    explicit BinanceTraceDecoder(const depthcharge::binance::SymbolConfig& cfg)
+        : adapter_(cfg) {}
+
+    depthcharge::binance::BinanceAdapter& adapter() noexcept { return adapter_; }
+    const depthcharge::binance::BinanceAdapter& adapter() const noexcept { return adapter_; }
 
     // See AnvilTraceDecoder::name(). Derived from kVenue, never a second literal.
     static constexpr std::string_view name() noexcept {
@@ -420,33 +439,34 @@ public:
     template <typename Sink>
     void decode(const TraceRecord& r, Sink&& sink) {
         static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
-        (void)sink;  // no FeedEvent is emitted at stage A, by design
-        ++records_;
-        const RecordKind k = classify(r);
-        if (k.is_book_event) { ++book_events_; }
-        if (k.is_liveness) { ++liveness_records_; }
+        switch (r.form) {
+            case RecordForm::Rest:
+                // `rest:no-body` is the fetch that produced nothing. It is not a
+                // malformed record and it is not a broken feed — the seed has
+                // not arrived yet (M5 stage A).
+                if (r.has_frame()) { adapter_.on_rest_body(r.frame_json, sink); }
+                else { adapter_.on_rest_missing(); }
+                return;
+            case RecordForm::Control:
+                // A ping stamps the liveness clock and reaches no book. The
+                // driver reads that from `classify()`; there is nothing here for
+                // an adapter to do with it.
+                return;
+            case RecordForm::Frame:
+                break;
+        }
+        adapter_.on_frame(r.frame_json, sink);
     }
 
     template <typename Sink>
     void on_transport_gap(depthcharge::GapReason reason, Sink&& sink) {
         static_assert(SinkContract<std::remove_reference_t<Sink>>::ok);
-        (void)reason;
-        (void)sink;
-        ++transport_gaps_;
+        adapter_.on_transport_gap(reason, sink);
     }
 
-    std::size_t records() const noexcept { return records_; }
-    std::size_t book_events() const noexcept { return book_events_; }
-    std::size_t liveness_records() const noexcept { return liveness_records_; }
-    std::size_t transport_gaps() const noexcept { return transport_gaps_; }
-    std::size_t events_emitted() const noexcept { return 0; }
-
 private:
+    depthcharge::binance::BinanceAdapter adapter_;
     std::string kind_;  // backs RecordKind::name until the next classify()
-    std::size_t records_ = 0;
-    std::size_t book_events_ = 0;
-    std::size_t liveness_records_ = 0;
-    std::size_t transport_gaps_ = 0;
 };
 
 static_assert(DecoderContract<AnvilTraceDecoder>::ok);
