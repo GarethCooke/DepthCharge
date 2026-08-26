@@ -196,7 +196,33 @@
 // committed file for the first time — 17 across the seven slices. The three
 // with the longest windows measure its cadence independently of stage 0's
 // figure: medians of 19,951.7 / 20,011.6 / 20,013.3 ms against the 19,970 ms
-// NOTES-binance.md recorded. `liveness_firings` is 0 everywhere, and see
+// NOTES-binance.md recorded.
+//
+// **THOSE THREE FIGURES ARE THE INTERPOLATED MEDIAN, NOT THE ONE THE SHIPPED
+// CLOCK COMPUTES, AND THEY ARE DELIBERATELY LEFT STANDING (M5 stage B2).**
+// `sample_window.hpp` owns the convention -- a LOWER median by nearest rank,
+// because an interpolated one invents an interval that never occurred on the
+// wire -- and `LivenessClock` and `AgeEstimator` use it. `harness/src/trace.cpp`
+// carries a second copy and interpolates, which is where these came from. The
+// clock's answers for the same three files are 19,947.7 / 19,962.8 / 19,973.9.
+// They agree to 0.1 ms at Anvil and Kraken, whose cadences are flat, which is
+// why the divergence survived three milestones -- the coincidence class again.
+//
+// CORRECTING THEM HERE IS EXACTLY WHAT IS BEING DEFERRED. A convention change
+// rewrites figures inside this file, and *no existing golden moves* is what
+// makes a split reviewable; bundled into another stage, nothing in the diff
+// would distinguish a convention change from a defect. So it must be its own
+// stage, where the moved figures have nothing else to hide behind.
+//
+// OWNER: **M5 close-out**. EXPIRY: when `harness/` and `engine/` compute the
+// median by one convention. TRIPWIRE: if any stage before the close-out needs to
+// quote or re-pin a Binance cadence figure, this closes first. The pinned
+// COLUMNS below are unaffected either way -- no median is a pinned column, and
+// `liveness_firings` is computed from the clock's own threshold, not from these.
+// Carried in three places: here, `test_binance_adapter.cpp`'s two-conventions
+// case (**which must be INVERTED, not deleted or relaxed**), and DESIGN strain
+// 29. If the close-out ships without inverting it, the clause moves to whichever
+// stage next touches a cadence figure rather than lapsing. `liveness_firings` is 0 everywhere, and see
 // venue.hpp for why that is weaker evidence than it looks: no slice is long
 // enough to calibrate, so all seven ran on the uncalibrated 30,000 ms default.
     {"binance_atomeur_d100ms_20260824.ndjson", "binance",

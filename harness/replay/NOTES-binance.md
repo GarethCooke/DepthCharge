@@ -1298,13 +1298,27 @@ It is ~5 ms at worst and changes no decision. What it costs is the property
 trace are comparable, *"which is how several of this project's numbers have been checked"*.
 On the report path that is false today.
 
-**Recorded, not fixed, and the reason is scope rather than reluctance.** `median_gap_ms`
-shares the same code path, and its figures are quoted across `NOTES.md`, `NOTES-kraken.md`,
-this file and a dozen briefs — so adopting the shared convention is a documentation sweep,
-not a line change, and doing it at the end of an evening in a stage about the re-snapshot
-schedule is how a correction becomes the next silent drift. Pinned meanwhile by
-`test_binance_adapter.cpp`'s two-conventions case, which must be **inverted** when the fix
-lands. ARCHITECTURE §9, 2026-08-26.
+**Recorded, not fixed — and the load-bearing reason is golden movement, not sweep size.**
+Adopting the shared convention rewrites the cadence figures quoted inside
+`taxonomy_pins.inc`, and *no existing golden moves* is precisely what makes a seven-commit
+split reviewable: bundled into this stage, nothing in the diff would distinguish a convention
+change from a defect. **A convention change that moves pins must be its own stage, so that the
+moved pins have nothing else in the diff to hide behind.** (The sweep across three NOTES files
+is real and is not the argument; it is the consequence.)
+
+**Owner: M5 close-out** — not C, whose evening is already the threshold, the ceiling's changed
+role, the panel decisions and strain 26's four unbuilt remedies. **Expiry:** when `harness/`
+and `engine/` compute the median by one convention. **Tripwire:** if any stage before the
+close-out needs to quote or re-pin a Binance cadence figure, this closes first. *"Its own
+scope" is unowned, and commit 2 of this very split exists to close an unowned clause in §9 —
+so this one is not left blank.*
+
+Carried in three places, the shape the silent-stream fixture already uses:
+`test_binance_adapter.cpp`'s two-conventions case, `taxonomy_pins.inc`'s Binance comment, and
+DESIGN strain 29 — each saying that **the correct response is to INVERT the test, not to
+delete or relax it**, and that if the close-out ships without inverting it the clause moves to
+whichever stage next touches a cadence figure rather than lapsing. ARCHITECTURE §9,
+2026-08-26.
 
 **How it was found, which is the part worth keeping.** `dc_age_probe` was written with its
 own interpolated median and quoted 19,969.4 ms as this venue's cadence into five documents

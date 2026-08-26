@@ -752,11 +752,27 @@ TEST_CASE("the report's median and the clock's median are two conventions, and t
     // this project has quoted came from the interpolated one**: 19,951.7,
     // 20,011.6, 20,013.3 in `taxonomy_pins.inc`, and 20,004.8 in B1's log.
     //
-    // NOT FIXED HERE, deliberately: `median_gap_ms` shares that code path and is
-    // quoted across three NOTES files and a dozen briefs, so changing the
-    // convention is a documentation sweep with its own scope, not a line in a
-    // stage about the re-snapshot schedule. When it is fixed, this case must be
-    // INVERTED rather than deleted or relaxed. ARCHITECTURE §9, 2026-08-26.
+    // **NOT FIXED HERE, AND THE REASON IS GOLDEN MOVEMENT RATHER THAN SWEEP
+    // SIZE.** Adopting the shared convention rewrites the cadence figures quoted
+    // inside `taxonomy_pins.inc` — and *no existing golden moves* is precisely
+    // what makes a seven-commit split reviewable. Bundled into this stage,
+    // nothing in the diff would distinguish a convention change from a defect.
+    // **A convention change that moves pins must be its own stage, so that the
+    // moved pins have nothing else in the diff to hide behind.**
+    //
+    // OWNER: **M5 close-out** — not C, whose evening is already the threshold,
+    //   the ceiling's changed role, the panel decisions and strain 26's four
+    //   unbuilt remedies.
+    // EXPIRY: when `harness/` and `engine/` compute the median by one convention.
+    // TRIPWIRE: if any stage before the close-out needs to quote or re-pin a
+    //   Binance cadence figure, this closes first.
+    //
+    // **THE CORRECT RESPONSE IS TO INVERT THIS CASE, NOT TO DELETE OR RELAX IT.**
+    // If the close-out ships without inverting it, the clause moves to whichever
+    // stage next touches a cadence figure rather than lapsing. Carried in three
+    // places — here, `taxonomy_pins.inc`'s Binance comment, and DESIGN strain 29
+    // — which is the shape the silent-stream fixture already uses.
+    // ARCHITECTURE §9, 2026-08-26.
     const std::string path =
         std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
     depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;

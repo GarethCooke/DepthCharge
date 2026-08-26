@@ -3625,6 +3625,56 @@ classDiagram
   </div>
 
   <div class="strain">
+    <h4>29 &middot; The median convention has two homes, and every Binance cadence figure
+        came from the wrong one &mdash;
+        <em>opened 2026-08-26 at M5 stage B2, found at review, deferred with an owner</em></h4>
+    <p>
+      <code>sample_window.hpp</code> states the rule and says it &ldquo;matters enough to have one
+      home&rdquo;: a <b>lower median by nearest rank</b>, because an interpolated median invents an
+      interval that never occurred on the wire. <code>LivenessClock</code> and
+      <code>AgeEstimator</code> use it. <b><code>harness/src/trace.cpp</code>'s statistics pass
+      carries a second copy and interpolates</b> &mdash; both
+      <code>median_liveness_gap_ms</code> and <code>median_gap_ms</code>.
+    </p>
+    <p>
+      Measured over every committed trace: the two agree to 0.1 ms at Anvil (500.1/500.1) and
+      Kraken, and disagree on <b>every Binance capture with an even interval count</b> &mdash;
+      19,947.7 vs 19,951.7, 19,962.8 vs 20,011.6, 19,973.9 vs 20,013.3, 19,950.6 vs 20,004.8,
+      19,964.0 vs 19,969.4. The right-hand column is what <code>taxonomy_pins.inc</code>'s Binance
+      comment quotes and what B1's session log quotes for the silent-stream fixture, so <b>the
+      cadence recorded for this venue is not the cadence the clock on the board computes.</b> The
+      flat cadences at the first two venues are why it survived three milestones &mdash; the
+      <a href="#ar">coincidence class</a>, in a third place.
+    </p>
+    <p>
+      <b>It surfaced because B2's own new code got it wrong first.</b> <code>dc_age_probe</code>
+      was written with its own interpolated median and quoted 19,969.4 ms into five documents and
+      one test &mdash; and <b>the test passed</b>, because
+      <code>Approx(19969.4).epsilon(0.001)</code> is a <em>relative</em> tolerance spanning
+      &plusmn;20 ms and therefore admits 19,964.0 as well. A bound wide enough to accept both
+      candidate answers pins neither.
+    </p>
+    <p>
+      <b>DEFERRED, AND THE REASON IS GOLDEN MOVEMENT RATHER THAN SWEEP SIZE.</b> Adopting the
+      shared convention rewrites the cadence figures quoted inside
+      <code>taxonomy_pins.inc</code>, and <em>no existing golden moves</em> is precisely what makes
+      a seven-commit split reviewable: bundled into this stage, nothing in the diff would
+      distinguish a convention change from a defect. <b>A convention change that moves pins must be
+      its own stage, so the moved pins have nothing else in the diff to hide behind.</b>
+    </p>
+    <p class="verdict">Resolves: <b>M5 close-out</b> &mdash; not C, whose evening is already the
+      threshold, the ceiling's changed role, the panel decisions and strain 26's four unbuilt
+      remedies. <b>Expiry:</b> when <code>harness/</code> and <code>engine/</code> compute the
+      median by one convention. <b>Tripwire:</b> if any stage before the close-out needs to quote or
+      re-pin a Binance cadence figure, this closes first. Carried in three places &mdash; this card,
+      <code>taxonomy_pins.inc</code>'s Binance comment, and
+      <code>test_binance_adapter.cpp</code>'s two-conventions case, <b>which must be INVERTED
+      rather than deleted or relaxed</b>. If the close-out ships without inverting it, the clause
+      moves to whichever stage next touches a cadence figure rather than lapsing.
+      ARCHITECTURE §9, 2026-08-26.</p>
+  </div>
+
+  <div class="strain">
     <h4><s>22 · One reader, two venues — and the pressure is on the traces, not on the reader</s> — <em>CLOSED 2026-08-25 at M5 stage A, by making the dispatch exhaustive in both languages</em></h4>
     <p>
       Opened 2026-08-17 (M4 stage A). <code>TraceReader</code> now validates an envelope and
