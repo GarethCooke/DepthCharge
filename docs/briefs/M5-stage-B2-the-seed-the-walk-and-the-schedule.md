@@ -558,3 +558,105 @@ shape is established and the fix is to make the owner real rather than to re-ass
 stage table and the ROADMAP M5 line both now carry **close-out**, depending on D, with the
 median-convention change named as what it holds and why that change cannot travel inside another
 stage's diff. Commit 12, documentation only.
+
+### 2026-08-26 · Claude Opus 5 (1M context) · the inheritance list, checked against its own table
+
+**Green.** 50/50 ctest on `host-mingw`, no golden moved. `master`, `origin/master` and
+`m5/stage-b2` all at `0bbadac`, so all thirteen of this stage's commits are published and the
+branch-then-fast-forward mechanism recorded in the entry above is now the tree's actual state
+rather than a rule about it. *Stated at the precision it was checked at:* the entry above records
+the ladder closed for **1–12**, which is every commit that existed when it was written; **13** is
+that entry itself, documentation only, and what this session verified of it is that the tip builds
+and tests green — not that it was laddered in isolation.
+
+**Done.** The *Owed by stage C* section below was the only uncommitted thing in the tree. Every
+claim in it was checked **against source rather than against the log that produced it** — the
+`M4-stage-A-the-replay-dialect.md` precedent exists at its § *Owed by stage B*;
+`kThresholdCeilingMs`'s 176,000 ms sizing is in the constant's own comment
+(`liveness_clock.hpp`), not merely in §9; 638.8 s, 85.2 min and the 2 KiB budget are all three in
+`age_estimator.hpp`; and `binance_age_probe` is the ctest name against `dc_age_probe` the
+executable, which is the pairing §9 already uses. Three corrections, no behaviour:
+
+1. **The headline count did not survive its own table.** *"B2 has already taken the measurements
+   for six of them"* against an evidence column attributing 1 and 2 to M5 stage A, 3 and 5 to B1,
+   4 to M4 stage A2, and only 6, 7 and 8 to this stage — **three, not six.** The closing paragraph
+   said *four* (*"items 5 to 8"*) in the same breath, so the section disagreed with itself before
+   anyone had to interpret the table at all. Corrected to the claim that is both true and the one C
+   actually needs: **all eight already have committed evidence, and none needs re-measuring** —
+   which is what *"C decides; C does not re-measure"* was reaching for.
+2. **Two questions had been run together**, and that is *why* the count went wrong rather than a
+   separate slip: *who measured a thing* and *whether a desk evening can settle it* are independent,
+   and item 5 is desk-closeable on **B1's** evidence. Separated in place.
+3. **`B3` qualified as M4 stage D's bench day.** §9 writes it `(M4 stage D, B3)`; the section had
+   the bare token, and M5 has no B3 — so in a section addressed to an M5 stage it reads as one.
+
+**Decision, with why. Corrected in place rather than footnoted, because the section had not been
+committed.** M4 stage D's precedent and this stage's own early-push correction both amend *published*
+claims in place and leave the original standing; that rule exists so the record cannot be tidied
+into something that never happened. It does not reach an uncommitted draft, where there is no
+published claim to preserve — so the count is simply right, with one italic line inside the section
+saying what it used to be. **The reason it earns even that line:** a section whose entire premise is
+*"a list that has to be reconstructed by grepping is a list that arrives short"* opening with a
+number its own rows do not produce is the failure it was written to prevent, arriving in the
+prevention. Same family as the green-suite row from §3 of the entry immediately above — **nothing
+failed**, and nothing could have: no test reads this table, and the count and the rows are only
+checkable against each other by someone doing it.
+
+**Not done.** No stage C brief. The section's own warning is that items 3 and 4, and arguably 1 and
+2, are rendering and threshold decisions of the kind M4 stated *nothing a host test asserts could
+take* — so scoping C is a desk-versus-bench question to be settled before it is briefed, not inside
+the briefing.
+
+**Exact next step.** Land this as one documentation commit on `m5/stage-b2`, ladder it, and
+fast-forward `master` only after. Then **scope C** against the desk-versus-bench split above, and
+brief it.
+
+---
+
+### Owed by stage C
+
+Written down at the owner's close-out of stage B2 (2026-08-26), **after this stage was already
+closed and pushed**, because C's inheritance existed only as five scattered mentions in the log
+above — and a list that has to be reconstructed by grepping is a list that arrives short. The
+stage-A → stage-B precedent (`M4-stage-A-the-replay-dialect.md`, § *Owed by stage B*) is the home
+for this; the same section had not been written here.
+
+**Eight decisions, and every one already has committed evidence behind it — B2 took the
+measurements for three.** C decides; C does not re-measure. The evidence column says whose each
+one is, and it is deliberately not all this stage's: 1 and 2 are **M5 stage A**'s, 3 and 5 are
+**B1**'s, 4 is **M4 stage A2**'s, and 6, 7 and 8 are the three measured here. *This opening
+sentence was corrected before the section was committed; the log entry above it says from what,
+and why the slip was worth recording rather than only fixing.*
+
+| # | What C owns | Where the evidence is |
+| --- | --- | --- |
+| 1 | The liveness threshold's **multiplier**. The 2026-08-25 ruling assumes ~80 s (4 × a 19.97 s median) and the code cannot produce it. | §9 2026-08-25 (M5 stage A, qualifying the ping ruling) |
+| 2 | **`kThresholdCeilingMs`'s changed role.** 30,000 ms clamps the ruling's ~80 s to 30 s, and the constant was sized against Anvil's 176,000 ms silence — never against a venue whose *healthy* cadence is two thirds of it. Ceiling rises, multiplier falls, or both become per-venue. | Same row. *Changing the constant and the venue in one step leaves no way to attribute a regression* — the argument that deferred the multiplier applies here too. |
+| 3 | **The four unbuilt remedies for the lying socket.** None built at B1, deliberately: choosing between them is a rendered-state decision needing a calibration nobody had. | DESIGN strain 26; §9 2026-08-25 (M5 stage B1, measured) |
+| 4 | **What the panel renders on a silent feed** — including whether the header shows *no reading* rather than a number it cannot support, which is the shape M4 stage A2 already used for a reconnect. | `M4-stage-A2-the-age-meter.md` |
+| 5 | **The transport-versus-feed hole.** The ping is emitted below the subscription: it proves the socket and never the feed, and no care with stream names closes it because a server-side subscription drop presents identically. | §9 2026-08-25 (M5 stage B1) |
+| 6 | **`age_ms` is BLIND to a feed backlog** — measured here, not assumed. It TRACKS a socket backlog at **1.00×** because the ping shares the TCP stream, and reads nothing through a feed backlog, which at this venue is physical only. B1's hypothesis is **narrowed, not confirmed**. | This stage's `binance_age_probe`, § above |
+| 7 | **The 638.8 s no-reading window** on *every* Binance connection — 32 baseline intervals at a 20 s cadence, against 16 s at Anvil and 32 s at Kraken. Unnamed anywhere before this stage. | This stage; `age_estimator.hpp` (comment corrected in commit 8) |
+| 8 | **Whether ~85 min is a defensible supremum window at a 20 s cadence.** `kAgeWindowSamples = 256` was chosen as a 2 KiB memory budget and never as a duration. **Handed to C undecided.** | The sample-counted-constant §9 row |
+
+**THE FIRST QUESTION IS NOT WHAT C'S BRIEF SAYS — IT IS WHAT THE DESK CAN SETTLE.** Items 3 and 4,
+and arguably 1 and 2, are rendering and threshold decisions of exactly the kind M4 stated *nothing
+a host test asserts could take* — and at M4 they waited for the bench and were taken by eye at the
+closing sitting. **Scope C against that before briefing it**, or C is written as one evening and
+discovers halfway through that half of it cannot be finished at a desk. Items 5 to 8 are the ones a
+desk evening can actually close — 6, 7 and 8 on this stage's own measurements, 5 on B1's. **Which
+stage measured a thing and whether a desk can settle it are separate questions**, and running them
+together is how the count above went wrong.
+
+Two cautions carried with the list:
+
+- **Three of M4's honesty mechanisms are compromised at this venue from one cause**, not two — the
+  grey threshold has nothing to arm on, the age meter has nothing to measure against, and the meter
+  additionally has no reading at all for the first ~11 minutes. Whether M5's definition of done can
+  still claim parity with M4's is a question C should be asked explicitly rather than left to
+  discover.
+- **Every fetch-latency and cadence figure C will read is a desk-box figure**, and **M4 stage D's
+  bench day B3** measured DNS at 14,000 ms on the board (§9, 2026-08-23). *Spelled out because B3 is
+  a bench day inside M4 stage D and not a stage of anything — in a section addressed to an M5 stage,
+  a bare "B3" reads as M5's, and M5 has none.* The provenance is stated beside each number in
+  `NOTES-binance.md`; keep it stated.
