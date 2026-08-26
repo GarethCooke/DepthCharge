@@ -3489,6 +3489,50 @@ classDiagram
       is where invariant #5 draws its line, because a panel that greys late is honest and a
       panel that never greys is the one unacceptable output.
     </p>
+    <p>
+      <b>AND THERE IS NOW A FIXTURE THAT PRODUCES IT ON DEMAND, WHICH IS THE PART THAT
+      CHANGES WHAT C CAN CLAIM.</b>
+      <code>harness/replay/binance_btcusdt_DEFECT_silent_stream_20260826.ndjson</code> is a
+      live capture — one connect, misspelled stream — carrying a successful REST seed, three
+      answered pings, and <b>zero depth frames</b>. Replayed it draws a populated, coloured,
+      <b>LIVE</b> ladder over a feed that never spoke. It is the first artefact in this
+      project's history that can drive invariant #5's forbidden output on demand: M3's
+      frozen ladder was real but <em>incidental</em>, a condition that happened once at the
+      bench, and this one is staged and replayable from a file.
+    </p>
+    <p>
+      <b>It is not a golden and not a witness. It is a defect fixture</b> — a third thing,
+      named in capitals in the filename so nobody has to read a comment to find out, in the
+      spirit of <code>NOT_A_CHECKSUM_GOLDEN</code>. It is deliberately excluded from
+      <code>binance_adapter_oracle</code>, <code>binance_tool_selfcheck</code> and
+      <code>binance_oracle_mutants</code>, because there is no book to grade and a VACUOUS
+      verdict reads like a pass; it IS in the taxonomy pin and read by <code>dc_replay</code>,
+      because an unpinned committed trace is a failure and not a skip whatever it is for.
+    </p>
+    <p>
+      <b>THE EXPIRY, and it is the same shape as the untracked-evidence clause on the
+      2026-08-25 audit-stream ruling.</b> <code>test_binance_adapter.cpp</code>'s
+      silent-stream case asserts TODAY'S BROKEN BEHAVIOUR — <code>status == Live</code>, no
+      stale episodes, <code>seed_bracket_ok == 0</code>, a populated book. <b>It pins a
+      defect, not a contract.</b> When C lands any of the four remedies above the case MUST
+      fail, and the correct response is to <b>invert it, not to delete it and not to relax
+      it</b>: flip the two assertions marked THE LIE and the fixture becomes the remedy's
+      regression test in the commit that makes it pass. <b>If C ships without inverting it,
+      the fixture does not lapse — it moves to whichever stage next touches liveness with
+      this clause attached.</b> A defect fixture nobody ever flipped is a defect nobody ever
+      fixed, and it should be as hard to lose as the ruling it is evidence for.
+    </p>
+    <p>
+      <b>It earned its keep on its first run.</b> Building it exposed a defect shipped two
+      commits earlier: M5 stage A moved the statistics pass to <code>event_ns</code> and
+      wrote the rule into §9 as <em>only the liveness clock reads it</em> — then changed one
+      of the <b>two</b> liveness clocks. <code>replay_driver.cpp</code>'s, the one that
+      decides <code>threshold_ms()</code> and therefore when the panel greys, was still
+      reading <code>rx_ns</code>. Nothing caught it because at Anvil and Kraken the two
+      stamps are equal, so both implementations agreed on every committed trace that
+      existed — the <a href="#ar">coincidence class</a> again, inside the stage that quoted
+      it. A capture whose three pings share one <code>rx_ns</code> is what separated them.
+    </p>
     <p class="verdict">Resolves: <b>C</b>, with the threshold work — it is a rendered-state
       decision and not an adapter one. B1 recorded the measurement, the control run, the
       mechanism and four candidate remedies, and deliberately built none.

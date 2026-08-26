@@ -87,7 +87,40 @@ public:
             // silent wrong answer (M4 stage A2).
             if (decoder_.classify(frame).is_liveness) {
                 ++liveness_arrivals_;
-                liveness_.on_liveness(frame.rx_ns);
+                // STAMPED FROM `event_ns`, AND THIS LINE WAS WRONG FROM M5 STAGE
+                // A UNTIL THE SILENT-STREAM FIXTURE FOUND IT.
+                //
+                // Stage A moved the statistics pass (trace.cpp's accumulate) to
+                // `event_ns` and wrote the rule into ARCHITECTURE §9 as "only
+                // the liveness clock reads it" — and then changed one of the TWO
+                // liveness clocks. This is the other one, and it is the one that
+                // matters more: `accumulate` produces a report, while this
+                // decides `threshold_ms()` and therefore when the panel greys.
+                //
+                // That is ARCHITECTURE §9's oldest drift shape (2026-08-07:
+                // `read_trace()` and `TraceReader` written separately, drifted,
+                // and gave two answers to one question) recurring inside the
+                // stage that quoted it. Nothing caught it because at Anvil and
+                // Kraken `event_ns == rx_ns`, so the two implementations agreed
+                // on every committed trace that existed — the coincidence class,
+                // again.
+                //
+                // What surfaced it: a capture in which three pings 20 s apart
+                // share ONE `rx_ns`, because a silent stream means the main loop
+                // never flushes until the end. Read from `rx_ns` this clock sees
+                // three arrivals 0 ms apart and reports a median of zero.
+                liveness_.on_liveness(frame.event_ns);
+                // THE AGE ESTIMATOR DELIBERATELY STAYS ON `rx_ns`, and that is a
+                // limitation rather than an oversight. It reads its deficit
+                // against `current_rx_ns_` in `stamp_age`, so feeding it
+                // `event_ns` arrivals would mix two clocks in one subtraction and
+                // can go negative. The honest note is larger than the mechanism:
+                // `age_ms` is the book's queuing lag measured against the venue's
+                // liveness signal, and at Binance that signal is a TRANSPORT ping
+                // with no relationship to the book's queue at all — so the
+                // quantity is questionable at this venue whichever stamp feeds
+                // it. That belongs with C's threshold work (ARCHITECTURE §9,
+                // 2026-08-25, the transport-versus-feed row), not here.
                 age_.on_liveness(frame.rx_ns);
             }
 

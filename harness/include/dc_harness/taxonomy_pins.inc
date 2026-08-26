@@ -248,3 +248,38 @@
      /*wd_declared=*/0, /*wd_anvil=*/1, /*book_wd_declared=*/0, /*book_wd_anvil=*/1,
      /*liveness_events=*/2, /*liveness_firings=*/0,
      "depthUpdate=548 ping=2 rest=6"},
+
+// --- THE DEFECT FIXTURE (M5 stage B1 follow-up, 2026-08-26) -----------------
+// NOT A GOLDEN AND NOT A WITNESS. This row pins a capture in which the venue
+// accepted the socket, answered our pongs, sent three pings on the normal
+// cadence, served a successful REST seed from a different host, and delivered
+// ZERO depth frames -- because the stream name in the URL path was misspelled by
+// one character. Replayed, it produces a populated, coloured, LIVE ladder over a
+// feed that has never spoken.
+//
+// The row is short and every number in it is the point:
+//   records=4        one REST body and three pings. Nothing else arrived, ever.
+//   book_events=1    the REST body. The diff stream contributed nothing.
+//   snapshots=1      the seed. It is the ONLY thing that ever re-baselined.
+//   liveness_events=3, liveness_firings=0
+//                    THE LIVENESS CLOCK WAS FED NORMALLY THROUGHOUT, at a
+//                    measured 20,004.8 ms median, and never fired. That is not
+//                    a defect in the clock; it is the 2026-08-25 ruling working
+//                    exactly as written on a signal that proves the socket and
+//                    never the feed (ARCHITECTURE 9, 2026-08-25, both rows).
+//   kinds "ping=3 rest=1"
+//                    no `depthUpdate`, no `partialDepth`. A Binance kinds string
+//                    with no book kind in it at all is what this file is for.
+//
+// **PINS A DEFECT, NOT A CONTRACT, AND IS EXPECTED TO INVERT.** See
+// `test_binance_adapter.cpp`'s silent-stream case for the expiry clause: when C
+// picks one of DESIGN strain 26's four remedies, the ladder stops being LIVE and
+// this row's FIGURES stay exactly as they are -- the taxonomy counts records,
+// not rendered state, so nothing here moves when the remedy lands. If it does
+// move, something changed what this file MEANS and that wants a human.
+    {"binance_btcusdt_DEFECT_silent_stream_20260826.ndjson", "binance",
+     /*records=*/4, /*tx=*/0, /*untyped=*/1, /*book_events=*/1,
+     /*snapshots=*/1, /*resyncs=*/0,
+     /*wd_declared=*/0, /*wd_anvil=*/0, /*book_wd_declared=*/0, /*book_wd_anvil=*/0,
+     /*liveness_events=*/3, /*liveness_firings=*/0,
+     "ping=3 rest=1"},

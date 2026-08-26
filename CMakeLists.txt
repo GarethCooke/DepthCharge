@@ -251,7 +251,11 @@ add_executable(dc_tests
 # cases live outside both readers, so neither can quietly relax one.
 target_compile_definitions(dc_tests PRIVATE
   DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay"
-  DC_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/tests")
+  DC_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/tests"
+  # The silent-stream defect fixture, named here so the test and the build agree
+  # on one spelling. See DC_BINANCE_FIXTURE_NAME below for what it is and why it
+  # is excluded from the graded lists.
+  DC_BINANCE_FIXTURE="binance_btcusdt_DEFECT_silent_stream_20260826.ndjson")
 # M3 stages C, D, E and the transport rebuild: the firmware's WebSocket frame
 # parser and reassembler, its gap histograms,
 # the stall probe that classifies a >1 s book-hole, the reject log that captures
@@ -544,6 +548,46 @@ endforeach()
 unset(dc_trace)
 unset(dc_trace_path)
 
+# --- THE DEFECT FIXTURE, AND IT IS DELIBERATELY NOT IN THE LIST ABOVE ---------
+#
+# `binance_btcusdt_DEFECT_silent_stream_20260826.ndjson` is the first artefact in
+# this repository that can drive invariant #5's forbidden output ON DEMAND. M3's
+# frozen ladder was real but incidental — a condition that happened once at the
+# bench. This one is staged: a misspelled stream, captured live, in which the
+# venue accepted the socket (HTTP 101), answered our pongs, sent three pings on
+# the normal cadence, served a successful REST seed from a different host, and
+# delivered ZERO depth frames. Replayed, it produces a populated, coloured, LIVE
+# ladder over a feed that has never spoken.
+#
+# **IT IS NOT A GOLDEN AND IT IS NOT A WITNESS. IT IS A DEFECT FIXTURE**, which
+# is a third thing, and the name is in capitals so that nobody has to read this
+# comment to find that out. The convention is `NOT_A_CHECKSUM_GOLDEN`'s (M4 stage
+# A): *cannot be graded* is a state beside *pinned* and *forgotten*, and it is
+# stated rather than left to be inferred from an absence.
+#
+# SO IT IS EXCLUDED FROM THREE THINGS ON PURPOSE, and the exclusions are the
+# point rather than an oversight:
+#   * `binance_adapter_oracle`  — there is nothing to grade. No `@depth20`
+#     payload, no diff, no opportunity. Handing it to the oracle would produce a
+#     VACUOUS verdict that reads like a pass.
+#   * `binance_tool_selfcheck`  — `tools/binance_pins.py` pins wire economics
+#     over slices that carry a wire. This one carries none.
+#   * `binance_oracle_mutants`  — the mutants need a book to break.
+# It IS in the taxonomy pin and it IS read by dc_replay, because "an unpinned
+# trace is a FAILURE, not a skip" applies to every committed file whatever it is
+# for.
+set(DC_BINANCE_FIXTURE_NAME binance_btcusdt_DEFECT_silent_stream_20260826.ndjson)
+set(DC_BINANCE_FIXTURE
+    ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/${DC_BINANCE_FIXTURE_NAME})
+if(NOT EXISTS ${DC_BINANCE_FIXTURE})
+  message(FATAL_ERROR
+    "The silent-stream defect fixture is missing: ${DC_BINANCE_FIXTURE_NAME}. It is "
+    "the only artefact that can drive invariant #5's forbidden output on demand, and "
+    "`test_binance_adapter.cpp` asserts today's BROKEN behaviour against it so that "
+    "C's remedy flips the test. Restore it, or remove it from this list, the taxonomy "
+    "pin and that test in the same commit — never from one.")
+endif()
+
 # --- the third venue's traces, read end to end (M5 stage A) -------------------
 # Before this stage, dc_replay could read none of these: `binance` was a venue
 # the build rejected by name, and the reader could not have represented two of
@@ -559,7 +603,7 @@ unset(dc_trace_path)
 # nothing. B1 brings the adapter and these gain their ladder half then.
 #
 # The list is the NAMED one above, never a glob, for the reason stated there.
-foreach(dc_trace IN LISTS DC_BINANCE_TRACES)
+foreach(dc_trace IN LISTS DC_BINANCE_TRACES DC_BINANCE_FIXTURE)
   get_filename_component(dc_trace_stem ${dc_trace} NAME_WE)
   add_test(NAME dc_replay_${dc_trace_stem} COMMAND dc_replay ${dc_trace})
 endforeach()
@@ -592,7 +636,8 @@ add_test(NAME binance_adapter_oracle
 set_tests_properties(binance_adapter_oracle PROPERTIES TIMEOUT 300)
 
 add_test(NAME trace_taxonomy_selfcheck
-  COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES} ${DC_BINANCE_TRACES})
+  COMMAND dc_taxonomy --selfcheck ${DC_COMMITTED_TRACES} ${DC_BINANCE_TRACES}
+          ${DC_BINANCE_FIXTURE})
 set_tests_properties(trace_taxonomy_selfcheck PROPERTIES TIMEOUT 300)
 
 # Explicit timeouts on the two targets that now run threads. A hand-off bug that

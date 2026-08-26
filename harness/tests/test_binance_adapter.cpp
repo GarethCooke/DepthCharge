@@ -49,6 +49,8 @@
 #include <depthcharge/binance/binance_adapter.hpp>
 #include <depthcharge/binance/binance_frame.hpp>
 
+#include "dc_harness/replay_driver.hpp"
+
 using depthcharge::FeedEvent;
 using depthcharge::GapReason;
 using depthcharge::Side;
@@ -340,4 +342,77 @@ TEST_CASE("a transport gap drops the book and asks for a seed") {
     CHECK(a->reseed_wanted());
     REQUIRE(ev.count(FeedEvent::Kind::Gap) == 1);
     CHECK(ev.v.back().reason == GapReason::Disconnect);
+}
+
+// ---------------------------------------------------------------------------
+// THE SILENT-STREAM DEFECT FIXTURE
+// ---------------------------------------------------------------------------
+//
+// ============================ READ THIS FIRST ==============================
+// **THIS CASE PINS A DEFECT, NOT A CONTRACT, AND IT IS EXPECTED TO INVERT.**
+//
+// A test that asserts broken behaviour is a specification to whoever reads it
+// next, so it gets the expiry treatment ARCHITECTURE §9 already uses for the
+// untracked-evidence clause on the 2026-08-25 audit-stream ruling:
+//
+//   * WHAT IT PINS. Today, replaying `binance_btcusdt_DEFECT_silent_stream_...`
+//     produces a populated, COLOURED, **LIVE** ladder over a feed that has never
+//     spoken. That is invariant #5's one forbidden output — a frozen ladder that
+//     looks live — and this file is the first artefact in this project's history
+//     that can produce it ON DEMAND. M3's frozen ladder was real but incidental;
+//     this one is staged and replayable.
+//   * WHY IT IS ASSERTED RATHER THAN LEFT ALONE. Whichever of DESIGN strain 26's
+//     four remedies C picks, it must have a red-before-green. Without this case
+//     the remedy ships against an argument instead of a measurement, and strain
+//     26 closes on the same.
+//   * **WHEN C LANDS A REMEDY, THIS CASE MUST FAIL, AND THE CORRECT RESPONSE IS
+//     TO INVERT IT — NOT TO DELETE IT AND NOT TO RELAX IT.** Flip the two
+//     assertions marked THE LIE below to `Stale` and a non-empty episode list,
+//     and the fixture becomes the remedy's regression test in the same commit
+//     that makes it pass.
+//   * **EXPIRY.** If C ships without inverting this, the fixture does NOT lapse:
+//     it moves to whichever stage next touches liveness, with this clause
+//     attached, exactly as the audit-stream ruling's untracked-evidence clause
+//     moves rather than lapsing. A defect fixture nobody ever flipped is a
+//     defect nobody ever fixed, and it should be as hard to lose as the ruling
+//     it is evidence for.
+// ===========================================================================
+TEST_CASE("the silent stream draws a LIVE ladder over a feed that never spoke") {
+    const std::string path = std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_FIXTURE;
+    depthcharge::SymbolSpec spec = kBinanceBtcUsdt.spec;
+    const dc::harness::ReplayResult r =
+        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
+
+    // What the capture contains: a seed, three pings, and NOTHING ELSE. If these
+    // move, the fixture has been re-captured and every claim below is about a
+    // different file.
+    REQUIRE(r.meta.venue == dc::harness::Venue::Binance);
+    CHECK(r.binance.rest_snapshots == 1);
+    CHECK(r.binance.diff_frames == 0);
+    CHECK(r.binance.partial_frames == 0);
+    CHECK(r.liveness_arrivals == 3);
+
+    // THE MECHANISM, and it is the emission point rather than a missing
+    // detector. `adopt_seed()` emits the Snapshot from the REST body before any
+    // WebSocket event arrives, so the engine's book initialises off the seed
+    // alone — while `bracket_checked_` stays false for ever, because no diff
+    // ever comes to satisfy it.
+    CHECK(r.binance.seed_bracket_ok == 0);
+    CHECK(r.binance.seed_bracket_failed == 0);
+    CHECK(r.book.snapshots_adopted == 1);
+    CHECK(r.binance.seq_breaks == 0);
+
+    // The liveness clock was fed normally throughout and never fired. That is
+    // the 2026-08-25 ruling working exactly as written, on a signal that proves
+    // the socket and never the feed.
+    CHECK(r.liveness_median_ms > 19000.0);
+    CHECK(r.liveness_median_ms < 21000.0);
+
+    // ---- THE LIE. These two are the ones C's remedy must flip. ----
+    CHECK(r.final_snapshot.status == depthcharge::FeedStatus::Live);
+    CHECK(r.episodes.empty());
+    // ...and it is a POPULATED ladder, not an empty one. An empty book drawn
+    // live would be bad; a full one is worse, because it looks like a market.
+    CHECK(r.final_snapshot.bid_count > 0);
+    CHECK(r.final_snapshot.ask_count > 0);
 }

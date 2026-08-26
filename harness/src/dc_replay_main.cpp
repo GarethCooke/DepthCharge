@@ -144,11 +144,21 @@ int main(int argc, char** argv) {
                     "KrakenTraceDecoder has been an ADAPTER since M4 stage B1 and "
                     "dc_ladder is what runs it");
                 break;
+            // CORRECTED AT B1's FOLLOW-UP, and it is the identical stale claim
+            // this switch already carries a note about for Kraken. The line read
+            // "M5 stage A's Binance decoder is a CLASSIFIER; 0 FeedEvents by
+            // design (B1 is the adapter)" and B1 made it false the moment it
+            // landed — unnoticed for exactly the same reason as Kraken's, that
+            // it is trivially true OF THIS PROGRAM. Twice in one milestone is
+            // enough to say the general form out loud: a report line describing
+            // a stage rather than a behaviour goes stale on the stage that
+            // supersedes it, and nothing anywhere fails.
             case dc::harness::Venue::Binance:
                 print_symbol_venue_report(
                     path, stats,
-                    "none — M5 stage A's Binance decoder is a CLASSIFIER; 0 FeedEvents by "
-                    "design (B1 is the adapter)");
+                    "not driven here — dc_replay reads the envelope and names records; "
+                    "BinanceTraceDecoder has been an ADAPTER since M5 stage B1 and "
+                    "dc_ladder is what runs it");
                 break;
         }
     } catch (const dc::harness::UnknownVenueError& e) {

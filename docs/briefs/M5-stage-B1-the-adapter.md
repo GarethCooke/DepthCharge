@@ -376,3 +376,51 @@ comparison normalised for separator and case (stage A's cried wolf on a backslas
 loop **inline**, and push nothing until every commit is green in isolation. Then **B2** —
 which now has its round-trip numbers from the corpus rather than from a live run, and two
 mixed-cadence captures the reader has been able to read since stage A.
+
+### 2026-08-26 · Claude Opus 5 (1M context) · follow-up: the defect fixture
+
+**Done.** The one gap B1 left: the misspelled-stream capture existed nowhere. Re-taken live
+(one connect, 50 s, one opening REST seed, no loop), committed as
+`harness/replay/binance_btcusdt_DEFECT_silent_stream_20260826.ndjson`, pinned in the
+taxonomy, and read end to end by `dc_replay`. **46/46** (was 45). Nothing else touched.
+
+Four records: one `rest`, three `ping`, **zero frames**. The reader handles it, the liveness
+clock is fed normally at a 20,004.8 ms median through total silence, and the ladder draws
+**● LIVE**.
+
+**Named, excluded and pinned deliberately.** `DEFECT` is in the filename in capitals so
+nobody has to read a comment to learn it is not gradeable — `NOT_A_CHECKSUM_GOLDEN`'s
+convention. It sits in its own CMake variable rather than `DC_BINANCE_TRACES`, so it reaches
+`dc_replay` and the taxonomy but never the oracle, the economics pins or the mutants: there
+is no book to grade, and a VACUOUS verdict reads like a pass.
+
+**The expiry clause is carried in three places** — the test, the taxonomy row and strain 26 —
+in the shape §9 already uses for the audit-stream ruling's untracked-evidence clause: it pins
+a defect and not a contract, it must fail when C lands a remedy, the correct response is to
+**invert** it rather than delete or relax it, and if C ships without inverting it the fixture
+moves to whichever stage next touches liveness rather than lapsing.
+
+**IT FOUND A REAL DEFECT ON ITS FIRST RUN, AND THE DEFECT WAS MINE.** Stage A moved the
+statistics pass to `event_ns` and wrote §9's rule as *only the liveness clock reads it* —
+then changed one of the **two** liveness clocks. `replay_driver.cpp:90`, the one that decides
+`threshold_ms()` and therefore when the panel greys, was still stamping from `rx_ns`. That is
+§9's oldest drift shape (2026-08-07) recurring inside the stage that quoted it, and nothing
+caught it because at Anvil and Kraken `event_ns == rx_ns`, so both implementations agreed on
+every committed trace that existed — the coincidence class again. Fixed here; it moves
+nothing, because the only traces where the two stamps differ are Binance's and no golden
+reads the driver's clock on them.
+
+**The age estimator deliberately stays on `rx_ns`**, and the note is larger than the
+mechanism: `age_ms` is queuing lag measured against the venue's liveness signal, and at
+Binance that signal is a *transport* ping with no relationship to the book's queue — so the
+quantity is questionable at this venue whichever stamp feeds it. **C's**, with the
+transport-versus-feed row.
+
+**One more stale line corrected**, the identical defect this milestone already found once:
+`dc_replay`'s Binance report claimed *"M5 stage A's Binance decoder is a CLASSIFIER; 0
+FeedEvents by design"*, which B1 made false the moment it landed and which went unnoticed
+because it is trivially true *of that program*. Twice in one milestone is enough to state the
+general form: **a report line describing a stage rather than a behaviour goes stale on the
+stage that supersedes it, and nothing anywhere fails.**
+
+**Exact next step.** B2's brief, from the planning seat.

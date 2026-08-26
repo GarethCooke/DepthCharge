@@ -561,7 +561,38 @@ figures move in the same commit. Never the third thing.
 | `binance_atomeur_d100ms_20260824.ndjson` | 88 s | the quiet pair and the silence finding |
 | `binance_btcusdt_reconnect_20260824.ndjson` | 60 s | the deliberate reconnect and the one `U`/`u` break. **Not a clean window; never use as a guard.** |
 
+| `binance_btcusdt_DEFECT_silent_stream_20260826.ndjson` | 50 s | **NOT A GOLDEN AND NOT A WITNESS — a defect fixture.** See below. |
+
 Full captures stay untracked in `_local/`.
+
+### The defect fixture, and why it is named in capitals
+
+`binance_btcusdt_DEFECT_silent_stream_20260826.ndjson` is a live capture taken 2026-08-26,
+one connect, with the stream name in the URL path **misspelled by one character**
+(`depth@100mss`). The venue accepted the socket (HTTP 101), answered our pongs, sent **three
+pings** on the normal ~20 s cadence, served a **successful REST seed** from a different
+host, and delivered **zero depth frames**. Four records: one `rest`, three `ping`.
+
+**Replayed, it draws a populated, coloured, LIVE ladder over a feed that has never spoken.**
+It is the first artefact in this repository that can produce invariant #5's forbidden output
+**on demand** — M3's frozen ladder was real but incidental, and this one is staged.
+
+It is **excluded on purpose** from `binance_adapter_oracle`, `binance_tool_selfcheck` and
+`binance_oracle_mutants`: there is no book to grade and no wire to price, and a VACUOUS
+verdict reads like a pass. It **is** in the taxonomy pin and read by `dc_replay`, because an
+unpinned committed trace is a failure and not a skip whatever it is for.
+
+**It pins a defect, not a contract, and it is expected to invert at C.** The expiry clause
+lives in `test_binance_adapter.cpp`'s silent-stream case and in DESIGN strain 26: when C
+lands a remedy the test must fail, the correct response is to invert it rather than delete
+or relax it, and if C ships without inverting it the fixture moves to whichever stage next
+touches liveness rather than lapsing.
+
+**It earned its keep on its first run**, by exposing a defect shipped two commits earlier:
+stage A moved the statistics pass to `event_ns` and changed one of the **two** liveness
+clocks. The replay driver's — the one that decides when the panel greys — was still reading
+`rx_ns`, and nothing caught it because at Anvil and Kraken the two stamps are equal. A
+capture whose three pings share one `rx_ns` is what separated them.
 
 ---
 
