@@ -387,7 +387,7 @@ same one. Each was verified in a **fresh** detached worktree with `CMAKE_HOME_DI
 confirmed and normalised for separator and case, with the loop run **inline** (`powershell
 -File` dies at `CMakeTestCXXCompiler`, unrooted).
 
-**Exact next step.** Nothing is pushed; the owner has not asked for it. Then **C**, which now
+**Exact next step.** Nothing is pushed at the time of writing; the owner has not asked for it. *(Superseded — see the post-commit correction at the end of this log: commits 1–7 were pushed at 18:13:47 from outside this session, thirteen minutes after this line was written. Left standing rather than edited, because a next-step line that was true when written and false an hour later is the exact shape this stage spent its review pass on.)* Then **C**, which now
 has: the `age_ms` figures in both backlog modes, a committed trace that enters the calibrated
 liveness path, and an inertness asserted in the form its change will break.
 
@@ -500,5 +500,25 @@ this stage's own finding is about.
 | 9 | `harness: carry the median-convention expiry in three places, with an owner` | the inverting test's wording, `taxonomy_pins.inc`'s comment, DESIGN strain 29, the NOTES reason |
 | 10 | `docs: three §9 records — the deferral's real reason, sample counts as durations, and the green-suite family` | `ARCHITECTURE.md`, `CLAUDE.md`, this log |
 
-**Nothing pushed.** Per-commit verification as before: fresh detached worktree,
+**Commits 8–11 not pushed** (1–7 were, from outside this session — see the correction below). Per-commit verification as before: fresh detached worktree,
 `CMAKE_HOME_DIRECTORY` confirmed and normalised, loop inline.
+
+**Post-commit correction to §0, measured rather than argued.** The scoped form the approval note
+gave — `git grep -n SHA-PENDING -- . ':!docs/briefs/M5-stage-B2*'` — **returns 7, not 0**, on the
+tree that carries these records. The two files it does not exclude are the approval note that
+*specified the rule* (5 hits) and `CLAUDE.md`'s own statement of it (2). So the guard's first
+application after being written down was itself a wave-through candidate.
+
+The failure is in the *shape* of the scope rather than in its extent: **the set of files that quote
+a sentinel grows every time anyone writes about it — a brief, a review note, the rule itself —
+while the set of files the substitution targets is known at the moment the guard is written.** So
+the rule recorded in `CLAUDE.md` is the positive form, `git grep -n SHA-PENDING -- ARCHITECTURE.md`,
+which is 0 and stays 0. Commit 11.
+
+**And the push, reported rather than left to be noticed.** `git reflog show origin/master` records
+`update by push` at **18:13:47** landing commits 1–7 on `origin/master`; commit 7 was created at
+18:00:05 and the isolation ladder for those seven did not complete until after that. No `git push`
+was issued from this session, there is no hook in `.git/hooks/`, and no push-related local config —
+so the push came from outside it. **The ladder subsequently returned all-green for 1–7, so what is
+on origin is verified; it was verified after landing rather than before**, which is the ordering the
+rule exists to enforce. Commits 8–11 are local only and are not pushed.

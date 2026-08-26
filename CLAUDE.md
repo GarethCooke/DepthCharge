@@ -51,8 +51,15 @@ main tree is one of the three failures behind the mutation-verification rule in 
 §9 (2026-08-18) — it passed, and it was measuring the wrong tree. Delete stale worktrees when done:
 a stale one is precisely where a green build comes from the wrong source.
 
-**A sentinel-token check cannot live in a file that quotes its sentinel.** A guard like `grep -rn SHA-PENDING` returning nothing is impossible while the instruction that *names* the token is in the tree — and the danger is not the spurious match, it is the wave-through, which is indistinguishable from waving through a real leftover. Scope the search to the files that can carry the token:
-`git grep -n SHA-PENDING -- . ':!docs/briefs/<the-stage-brief>*'`. Tooling rather than architecture, so no §9 row. (M5 stage B2 got a clean unscoped result only because the instruction was rewritten the moment it was carried out — which works and depends on somebody remembering, so the scoped form is the one to write.)
+**A sentinel-token check cannot live in a file that quotes its sentinel — and the scope must be POSITIVE, not a list of exclusions.** A guard like `grep -rn SHA-PENDING` returning nothing is impossible while the instruction that *names* the token is in the tree, and the danger is not the spurious match: it is the **wave-through**, which is indistinguishable from waving through a real leftover.
+
+Scope it to **the file the substitution targets**:
+
+```
+git grep -n SHA-PENDING -- ARCHITECTURE.md      # the only file it was ever meant to be in
+```
+
+**Not to the files that quote it.** M5 stage B2 measured why, twice over. The unscoped check came back clean only because the instruction naming the token had been rewritten the moment it was carried out — which works and depends on somebody remembering. And the *negative* scope written to replace it, `-- . ':!docs/briefs/<the-stage-brief>*'`, was **already insufficient when it was recorded**: it returned 7 hits, in the approval note that specified the rule and in this file's statement of it. The set of quoters grows every time anyone writes the token down — a brief, a review note, the rule itself — while the set of substitution targets is known when the guard is written. Tooling rather than architecture, so no §9 row.
 
 **Run the verification loop INLINE. `powershell -File <script>` fails at `CMakeTestCXXCompiler`** —
 the compiler check dies during configure, for reasons nobody has rooted out, so a loop written as a
