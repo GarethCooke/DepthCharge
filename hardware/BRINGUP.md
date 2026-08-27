@@ -13,6 +13,50 @@
   native USB 19/20. Header pads silkscreened 35/36/37 are physically present but wired
   to PSRAM — electrically unusable.
 
+## Flashing — use 115200, not the configured 921600
+
+**`upload_speed = 921600` in `firmware/platformio.ini` fails on this desk, and it fails in the
+worst possible way: mid-write, after the erase.** Measured 2026-08-27 (M5 stage D-A1), on the
+CH343 bridge at COM7:
+
+```text
+Changing baud rate to 921600
+Changed.
+WARNING: Failed to communicate with the flash chip, read/write operations will fail.
+Configuring flash size...
+Flash will be erased from 0x00000000 to 0x00003fff...
+   ... (three more regions, including 0x00010000 to 0x000e7fff)
+Compressed 15104 bytes to 10401...
+Writing at 0x00000000... (100 %)
+A fatal error occurred: Serial data stream stopped: Possible serial noise or corruption.
+```
+
+**Read what that leaves behind.** The erase completed and the write did not. The bootloader
+region had just been rewritten and the 881 KB application region was erased and never
+repopulated, so the board is left **not merely unflashed but partly erased** — it will not boot,
+and the serial output is whatever the ROM bootloader says rather than anything this firmware
+wrote. **That is the trap this section exists for:** a board that has just been flashed and now
+prints nothing reads exactly like a firmware fault, and the last thing anybody suspects is the
+upload that reported an error thirty seconds earlier and scrolled away. It is the same failure
+mode as the dead address line below — a hardware-side cause wearing a firmware-side symptom.
+
+**The remedy, and it is reliable:** re-flash at 115200. Both images went up clean at that speed
+on the same cable, same port, same session, `Hash of data verified`, ~20 s each.
+
+```powershell
+cd C:\Development\Projects\DepthCharge\firmware
+$env:PLATFORMIO_UPLOAD_SPEED = "115200"
+& "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -e depthcharge-binance -t upload
+Remove-Item Env:\PLATFORMIO_UPLOAD_SPEED
+```
+
+The env-var override is deliberate rather than editing `platformio.ini`: **the failure has not
+been root-caused** and may be this cable, this hub, or this bridge rather than the speed as
+such. `esptool`'s own warning names the chip connection first. Until somebody establishes which,
+lowering the committed constant would be pinning a workaround as a design decision — and a
+future desk with a better cable would inherit a slow flash for no stated reason. **If 921600 is
+ever seen to work reliably here, delete this section rather than leaving it to be true by luck.**
+
 ## Pin map (HUB75E → ESP32-S3, verified by continuity + first light)
 | HUB75E | GPIO |   | HUB75E | GPIO |
 |---|---|---|---|---|

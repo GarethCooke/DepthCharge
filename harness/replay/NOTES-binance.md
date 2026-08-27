@@ -1632,3 +1632,172 @@ guard rather than the repair: `test_replay_goldens.cpp` now asserts that **no co
 contains a CR byte**, positively scoped to the trace directory (which enumerates itself, so there is
 no list to remember to extend) with a count assertion so an empty sweep cannot wave through.
 Mutation-verified: one CR injected into a committed trace takes it red at the injected byte offset.
+
+---
+
+## Addendum — M5 stage D-A1, 2026-08-27: the footprint, the anchor, and a slot that is too small
+
+Every figure below was measured this sitting, on this desk, with its provenance beside it. Three are
+board-independent (compiler, linker, committed corpus) and one is not (the free-internal baseline),
+and the difference is marked because it is the one that can go stale.
+
+### 1 · The first lever was void, and the reason generalises
+
+The stage's ordered lever list opened with *"the four WS buffers to PSRAM — **+16,384 B, no code**"*,
+inherited from `hardware/bench-2026-08-11-feed-lag.md:358`:
+
+> The four WebSocket buffers (rx+tx x two handles) are `malloc`'d at `esp_websocket_client_init` and
+> currently take **16,384 B of internal heap**; at 8192 they move to PSRAM and return all 16 KB.
+
+**Every noun in that sentence has been deleted from the tree.** `esp_websocket_client` went with the
+owned transport on 2026-08-16; `ws_transport.hpp:243-252` records the spare handle going and names
+"~10 KiB of heap for the spare's buffers, its 6 KiB task stack" among what it took with it. There is
+one socket, and its buffers are `rx_buf_[4096]` and `upgrade_hdr_[2048]` — **`.bss` members** of a
+namespace-scope object, annotated *"never a heap block (invariant #7)"*.
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` steers `malloc`; it has no reach over `.bss`, so the mechanism
+the lever depends on cannot fire.
+
+**The 16 KB was not lost — it was reclaimed eleven days earlier by a different change, and is already
+inside the 177,040 baseline.** Counting it again was double-counting. The class is the one §9's
+2026-08-16 row already names: *a figure nobody re-derived when they quoted it* — here a figure that
+was true when written and was quoted after the thing it described had been deleted. **A measurement
+carries an expiry date that is the lifetime of the mechanism it measured**, and neither the bench
+note nor the two briefs that quoted it recorded what that mechanism was in a form the quoter had to
+check.
+
+Cost of the error, had it not been caught before the flash: the stage's arithmetic cleared the
+double-buffer floor by +3,488 B; without the phantom it misses by **12,920 B**, and the board would
+have booted single-buffered — the exact outcome `panel.cpp` argues against.
+
+### 2 · The footprint, measured off the linker rather than projected
+
+`buf_lvl_` moved from a 32,768 B member array to one heap block taken in the constructor
+(`new (std::nothrow) BookLevel[kBinanceBufferLevels]`), which lands in PSRAM with no ESP-IDF in
+`engine/` because anything >= 4,097 B is tried there first on this build.
+
+| image | static RAM (linker) | delta vs Anvil | `sizeof(Adapter)` delta | residual |
+| --- | ---: | ---: | ---: | ---: |
+| `depthcharge` (Anvil) | 146,560 | — | — | — |
+| `depthcharge-kraken` | 154,888 | +8,328 | +8,344 | 16 B |
+| `depthcharge-binance` | 206,216 | **+59,656** | +59,660 | 4 B |
+
+`sizeof(BinanceAdapter)` 100,824 -> **68,064** on the host (68,060 on xtensa, where the pointer is
+4 B not 8). The residuals are pointer-width and alignment noise, so **the `.bss`-delta model is
+validated against the target linker to within 4 bytes** and the projection method may be trusted for
+the next venue.
+
+**The baseline that is NOT board-independent.** `dma-internal free=` on the Anvil build, four runs on
+2026-08-24: **176,828 / 177,040 / 177,048 / 177,236**, spread 408 B. The stage brief carries
+**179,300**, a single sample from 2026-08-20 — higher than all four and older. `venue_budget.hpp`
+uses the worst of the four.
+
+### 3 · One TLS anchor, and it is a shared leaf rather than a shared root
+
+Taken off both live servers, as M4's precedent requires:
+
+| host | leaf sha1 | chain |
+| --- | --- | --- |
+| `data-stream.binance.vision` | `EC:52:46:B9:...:E3:A3` | leaf -> Amazon RSA 2048 M01 -> Amazon Root CA 1 (cross-signed by Starfield Services Root CA G2) |
+| `data-api.binance.vision` | `EC:52:46:B9:...:E3:A3` | identical |
+
+**The same certificate byte for byte**, because it is a wildcard: `DNS:*.binance.vision,
+DNS:binance.vision`. So the answer is *one anchor*, and for a stronger reason than a shared root —
+D-A2's REST client needs no second PEM and no second decision.
+
+Two anchors would validate, so the tiebreak is M4's: prefer the longer-lived self-signed root.
+Starfield Services Root CA G2 and the cross-signed Amazon Root CA 1 both expire **2037-12-31**; the
+self-signed Amazon Root CA 1 expires **2038-01-17**, and that is what `binance_root_ca.hpp` pins.
+**Verified rather than described** — both hosts re-connected to with that PEM as the only trust
+anchor and `-verify_return_error` set, `Verify return code: 0 (ok)` on both.
+
+### 4 · `kFrameCapacity` is too small for this venue, and the corpus already knew
+
+Deliverable 3 asked for FramePipe to be *priced, not moved*. Pricing it surfaced something the
+stage did not go looking for.
+
+`kFrameCapacity` is **16,384 B**, sized at M3 as *"1.9x the largest [Anvil message] ever
+observed"* (8,726 B). Measured over every committed Binance capture, broken out by stream and with
+the combined-stream wrapper removed so the figures are payloads the board would actually reassemble:
+
+| stream | n | max | mean |
+| --- | ---: | ---: | ---: |
+| `@depth@100ms` — **the board's stream** | 3,119 | **28,639** | 1,245 |
+| `@depth` (1 s diffs) | 61 | 32,479 | 6,619 |
+| `@depth20` / `@depth20@100ms` — the grading oracle | 929 | 1,326 | ~1,320 |
+
+So against Anvil's 1.9x margin, Binance's is **0.57x**: the largest observed message on the board's
+own stream is **1.75x the slot**. Distribution on that stream: p50 607, p90 2,399, p99 11,935,
+p99.9 23,391, and **13 of 3,119 messages (0.417%) exceed the slot**.
+
+**What that costs on the board, traced through.** An oversize message is a defined drop
+(`frame_pipe.hpp`: counted in `oversize`, never a partial frame handed to the parser). The adapter
+never sees it, so the *next* diff fails `U == last_u + 1`, raising `seq_breaks` ->
+`Gap{SeqGap}` -> book dropped -> **panel greys and a re-seed is requested**. That is honest rather
+than silent, which is the design working. It is also a grey and a REST fetch roughly every few
+minutes on a liquid pair, which is a soak observation (D-C) and a re-seed-budget input (D-A2).
+
+`frame_pipe.hpp` already carries the instruction — *"If `oversize` is ever non-zero on the bench,
+raise this constant; do not make it dynamic"* — and the measurement says it will be non-zero
+predictably, before the bench runs.
+
+**And it cannot simply be raised, which is the part that matters for D-B.** At 4 slots, 32 KiB each
+is 131,072 B of `.bss`, **+65,536 B** against a panel budget of 35,464 — it would take the board
+past no-panel. Fewer slots is contraindicated in the other direction by DESIGN strain 27
+(`no_slot = 1,594` over 25.39 h, heal clustering at 8.36x the Poisson baseline: the pipe wants
+*more* slots, not fewer). **So the two constraints close on each other, and moving FramePipe's
+64 KiB to PSRAM is the only lever that relaxes both** — it returns 65,536 B of internal *and* makes
+a capacity rise affordable.
+
+That strengthens the option the brief said only to price, and it does not decide it: FramePipe is
+the per-message path at ~13 messages/s, so its latency is a panel question and belongs to **D-B**.
+Priced here, built nowhere.
+
+### 5 · The board, 2026-08-27 — both readings, and the one criterion that was unreachable
+
+Flashed from the working tree that became the D-A1 commits. Logs
+`firmware/logs/device-monitor-260827-225015.log` (Anvil) and `…-225151.log` (Binance).
+
+**The control.** `free=176,804 reserve=81,920 budget=94,884`, still `depth=6 double-buffered`.
+`176,804 − 98,304 = 78,500`, so the budget moved by **16,384 exactly**. The reserve cut does what
+it claims and touches nothing else.
+
+**The acceptance.** `free=117,548 reserve=81,920 budget=35,628`, **`depth=3 double-buffered`**,
+`measured=31,816`. The desk projected `free ≈ 117,392` from the linker delta — **out by 156 B on
+the real board**, so the `.bss`-delta model is now validated against hardware as well as against
+the linker.
+
+**`seeds_unconfirmed` read 0, and could not read otherwise — the criterion was wrong, not the
+board.** It increments only in `drop_book` under `had_book && !bracket_checked_`, where
+`had_book` is `seed_ == SeedState::Seeded`. D-A1 ships no REST client, so the adapter never
+reaches `Seeded` and there is no withheld seed to count. The stage brief's DoD asked for a
+reading its own *Out of scope* had made unreachable. What evidences remedy (a) instead is the
+seed line — `buffered=572 overflow=8 reseeds=8 | bracket ok=0 FAIL=0` — diffs **held** rather
+than applied, over a healthy socket carrying 580 real depth frames, with the panel grey for the
+full 70 s (`live=0 rows=0/54 grey_ms=69,609 drawn=61`).
+
+**`oversize=0` over 580 frames, which neither confirms nor refutes §4.** At the measured 0.417%
+that window expects ~2.4, so a zero is unremarkable. **§4 needs the soak, not this capture.**
+
+### 6 · What the reserve cut costs, and the D-C check it owes
+
+On Anvil the change is pure arithmetic — d6 was already the chosen rung, so no memory moved. On
+Binance it buys the second buffer (15,816 B) out of the network stack's heap. Steady state:
+
+| | value |
+| --- | ---: |
+| free internal | 32,244 |
+| **largest free internal block** | **17,396** |
+| mbedTLS requirement | **2 × 16,717 B contiguous per session** |
+| **margin** | **679 B**, at `connects=1` |
+
+> **D-C CHECK, stated as a threshold rather than a watch-list line:** record the largest free
+> internal block **at every reconnect**. **If it ever falls below 16,717 B, the reserve cut is
+> wrong at the second socket** and `kReserveInternalBytes` returns to 96 KiB.
+
+**Why the reconnect and not the interval.** M4 stage D's B3 measured the largest block moving as
+a **sawtooth** across 25.39 h, so an end-of-run reading would say nothing and a mid-run dip is
+the event — and the reconnect is when a fresh TLS context is allocated. **Why it is not an
+alarm:** at socket-down the old context frees first and the hole grows (2026-08-11 saw free jump
++54,720), so an ordinary reconnect allocates from a much larger hole than 17,396. The case this
+guards is the half-open socket whose context is still held while the new one is built — B3
+observed two of those in 25.39 h, so it is not hypothetical.
