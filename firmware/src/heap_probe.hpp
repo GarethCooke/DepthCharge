@@ -74,8 +74,40 @@ struct HeapSample {
     std::uint32_t free_total = 0;
 };
 
-// Sample the internal (DMA-capable, non-PSRAM) heap — the one that matters,
-// since PSRAM is neither used by the feed path nor safe to assume present.
+// Sample the internal (non-PSRAM) heap — the one that matters, since PSRAM is
+// neither used by the feed path nor safe to assume present.
+//
+// CORRECTED 2026-08-27: this used to say "DMA-capable", and the code has never
+// measured that. `kCaps` in the .cpp is `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`
+// with no `MALLOC_CAP_DMA` bit, so the three `*_internal` fields are the
+// internal 8-bit-addressable heap and nothing narrower. It probably does not
+// matter on this part — `panel.cpp` records that internal and DMA-capable
+// "happen to be the same pool" here, and `panel.cpp` is the file that actually
+// needs the DMA figure and asks for it with its own `kDmaCaps` mask. But a
+// comment naming a quantity its code does not measure is the class of defect
+// this project has a §9 row about (2026-08-26, the instrument whose comment
+// named the right quantity and whose code counted a different one), so it is
+// fixed rather than left to be true by luck on one silicon revision. Note the
+// two files therefore sample two different masks under the same word
+// "internal", differing in TWO bits and not one: comparing their figures
+// directly needs both that same-pool note AND `MALLOC_CAP_8BIT` to be
+// non-restrictive within internal on this part — and only the first of those is
+// written down anywhere in this tree.
+//
+// `free_total` is `esp_get_free_heap_size()`, which is NOT the absence of a
+// mask: in this build's shipped `libesp_system.a` it is
+// `heap_caps_get_free_size(MALLOC_CAP_DEFAULT)` — one relocation, literal
+// 0x1000, and `MALLOC_CAP_DEFAULT` is `(1<<12)` at `esp_heap_caps.h:34`. It is
+// simply the only mask here not restricted to internal SRAM, so it is the one
+// field that would see a PSRAM allocation on a build whose SPIRAM is registered
+// with the allocator. This build's is: `CONFIG_SPIRAM_USE_MALLOC 1` and
+// `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 4096`, at `sdkconfig.h:313-314` of the
+// pinned framework package, so anything >= 4,097 B already goes PSRAM-first.
+// (`hardware/bench-2026-08-11-feed-lag.md:355-356` reads the same value out of
+// the ELF; the header is the stronger source and cannot go stale.) Nothing
+// prints `free_total` today. If anything is ever placed in PSRAM deliberately,
+// that is the field to report, and reporting it is a format specifier rather
+// than a new measurement.
 HeapSample sample_heap() noexcept;
 
 // A window: mark the start once steady state is reached (connect + first
