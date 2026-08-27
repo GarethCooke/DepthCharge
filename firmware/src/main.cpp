@@ -34,6 +34,7 @@
 #include "render_task.hpp"
 #include "resync.hpp"
 #include "secrets.h"
+#include "venue_budget.hpp"
 #include "venue_build.hpp"
 #include "ws_transport.hpp"
 
