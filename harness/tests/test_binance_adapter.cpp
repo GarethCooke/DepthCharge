@@ -844,6 +844,75 @@ TEST_CASE("...and what it calibrates to is 39,928 ms, which is a decision and no
     CHECK(r.episodes.empty());
 }
 
+// ---------------------------------------------------------------------------
+// THE RE-SEED-IN-FLIGHT STATE (M5 stage C, deliverable 3 — DESIGN strain 28)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a re-seed the adapter asked for and no layer served is PUBLISHED, not only counted") {
+    // Strain 28: `reseed_wanted()` is a request nothing can answer on a live
+    // book, because a `/api/v3/depth` body describes a past instant. B2 made the
+    // adapter say so out loud on the report; C makes it say so in the state the
+    // renderer reads, because D cannot choose what to draw during a fetch
+    // without one — and the two candidate renderings differ in nothing a host
+    // test can assert, which is the M4 triage split applied a third time.
+    //
+    // SYNTHESISED, and that is a fact about the corpus rather than a gap in it:
+    // every committed capture that raises a Gap is re-seeded by the capture tool
+    // moments later, so the published state passes through `Wanted` and out
+    // again inside one file. The state at the END of such a file is `None`,
+    // which is a true reading and not the one under test. Same reasoning as the
+    // trigger-crossing case above: where the code and every available file
+    // agree, synthesise the input that discriminates (ARCHITECTURE §9,
+    // 2026-08-18).
+    const std::string trace =
+        R"({"captured_at":"2026-08-26T00:00:00Z","url":"wss://data-stream.binance.vision/ws/btcusdt@depth@100ms","venue":"binance","symbol":"BTCUSDT","tool_version":"0.1.0","clock":"perf_counter_ns"})"
+        "\n"
+        R"({"rx_ns":1000000,"kind":"rest","req":{"method":"GET","url":"https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=1000","limit":1000,"weight":50,"sent_ns":0,"status":200,"recv_ns":900000},"frame":{"lastUpdateId":100,"bids":[["100.00000000","1.00000000"]],"asks":[["101.00000000","1.00000000"]]}})"
+        "\n"
+        R"({"rx_ns":2000000,"frame":{"e":"depthUpdate","U":101,"u":101,"s":"BTCUSDT","b":[],"a":[]}})"
+        "\n"
+        R"({"rx_ns":3000000,"frame":{"e":"depthUpdate","U":200,"u":201,"s":"BTCUSDT","b":[],"a":[]}})"
+        "\n";
+
+    // Every published frame, in order, so the transition is asserted rather than
+    // the end state alone.
+    std::vector<depthcharge::ReseedState> seen;
+    std::vector<depthcharge::FeedStatus> status;
+    const dc::harness::ReplayResult r = dc::harness::run_replay_text(
+        trace, kBinanceBtcUsdt.spec, dc::harness::ReplayOptions{},
+        [&seen, &status](const dc::harness::ReplayStep&,
+                         const depthcharge::DisplaySnapshot& s) {
+            seen.push_back(s.reseed);
+            status.push_back(s.status);
+            return true;
+        });
+
+    // Two events: the Snapshot the bracketing diff released, and the Gap the
+    // sequence hole raised.
+    REQUIRE(seen.size() == 2);
+    CHECK(r.binance.seed_bracket_ok == 1);
+    CHECK(r.binance.seq_breaks == 1);
+
+    // A live, bracketed book has nothing outstanding.
+    CHECK(status[0] == depthcharge::FeedStatus::Live);
+    CHECK(seen[0] == depthcharge::ReseedState::None);
+
+    // ...and the moment the book is dropped, the adapter's unanswerable request
+    // is visible to whatever draws.
+    CHECK(status[1] == depthcharge::FeedStatus::Stale);
+    CHECK(seen[1] == depthcharge::ReseedState::Wanted);
+    CHECK(r.final_snapshot.reseed == depthcharge::ReseedState::Wanted);
+
+    // **AND `InFlight` IS NEVER REACHED, WHICH IS THE CARD ITSELF.** Nothing in
+    // this build issues a fetch, so the request is published and never
+    // progresses. When D builds the adoption this line is what has to change,
+    // and until then the state on the panel is the honest one: asked for, and
+    // nobody answering.
+    for (const depthcharge::ReseedState s : seen) {
+        CHECK(s != depthcharge::ReseedState::InFlight);
+    }
+}
+
 TEST_CASE("the report's median and the clock's median are two conventions, and they differ here") {
     // **PINS A DIVERGENCE, NOT A CONTRACT, AND IS EXPECTED TO INVERT.** Same
     // shape as the silent-stream fixture's expiry clause, and for the same

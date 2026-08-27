@@ -149,6 +149,7 @@ public:
         if (channel_.published_version() == 0) {
             book_.publish(latest_);
             stamp_age(latest_);
+            stamp_reseed(latest_);
         }
 
         result.frames = frames_;
@@ -284,6 +285,34 @@ private:
         snap.age_ms = r.ms;
     }
 
+    // WHETHER A FRESH BASELINE IS OUTSTANDING (M5 stage C, DESIGN strain 28).
+    //
+    // Stamped beside the age and for the same reason: the adapter latches a
+    // REQUEST it cannot serve — it has no clock and no socket — and the layer
+    // that could is the feed side, which is this object on the desk and
+    // `FeedTask` on the board. So the request is `Wanted` here and can only
+    // become `InFlight` where a fetch is actually issued.
+    //
+    // **NOTHING IN THIS BUILD PRODUCES `InFlight`, AND THAT IS STRAIN 28 STATED
+    // AS A PUBLISHED STATE** rather than as a counter on a report nobody reads
+    // at a bench. When D builds the adoption, this is the field it advances.
+    //
+    // BINANCE ONLY, DELIBERATELY. Kraken latches `resync_wanted()` too, and it
+    // is NOT the same question: that is a re-SUBSCRIBE, it is already served by
+    // B2's healing path, and its rendering question was settled at M4. Giving
+    // two venues one vocabulary on the strength of one card's need is how a
+    // venue fact becomes a universal rule — which is the mistake `venue.hpp`
+    // exists to record.
+    void stamp_reseed(DisplaySnapshot& snap) noexcept {
+        if constexpr (Decoder::kVenue == Venue::Binance) {
+            snap.reseed = decoder_.adapter().reseed_wanted()
+                              ? depthcharge::ReseedState::Wanted
+                              : depthcharge::ReseedState::None;
+        } else {
+            snap.reseed = depthcharge::ReseedState::None;
+        }
+    }
+
     void on_event(const FeedEvent& ev) {
         ++events_;
 
@@ -346,6 +375,7 @@ private:
         book_.publish(latest_);
         note_window();
         stamp_age(latest_);
+        stamp_reseed(latest_);
         channel_.publish(latest_);
 
         if (is_stale && !saw_stale_ && ev.kind == FeedEvent::Kind::Gap) {

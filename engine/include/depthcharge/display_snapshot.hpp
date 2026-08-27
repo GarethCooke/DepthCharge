@@ -45,6 +45,28 @@ static_assert(kTradeRingSize <= 255, "trade_count is uint8_t");
 // (invariant #5).
 enum class FeedStatus : std::uint8_t { Live, Stale };
 
+// A FRESH BASELINE HAS BEEN ASKED FOR, AND HOW FAR THE ASK HAS GOT (M5 stage C).
+//
+// DESIGN strain 28: the re-snapshot trigger B2 built asks for a re-seed and no
+// layer answers it on a live book, because a `/api/v3/depth` body is a statement
+// about a PAST instant and adopting one rewinds the book. The three candidate
+// mechanisms — a ~128 KiB deferred buffer, drop-gap-reseed, or a merge below the
+// touch — cost board memory and a rendered state, so they are D's. **The state
+// that gets published while a fetch is outstanding is C's, because D cannot
+// choose what to render without one and the two candidate renderings differ in
+// nothing a host test can assert** (the M4 triage split, applied again).
+//
+// NOTHING BRANCHES ON IT, exactly as with `age_ms`: it is a state the renderer
+// may draw, never a rule the engine applies. Grey is still `status` alone.
+//
+// **`InFlight` IS UNREACHABLE IN THIS BUILD, AND THAT IS THE POINT RATHER THAN
+// AN OMISSION.** Nothing here issues a fetch — the adapter has no clock and no
+// socket — so a board on which strain 28 is still open publishes `Wanted` and
+// never advances past it. That makes the card's condition visible in the
+// published state rather than only in a harness counter, which is the difference
+// between a defect a bench sitting can see and one it cannot.
+enum class ReseedState : std::uint8_t { None, Wanted, InFlight };
+
 struct TradePrint {
     PriceTicks px{};
     Qty        qty{};
@@ -81,6 +103,19 @@ struct DisplaySnapshot {
     std::uint32_t age_ms{};
 
     SymbolSpec symbol{};
+
+    // See ReseedState above. NOT WRITTEN BY THE BOOK, for the same reason
+    // `age_ms` is not: whether a fetch is outstanding is a fact about the feed
+    // side's transport, which `engine/` has none of. The feed side stamps it
+    // one line after `Book::publish`, same single writer (invariant #8).
+    //
+    // COSTS NOTHING, and this is the third field to be placed by that argument
+    // rather than by taste: `SymbolSpec` is 12 bytes at offset 8 and `seq` is
+    // 8-aligned, so this struct already carried FOUR pad bytes here, of which
+    // this uses one. The static_assert at the foot of the file is what proves
+    // it — three documents quote a byte count derived from `sizeof`, and if it
+    // had moved, moving them would be a decision rather than an edit.
+    ReseedState reseed{ReseedState::None};
 
     // Seq of the last event folded into this snapshot.
     Seq seq{};
