@@ -1,6 +1,6 @@
 # M5 Stage C — what a green liveness clock is entitled to mean
 
-**Track:** Agentic [A] · **Status:** Not started · **Size:** one evening
+**Track:** Agentic [A] · **Status:** DONE 2026-08-26 (split proposed, nothing committed) · **Size:** one evening
 **Executor:** Claude Code, **desk only. No board, no flash, no `firmware/` change, no panel judgement.**
 
 B1 found a socket that answers pings and delivers nothing for ever. B2 measured what the age meter
@@ -68,6 +68,8 @@ from §9, ROADMAP, `NOTES-binance.md`, both M5 adapter briefs and DESIGN's own c
 **12 mentions across six files** — so the renumbering has a cost the 22→23 case did not.
 **Raise it rather than executing it silently.** Note the pattern while raising it: both
 collisions were created by a **stage B1** opening a card, a milestone apart, and nothing checks.
+
+*Decided at the owner's approval of this stage, 2026-08-26, and the paragraph above is left standing because it is the argument that produced the decision rather than an error in it: **the M4 card moves to 30 and the M5 card keeps 26**. The count was checked rather than estimated and came out at 15 references across 8 files, 14 of them the M5 card's — so card 23's precedent is followed by its reason (fewest broken citations) rather than by its letter (newer moves), which at 22→23 could not tell the two apart. DESIGN card 30 carries it.*
 
 **(ii) Card 28's C-half is missing from the eight-item table.** Card 28 — *the trigger asks for a
 re-seed and nothing can adopt one* — resolves **"D for the mechanism and the memory, C for what the
@@ -247,23 +249,32 @@ window is defensible at a 20 s cadence. Whether M5 can claim parity with M4's de
 
 ## Definition of done
 
-- ☐ Both Anvil traces restored to LF in the split's first commit, hashes confirmed against `HEAD`.
-- ☐ The threshold decided — ceiling, multiplier or per-venue — with the other two costed, the
+- ☑ Both Anvil traces restored to LF, hashes confirmed against `HEAD` (`762cb1e2…`, `37fae0f7…`).
+      **Not "in the split's first commit", because that commit is empty by construction** — the
+      committed blobs were always LF, so the repair has no diff. What is in the split's first
+      code commit instead is the **guard**: no committed trace may contain a CR byte. See the
+      session log's *deviations*.
+- ☑ The threshold decided — ceiling, multiplier or per-venue — with the other two costed, the
       constant moved in a commit of its own if it moves, and **a test that enters the calibrated
       branch and asserts what comes out.**
-- ☐ One of the four remedies built, **chosen jointly with the threshold and the coupling recorded**,
+- ☑ One of the four remedies built, **chosen jointly with the threshold and the coupling recorded**,
       and the general hole stated as still open.
-- ☐ `test_binance_adapter.cpp`'s silent-stream case **inverted, not deleted and not relaxed**, in the
+- ☑ `test_binance_adapter.cpp`'s silent-stream case **inverted, not deleted and not relaxed**, in the
       commit that makes the remedy pass.
-- ☐ The re-seed-in-flight engine state published, `sizeof(DisplaySnapshot)` pinned unmoved on host
+- ☑ The re-seed-in-flight engine state published, `sizeof(DisplaySnapshot)` pinned unmoved on host
       and xtensa.
-- ☐ The transport-versus-feed hole stated at the point of use.
-- ☐ Items 6, 7 and 8 recorded per venue; **8 decided.**
-- ☐ The parity question answered in writing.
-- ☐ The duplicate strain card 26 raised with its reference count.
-- ☐ ctest green from a clean configure; no golden moved; session log · ROADMAP · NOTES · §9 · DESIGN;
-      split proposed; nothing committed until approved; `m5/stage-c` pushed and `master`
-      fast-forwarded only after the ladder closes.
+- ☑ The transport-versus-feed hole stated at the point of use.
+- ☑ Items 6, 7 and 8 recorded per venue; **8 decided.**
+- ☑ The parity question answered in writing.
+- ☑ The duplicate strain card 26 raised with its reference count.
+- ☑ ctest green (50/50, `host-mingw`); no golden moved and no pin moved; session log · ROADMAP ·
+      NOTES · §9 · DESIGN all written; **split proposed and nothing committed**, as the last
+      constraint requires.
+- ☐ **NOT DONE, AND IT CANNOT BE UNTIL THE SPLIT IS APPROVED:** the commits created, each verified
+      in a fresh detached worktree with `CMAKE_HOME_DIRECTORY` confirmed, `m5/stage-c` pushed, and
+      `master` fast-forwarded only after the ladder closes. Left as an open box rather than folded
+      into the one above, because a tick covering both would be claiming a verification that has
+      not run.
 
 ## Out of scope
 
@@ -273,7 +284,7 @@ unvalidated-levels question (*C records the number per policy; D decides knowing
 **mechanism and its memory** (D). The **median convention** and `trace.cpp`'s second home for it —
 **M5 close-out**, and deliverable 1 shows the deferral costs this stage nothing. The bench, the
 >24 h soak, the board's audit stream (D). The client ping (M6). The venue toggle (M7). M4's carried
-residues — D1, D2, D7's scope trace, and M4 stage D's own card 26. The §1-versus-reality trade-print
+residues — D1, D2, D7's scope trace, and M4 stage D's own card 26 (**renumbered to 30 by this stage**). The §1-versus-reality trade-print
 question — ROADMAP backlog **D0**, owner's, on no stage.
 
 ## Session log
@@ -281,3 +292,282 @@ question — ROADMAP backlog **D0**, owner's, on no stage.
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
 
+### 2026-08-26 · Claude Opus 5 (1M context) · the threshold, the remedy and the state a re-seed needs
+
+**Green.** 50/50 ctest on `host-mingw`, 407 doctest cases / 3,610,456 assertions in `dc_tests`.
+**No golden moved and no pin moved:** every Anvil and Kraken `dc_replay` report is byte-identical
+before and after, and the eleven Binance reports differ in exactly one line each — the GREY line
+whose number this stage decided. `dc_binance_oracle` returns B1's and B2's figures unchanged
+(235/235, 235/235, 88/88, 88/88). **Nothing committed** — the split is proposed below and awaits
+approval, per the brief's last constraint.
+
+**Done, with the why.**
+
+1. **The threshold: both the multiplier and the ceiling become per-venue** (deliverable 1).
+   `LivenessPolicy{multiple, floor_ms, ceiling_ms}` is a constructor parameter on `LivenessClock`,
+   **defaulted to the shipping constants**, selected per venue from `venue.hpp` the way `Book`
+   already takes `validated_depth`. Binance is `{2.0, 2,000, 60,000}` and the threshold is
+   **39,927.94 ms — calibrated, and strictly inside its own bounds for the first time.**
+   *Why not the other two:* a global ceiling raised to clear 79,855.9 also raises
+   `kUncalibratedThresholdMs`, which **is** the ceiling, at Anvil and Kraken — one constant, three
+   venues moved, to fix one. A global multiplier cannot reach a live calibration here at all: it
+   must fall to **≤ 1.503** to come under today's 30,000, which is **below Anvil's measured 1.937×
+   worst healthy multiple**, and anything above that leaves Binance clamped while moving Kraken's
+   pinned 4,000 ms. *Why 2.0 is derived rather than chosen:* `liveness_clock.hpp` already states the
+   rule that produced Anvil's 4.0 — worst healthy as a multiple of the venue's own median, times ~2
+   of margin — and this signal measures **1.005×** over B2's ten intervals, so the same rule gives
+   2.0 at 1.99× margin. *Why the ceiling is 60,000:* it must clear 39,927.94 or the clamp is the
+   threshold again, and it admits a cadence 50% slower than measured before it binds.
+   **The cost is stated rather than left to be found:** the uncalibrated default IS the ceiling, so
+   Binance's pre-calibration threshold goes **30 s → 60 s**, for the 159.7 s `kMinSamples` takes at
+   this cadence. Decoupling the two is the successor and was deliberately not taken — it would be a
+   fourth number with no measurement behind it, in a stage whose whole argument is that the
+   multiplier was derived.
+   B2's *"...and what it calibrates to is INERT"* case went red exactly as its author intended and
+   was **rewritten deliberately**, keeping what it used to assert, which is the DoD's *test that
+   enters the calibrated branch and asserts what comes out*.
+
+2. **Remedy (a) is built, and (b) was rejected on a finding** (deliverable 2).
+   `adopt_seed()` no longer emits; `replay_buffer()` and `check_continuity()` publish the
+   `Snapshot` at the instant a diff satisfies `U ≤ lastUpdateId + 1 ≤ u`, and if neither ever does,
+   nothing is ever published. *Why (a):* it needs no new concept, no `GapReason`, no
+   `FeedEvent::Kind` and no firmware, and the between-state — an uninitialised book — has been
+   explicit since M4 stage C and grey since M4 stage D. *Why not (b), and this is the finding worth
+   more than the choice:* strain 26 records (b) as self-terminating at the threshold, and **it does
+   not, on the board.** `LivenessWatchdog::expired()` is `armed_ && now >= deadline_ns()` and
+   `armed_` is set only by the first `on_liveness`, so withholding liveness on a lying socket
+   leaves the watchdog **never armed** — the lie becomes permanent *and* invisible to the very
+   instrument (b) relies on. Making it work needs a never-armed-since-connect deadline, which is (c).
+   **The coupling ran one way and is recorded as such:** (b)'s cost *is* the threshold, so raising
+   the ceiling would have tripled the lie's LIVE window — an argument against (b), not against the
+   ceiling. (a) has no threshold dependency at all, so **the threshold decision constrained the
+   remedy and the remedy constrained nothing.**
+   The silent-stream fixture's two assertions marked THE LIE are **inverted, not deleted and not
+   relaxed, in the same commit**. Its file keeps the `DEFECT` name deliberately: it is a capture of a
+   real defective *condition*, which is as real after the remedy as before.
+
+3. **The re-seed-in-flight state is published** (deliverable 3). `DisplaySnapshot::reseed`,
+   `{None, Wanted, InFlight}`, stamped feed-side one line after `Book::publish` exactly as `age_ms`
+   is. It lands in the **four pad bytes the struct already carried** between `SymbolSpec` and
+   8-aligned `seq`; `sizeof(DisplaySnapshot) == 1168` and `sizeof(SnapshotChannel) == 3528` verified
+   on the host **and on xtensa-esp32s3 GCC 8.4.0 — the version `platformio.ini` pins — with a
+   negative control asserting 1169 to prove the check discriminates.** *Why an enum with a state
+   nothing produces:* `InFlight` being unreachable in this build **is** strain 28, and publishing it
+   puts the open card where a bench sitting can see it rather than on a report line. *Why Binance
+   only:* Kraken's `resync_wanted()` is a re-subscribe, already served, and settled at M4.
+
+4. **The transport-versus-feed hole is stated at the point of use** (deliverable 4) — beside
+   `on_liveness` in `liveness_clock.hpp`, with the three venues' emission points in a table.
+   **One point of use is deliberately not covered:** `LivenessWatchdog::on_liveness` is in
+   `firmware/`, which this stage may not touch. **The same sentence belongs there and it is D's.**
+
+5. **The three `age_ms` limits recorded per venue, and item 8 decided** (deliverable 5).
+   `kAgeWindowSamples = 256` **stays and does not become per-venue**: the window bounds the
+   estimator's *reach*, and the sup binds only on a backlog older than the window itself, so wider
+   can only describe an older backlog and never overstate a newer one — at a 20 s cadence wider is
+   the safe direction, and shrinking it per venue would buy back 2 KiB and cost exactly that. The
+   constant that bites is `kBaselineSamples`, and that one cannot shrink either, because 32 is what
+   a measurement set. The *no reading* state D needs **already existed** — `has_age`, M4 stage A2 —
+   so C confirmed it and pinned the per-venue duration as a behaviour (false at 221 s, with an Anvil
+   control that reads) rather than adding a second flag.
+
+6. **Parity: NO**, with the reduced claim written out (deliverable 6) — `NOTES-binance.md` §6.
+   Both of M4's honesty mechanisms are narrower here from one cause, and B2 asked for this to be
+   answered in writing precisely so it would not be discovered at the bench.
+
+**Two deviations from the brief, both deliberate, both flagged rather than quietly taken.**
+
+- **Deliverable 0's commit is empty as specified, so what ships is a guard rather than the repair.**
+  The two traces' committed blobs were always LF; restoring the working copy produces no diff.
+  `git status` reported the tree clean throughout the nineteen days because the index's cached stat
+  data was written when the file *was* CRLF — and for the same reason `git checkout --` alone does
+  not repair it, the file has to be deleted first. A repair with no commit is one the next stale
+  clone undoes in silence, which is exactly what `CLAUDE.md` says is not a check. So
+  `test_replay_goldens.cpp` now asserts **no committed trace contains a CR byte**, positively scoped
+  to the directory that enumerates itself, with a count assertion against a vacuous pass, and
+  mutation-verified with one injected CR. Hashes confirmed as the brief asked: `762cb1e2…` and
+  `37fae0f7…`, both equal to `HEAD`.
+- **Two pre-existing DESIGN drifts corrected while in there.** `DisplaySnapshot::initialised` has
+  been on the struct since M4 stage C and was never drawn in §03's class diagram. A member missing
+  from a diagram is §09's own first trigger, and leaving it because it is not this stage's is how a
+  design doc drifts. Added with `reseed`.
+
+**Raised, not executed — both as the brief instructed.**
+
+- **The duplicate strain card 26.** Counted rather than asserted: **15 textual references across 8
+  files at `HEAD`; 14 mean the M5 card and one means the M4 card — and both live in `ROADMAP.md`,
+  two rows of the same table apart.** This stage adds six more to the M5 card in four further files,
+  so it is ~20 across 12 and grows every stage. Card 23's precedent says the newer card moves and
+  *"the older number keeps its references"*; **here the reference weight is inverted, so the
+  precedent's letter contradicts its reason.** Recommendation: move the **M4** card to 30 and let
+  the M5 card keep 26 — one reference to edit instead of twenty. And the pattern, noted while
+  raising it: **both collisions were created by a stage B1 opening a card, a milestone apart, and
+  nothing checks.**
+- **Strain 29's tripwire is written against the wrong event.** It fires *"if any stage needs to
+  quote or re-pin a Binance cadence figure"*, and C quotes one — 19,963.97 ms, six times — so read
+  literally the convention change must land inside this split, which the same clause forbids two
+  sentences earlier. The hazard was never *quoting a cadence figure*; it was **quoting one from the
+  wrong home**. C quotes `lower_median`'s answer, re-pins nothing, and asserts that the two
+  conventions differ by **10.8 ms (0.027%)** here and land strictly inside the same bounds. Read as
+  not firing; the wording is handed back to the M5 close-out.
+
+**The `code-review` skill was run against the diff before the split was proposed, and it found two
+defects in this stage's own new code. Both are fixed, both with a red-before-green, and both are
+recorded here rather than only fixed — they are the same family this log keeps naming.**
+
+1. **One event, two answers, depending on which of two bracket sites saw it.** A seed the feed never
+   confirmed reaches `drop_book` down two paths — `replay_buffer`, when a buffered event survives the
+   snapshot, and `check_continuity`, when none does and the first diff plays the survivor's role. The
+   new `seeds_unconfirmed` counter is computed in `drop_book` from `bracket_checked_`, and
+   `check_continuity` set that flag **before** testing the bracket, so a failure on that path arrived
+   with the flag already true and **counted nothing**, while the identical failure through
+   `replay_buffer` counted one. The pre-existing assignment was harmless for three milestones
+   precisely because nothing read the flag on the way out; adding a counter that reads it is what
+   made the ordering load-bearing. Fixed by moving the assignment into the success branch — behaviour
+   is otherwise unchanged, because `drop_book` clears the flag anyway. **Covered by a new case, and
+   the case was run against the pre-fix code: 0 == 1, red.** The case exists as its own test rather
+   than a line in the neighbouring one because the property being asserted is *the two sites agree*,
+   and a property about two paths cannot be asserted by exercising one.
+
+2. **The report printed a multiplier it had looked up separately from the threshold it printed
+   beside it.** `trace_report.cpp` rendered `"N ms (Kx the observed median)"` with N from the clock
+   and K from the venue table — two homes for one number, in the report a reader checks the watchdog
+   against, which is the drift §9 keeps catching in other people's code. It could not disagree today
+   because both read the same row, and it would have disagreed the moment anything constructed a
+   clock with a policy the table did not hold. `TraceStats` now carries `liveness_multiple`, taken
+   from `liveness.policy().multiple` — the clock's own — and the report reads only that. **Every
+   `dc_replay` report is byte-identical across the change**, which is the point: the fix is to the
+   provenance, not to the number.
+
+*(The review also collapsed four copies of the calibration trace's replay setup onto one helper. That
+one is tidying and is noted only because it briefly broke the build — three cases were still reading
+`spec` and `path` locals the shared setup had declared, which is exactly the hazard of extracting a
+helper from setup that other assertions reach into.)*
+
+**Nothing about the panel was decided.** Every question of the form *what does this look like* —
+the silent feed, the re-seed in flight, whether (a)'s grey reads right, strain 24's unvalidated
+rows — is D's under this brief's own scoping ruling, and none was touched.
+
+**Exact next step.** Get the split below approved. Then create the commits, verify each in a fresh
+detached worktree with `CMAKE_HOME_DIRECTORY` confirmed to point at the worktree and the loop run
+**inline** (`powershell -File` dies at `CMakeTestCXXCompiler`), push to **`m5/stage-c`**, and
+fast-forward `master` **only after the ladder has closed**. Note for the executor: **the
+`LivenessPolicy` commit and the Binance-values commit are one file's edits split in two, so the
+ladder must build the `LivenessPolicy` one with all three `venue.hpp` rows still `{}`** — the
+intermediate state is real and testable, and it is what makes the value change attributable.
+
+*Corrected at the owner's approval, and the correction is the record.* This paragraph originally
+read *"commits 2 and 3 … build commit 2"*, and the table below has the pair at **3 and 4** with **3**
+as the one that must build with the rows `{}`. Off by one in both places, because `docs: the stage C
+brief` was added as commit 1 *after* the paragraph was written and the prose was not re-read. **It is
+the species B2 recorded one stage earlier** — *"the headline count did not survive its own table"* —
+arriving in the same document family, in the sentence written to prevent the confusion, and nothing
+could have caught it: no test reads a split table, and prose and rows are checkable against each
+other only by someone doing it. **The fix is not to re-read more carefully.** Commit ordinals are
+now gone from this paragraph: it names the commits by their message, which cannot go stale when one
+is inserted. See the `CLAUDE.md` proposal in the approval-response log below.
+
+#### The proposed split — 8 commits, nothing committed yet
+
+| # | message | what is in it |
+| --- | --- | --- |
+| 1 | `docs: the stage C brief` | the work order, untracked until now |
+| 2 | `harness: no committed trace may contain a CR byte` | the guard, plus the working-copy LF restore (which has no diff). **Red before this commit only via the injected-CR control, which is recorded rather than committed** |
+| 3 | `engine: the liveness clamp becomes a policy, with the shipping values as its defaults` | `LivenessPolicy`, the `LivenessClock` ctor, the `VenueTraits` field with **all three rows `{}`**, and the plumbing through `Replay`, `trace.cpp` and `trace_report.cpp` — including `TraceStats::liveness_multiple`, so the report's "Kx" comes from the clock that produced the threshold beside it rather than from a second lookup. **No number moves anywhere** |
+| 4 | `harness: Binance's liveness clamp is 2.0 x median, ceiling 60 s` | the one row's two values and its note; the inertness case rewritten to assert what comes out. **The only commit in which a threshold moves, and it moves for one venue** |
+| 5 | `engine: the Binance seed is not published until a diff brackets it` | remedy (a), `seeds_unconfirmed`, `seed_confirmed()`, the `bracket_checked_` ordering fix with the case that makes the two bracket sites agree, the three unit cases that seeded without a bracket, `test_trace_records`' fourth record, **and the silent-stream fixture inverted** — one commit, because its expiry clause says *in the commit that makes it pass* |
+| 6 | `engine: publish whether a re-seed is outstanding` | `ReseedState`, the `DisplaySnapshot` field, `stamp_reseed`, the `dc_ladder` line, the transition test |
+| 7 | `engine: what a green liveness clock is entitled to mean, at the point of use` | deliverable 4's paragraph, `kAgeWindowSamples`' decision, the no-reading pin with its Anvil control |
+| 8 | `docs: stage C — the threshold, the remedy, and what could not be closed` | this log, ROADMAP, NOTES-binance §C, ARCHITECTURE §9 (five rows), DESIGN (cards 26 and 28, §03, §09, the strip) |
+
+### 2026-08-26 · Claude Opus 5 (1M context) · the approval response — one fix, two records, one move
+
+**Green.** 50/50 ctest on `host-mingw` from a wiped build tree. **No new behaviour**, as the
+approval's first constraint requires: everything below is prose, records, and one card renumbered.
+No threshold and no pin moved.
+
+**§0 · The off-by-one is fixed, and the fix is not "re-read more carefully".** The approval is
+right on both counts: the pair is **3 and 4**, and the commit that must build with all three
+`venue.hpp` rows still `{}` is **3**. The mechanism was exactly as diagnosed — `docs: the stage C
+brief` was added as commit 1 after the paragraph was written. **The paragraph no longer contains a
+commit ordinal at all:** it names the two commits by their messages, which cannot go stale when one
+is inserted. The correction is recorded in place beside it, with its species named, rather than
+silently applied.
+
+**§0's second half · the `CLAUDE.md` line — proposed, with the remedy changed and the diagnosis
+accepted.** The class is real and the home is right: tooling, not architecture, so `CLAUDE.md`
+beside the sentinel and `powershell -File` notes rather than a §9 row. **But the proposed wording
+ends in *"when the commit count changes, re-read the prose"*, and that is the species the paragraph
+three lines above it already refuses** — *a check that depends on the right person reading the right
+document at the right moment is not a check*. It would be the sentinel guard's own failure, written
+into the file that names it. So the proposal keeps the diagnosis and replaces the remedy with one
+that removes the second statement instead of asking someone to compare the two:
+
+> **A split's prose must name a commit by its message, never by its ordinal.** An ordinal restates
+> a fact the table already owns, and it goes stale silently the moment a commit is inserted — which
+> is how M5 stage C's *exact next step* came to instruct an executor to build the wrong commit with
+> the wrong rows. A message is the same string the table holds, so there is nothing left to drift.
+> Same family as B2's *"the headline count did not survive its own table"*: **the fix for a fact
+> stated twice is to state it once, not to check it twice.** Tooling rather than architecture, so
+> no §9 row.
+
+`CLAUDE.md` is **not edited** — the approval says the owner's call, and this is the wording offered.
+It is already applied to this brief's own prose, so the proposal is a rule with an instance rather
+than a suggestion.
+
+**§0's third half · the `bracket_checked_` defect is referenced, not re-filed.** Added to §9's
+*three ways a green suite is wrong* row as **the third instance of clause (1)**, the coincidence
+class. What it contributes beyond a tally is the trigger: the ordering was harmless for three
+milestones because nothing read the flag on the way out, and it became load-bearing the moment
+`drop_book` started counting off it — **so the hazard is not the ordering, it is the new reader.**
+
+**§1 · The multiplier's bound is recorded in both places, and k is not touched.** The approval's
+catch is exact and this stage had it in a table without drawing the conclusion: read the *binding
+case* column rather than the ratio, and Anvil's 4.0 clears **one missed tick** by 2.06× while
+Binance's 2.0 clears **jitter** by 1.99× and a **missed ping by 1.000×** — one missed ping is
+2 × 19,963.97 = 39,927.94 ms, the threshold is 39,927.94 ms, and `expired()` is `armed_ && now >=
+deadline_ns()`. **A single dropped ping greys the panel.** Ten intervals spanning 111 ms cannot
+contain a missed-tick event, and the same Anvil signal read 1.094× over 62 idle frames against
+1.937× over 1,191 — which is what a short window costs. Recorded verbatim in the NOTES §C multiplier
+table and on the §9 per-venue-policy row, with the falsifier and the k ≤ 3.005 headroom.
+**k stays at 2.0**: moving it on desk evidence would change the constant and the venue in one step,
+which is the trap the §9 row this stage wrote exists to name. It is D's, on the soak.
+
+**§2 · Card 26 → 30 executed, and *Owed by stage D* written.** The M4 card moves and carries the
+reasoning; its one inbound citation — `ROADMAP.md`'s M4 row — is repointed, and the M5 card's
+paragraph changes from a recommendation to a record. The follows-the-reason-not-the-letter sentence
+is on card 30, with the observation the approval added and this stage had missed: **the two cards do
+not merely collide, they interact** — remedy (b)'s rejection rests on `armed_` having exactly one
+setter, which *is* card 30, so (b) is blocked by an open M4 card rather than wrong in principle.
+That is item 6 of *Owed by stage D*.
+
+**Nothing else moved.** `git diff` over `harness/replay/*.ndjson` is empty, every Anvil and Kraken
+`dc_replay` report is byte-identical, and the eleven Binance reports still differ only in the GREY
+line this stage decided.
+
+---
+
+### Owed by stage D
+
+Written at stage C's close, and written **because C had already paid for its absence**: §1 above is
+a bound on this stage's own multiplier that was visible in this stage's own table and stated to
+nobody until the owner asked for it. B2 opened *Owed by stage C* for exactly that reason — *a list
+that has to be reconstructed by grepping is a list that arrives short* — and C inherited the
+diagnosis without the practice. Same two-column shape.
+
+| # | What D owns | Where the evidence is |
+| --- | --- | --- |
+| 1 | **The four panel questions C deliberately did not take**: what a silent feed renders, what a re-seed in flight renders, whether remedy (a)'s grey *reads* right, and strain 24's unvalidated-levels question. **Do not re-argue whether they are D's** — this brief's *scoping ruling* settled it from M4 twice (the triage's engine-state-vs-rendering split, and stage D item A1's *true of the BEHAVIOUR and not of the POLICY*), and item 4 leaving C is the only reason C fitted in an evening. | This brief, § *The scoping ruling*; `M4-triage-of-the-twelve.md`; `M4-stage-D-the-bench.md` item A1. C records the number per policy; D decides knowing it. |
+| 2 | **The re-seed mechanism and its memory** — strain 28's D-half. Three candidates, priced: **(a)** a ~128 KiB deferred buffer (no gap, no grey, and it more than doubles the adapter's ~96 KiB of fixed state); **(b)** drop-gap-reseed (free in memory, greys the panel for the length of a fetch on a book that was still correct); **(c)** merge below the touch (cheapest, least proven, nothing in the corpus exercises it). **The engine state to render during a fetch already exists** — `DisplaySnapshot::reseed`, and D advances it to `InFlight`. | DESIGN strain 28; §9 2026-08-26. B2's adoptability measurement is unchanged and decides between them: **0 of 7 adoptable at `limit=1000` on the liquid pair, 19 of 19 everywhere else** — the deeper the seed the older it lands, because the venue snapshots ~¾ of the way through the round trip and spends the rest shipping ~120 KB. |
+| 3 | **The multiplier's bound, and it is the soak's FIRST named check.** `k = 2.0` clears this signal's jitter by 1.99× and a **dropped ping by 1.000×**. **Falsifier: record the ping-interval distribution across the soak; any interval reaching 2 × median on a healthy socket raises k.** If it fires, **k rises alone** — the 60,000 ms ceiling already admits k ≤ 3.005 (3.0 → 59,891.91 ms), so the remedy is one value in one row, with no ceiling change and no second attribution problem. | §9 2026-08-26 (the per-venue-policy row); `NOTES-binance.md` M5 stage C addendum §1. The comparison that sizes it: the same Anvil signal read **1.094× over 62 idle frames and 1.937× over 1,191 intervals**. |
+| 4 | **The uncalibrated-default window.** `kUncalibratedThresholdMs` **is** the ceiling, so Binance's pre-calibration threshold is **60 s** where it used to be 30 s, for the **159.7 s** `kMinSamples = 8` takes at this cadence — on *every* connection, and the board reconnects. Decoupling the two was deliberately not done at C: it would be a fourth number with no measurement behind it, in a stage whose argument is that the multiplier was derived. **State whether that window matters on the board.** That is a soak observation and not a desk one. | §9 2026-08-26; `NOTES-binance.md` §C.1's *cost, stated*. M4 stage D's B3 is the precedent for what a reconnect-heavy night looks like: 2 half-open outages in 25.39 h, and 21 reconnects in 86 minutes at M3. |
+| 5 | **Parity: NO, and D is where the reduced claim is TESTED rather than asserted.** *The panel greys within the calibrated liveness threshold of the **socket** falling silent — 39.9 s — and refuses to colour a ladder the feed has never confirmed. It does not detect a subscription that stops server-side while the socket stays up. `age_ms` is a lag estimate for a socket backlog only, and reads nothing for the first ~11 minutes of every connection.* Both halves are narrower than M4's from **one cause**. | `NOTES-binance.md` §C.6; §9 2026-08-26. The three per-venue `age_ms` limits are B2's and need no re-measuring: **tracks a socket backlog 1.00×, BLIND to a feed backlog, 638.8 s with no reading, 85.2 min supremum window.** |
+| 6 | **M4's card 30 (opened as 26) is a LIVE DEPENDENCY, not a residue.** Remedy (b) — *the ping does not stamp liveness until the bracket is satisfied* — is **not wrong in principle; it is blocked by that card being open.** `LivenessWatchdog::expired()` is `armed_ && now >= deadline_ns()` and `armed_` has exactly one setter, so withholding liveness leaves the watchdog never armed and the lie permanent. **If `armed_` ever gains a second setter, (b) becomes available and its trade against (a) reopens.** Written down here so the next stage does not re-derive the rejection from scratch. | DESIGN cards 26 and 30; §9 2026-08-26 (the remedy row); `binance_adapter.hpp`'s *WHY (a) AND NOT (b), (c) OR (d)*. |
+
+Two cautions carried with the list, both inherited from B2's and still true:
+
+- **Every fetch-latency and cadence figure D will read is a desk-box figure**, and **M4 stage D's
+  bench day B3** measured DNS at 14,000 ms on the board. The provenance is stated beside each number
+  in `NOTES-binance.md`; keep it stated.
+- **Three of M4's honesty mechanisms are compromised at this venue from one cause.** C bounded the
+  connect case and stated the rest; **none of it has been seen on a panel.**

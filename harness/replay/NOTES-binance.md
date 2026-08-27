@@ -1326,3 +1326,259 @@ and one test — and the test passed, because `Approx(19969.4).epsilon(0.001)` i
 tolerance spanning 19.97 ms and therefore accepts 19,964.0 as well. **A tolerance wide
 enough to accept both candidate answers is a test that cannot fail.** Every figure in the
 B2 addendum above now comes from `lower_median`.
+
+---
+
+## Addendum — M5 stage C, 2026-08-26: what a green liveness clock is entitled to mean
+
+**C decides; C does not re-measure.** Every figure below was taken at stage 0, A, B1 or B2 and is
+quoted here with its provenance beside it, as the *Owed by stage C* section required. The only
+new numbers this stage produced are the two it decided (`multiple`, `ceiling_ms`), one arithmetic
+consequence (39,927.94 ms) and two verification results (the xtensa `sizeof`, the CRLF hashes).
+
+### 1 · The threshold: both the multiplier and the ceiling become per-venue
+
+**The decision, and the two costed alternatives.** ARCHITECTURE §9 (2026-08-25, M5 stage A) put
+three shapes on the table — *ceiling rises, multiplier falls, or both become per-venue* — and asked
+C to decide against measurement.
+
+| | what it does at Binance | what it costs elsewhere |
+| --- | --- | --- |
+| **ceiling rises**, globally, to clear 79,855.9 | threshold ≈ **79.9 s** | `kUncalibratedThresholdMs` **is** the ceiling, so the pre-calibration threshold rises at Anvil and Kraken too, and so does the tolerance a decayed feed can buy at both. One constant, three venues moved, to fix one. |
+| **multiplier falls**, globally | **nothing** — to come under today's 30,000 ms ceiling it must fall to ≤ **1.503**, and it is still clamped at anything above that | 1.503 is below Anvil's measured **1.937×** worst healthy multiple (2026-08-17, 1,191 intervals), so it would grey that panel on one slipped `summary` — the exact failure `kThresholdMultiple = 4` was sized to prevent. It also moves Kraken's pinned 4,000 ms. |
+| **both per-venue** ✅ | threshold **39,927.94 ms**, calibrated, strictly inside floor and ceiling | **nothing, by construction.** Anvil's and Kraken's rows are the shipping defaults and `firmware/` constructs `LivenessClock` with no argument, so no venue with a shipping threshold has its number moved. |
+
+**Why the multiplier is 2.0 and not a preference.** `liveness_clock.hpp` states the derivation it
+used for Anvil: the venue's worst HEALTHY inter-arrival expressed as a multiple of that venue's own
+median, times ~2 of margin. Applied to each venue's own measurement rather than inherited from the
+first:
+
+| venue | worst/median | provenance | k | margin |
+| --- | --- | --- | --- | --- |
+| Anvil | 1.937× | 2026-08-17, 1,191 `summary` intervals | 4.0 | 2.07× |
+| Kraken | 1.119× | 2026-08-17, 834 `heartbeat` intervals, two hours of day | 4.0 | 3.57× (over-delivers; not moved) |
+| **Binance** | **1.005×** | **M5 stage B2, the 221 s calibration capture, ten intervals 19,957.0–20,068.0 ms**; 1.01× over stage A's 23 | **2.0** | **1.99×** |
+
+**AND THE BOUND ON THAT DERIVATION, WHICH THE TABLE ABOVE MAKES VISIBLE AND THIS STAGE DID NOT
+STATE UNTIL THE OWNER ASKED FOR IT.** Read the *binding case* column rather than the ratios:
+
+| venue | binding case | intervals | k | margin over the binding case |
+| --- | --- | ---: | ---: | ---: |
+| Anvil | **one missed tick**, 968.8 ms | 1,191 | 4.0 | **2.06×** |
+| Kraken | jitter, 1.119× | 834 | 4.0 | 3.57× |
+| **Binance** | **jitter, 1.005×** | **10** | **2.0** | **1.000×** |
+
+> **k = 2.0 tolerates this signal's jitter and not a dropped ping.** It is derived from ten
+> intervals spanning 111 ms, a window too short to contain the missed-tick event that was the
+> binding case at the one venue observed long enough to show one — where the same signal read
+> 1.094× over 62 samples and 1.937× over 1,191. One missed Binance ping equals the threshold
+> exactly. **Falsifier: D's soak records the ping-interval distribution; any interval reaching
+> 2 × median on a healthy socket raises k.** The 60,000 ms ceiling already admits k ≤ 3.005, so the
+> remedy is one value and moves nothing else.
+
+The arithmetic is exact rather than approximate: one missed ping is 2 × 19,963.97 = **39,927.94 ms**,
+the new threshold is 2.0 × 19,963.97 = **39,927.94 ms**, and `LivenessWatchdog::expired()` is
+`armed_ && now >= deadline_ns()` — so **a single dropped ping greys the panel**, at the margin Anvil
+deliberately keeps 2.06× of room for. *"Same rule, third venue" does not transfer as cleanly as it
+reads*: at Anvil the rule was applied to a signal observed dropping, here to the absence of one.
+**k is not changed here.** 2.0 is derived and defensible, this stage may not move a threshold on
+desk evidence, and raising it here would change the constant and the venue in one step — the trap
+the §9 row this stage wrote exists to name. It is D's, on the soak's evidence, and it is the first
+named check in *Owed by stage D*.
+
+Same rule, third venue. **Inheriting Anvil's 4.0 buys 40 s more frozen ladder for margin this
+signal's jitter does not need** — and the ping is the tightest-cadence signal of the three
+*because* it is a metronome inside the WebSocket layer rather than a publisher sharing a queue with
+the book, which is the same fact that makes it a weaker witness (section 3 below).
+
+**Why the ceiling is 60,000 ms.** It has to clear 2.0 × 19,963.97 = 39,927.94, or the clamp is the
+threshold again and the calibration is inert for a second time. 60,000 admits a ping cadence up to
+30,000 ms — **50% slower than measured** — before it binds. Expressed the way the collision was
+found: as a multiple of each venue's median, one 30,000 ms ceiling is 60× at Anvil, 30× at Kraken
+and **1.50× at Binance**, and a ceiling at 1.5× the healthy median is not a ceiling, it is the
+threshold.
+
+**THE COST, STATED RATHER THAN LEFT TO BE FOUND.** `kUncalibratedThresholdMs` is defined as the
+ceiling, so making the ceiling per-venue makes the uncalibrated default per-venue too: at Binance
+the pre-calibration threshold goes **30 s → 60 s**, and `kMinSamples = 8` at this cadence means that
+window is **159.7 s** long on every connection. Decoupling the uncalibrated default from the ceiling
+is the obvious successor and was **deliberately not done here**: it would be a fourth number with no
+measurement behind it, in a stage whose whole argument is that the multiplier was derived rather
+than chosen. Owner: whichever stage finds that window matters.
+
+**A checked interaction, not a new risk.** Stage A's venue note records a lone **40.7 s** ping
+interval — a deliberate reconnect restarting the venue's schedule — which sits *above* the new
+39,927.94 ms threshold. It cannot false-grey: `LivenessWatchdog::on_socket_change` disarms on a
+socket change, so the first post-reconnect ping establishes a new `last_ns_` and no deadline spans
+the reconnect. The interval does enter the clock's median window, where by design it moves a rank
+and not the median. `liveness_firings` is 0 on every committed trace before and after.
+
+### 2 · The lying socket: remedy (a), and what it is not
+
+DESIGN strain 26 listed four remedies and B1 built none. **(a) — the Snapshot is deferred to
+bracket time — is built.** `adopt_seed()` no longer emits; `replay_buffer()` and
+`check_continuity()` publish at the instant a diff satisfies `U <= lastUpdateId + 1 <= u`, and if
+neither ever does, nothing is ever published.
+
+**(b) was rejected on a finding rather than a preference, and the finding is the useful part.**
+Strain 26 records (b) as *"the lie self-terminates at the threshold"*. **It does not, on the board.**
+`LivenessWatchdog::expired()` is `armed_ && now >= deadline_ns()`, and `armed_` is set only by the
+first `on_liveness`. Withholding liveness on a lying socket therefore leaves the watchdog **never
+armed**, so it never fires — the lie becomes permanent *and* invisible to the very instrument (b)
+relies on. Making (b) work needs a never-armed-since-connect deadline, which is (c) wearing (b)'s
+clothes. **(c)** is a new question with a threshold of its own to calibrate and needs firmware this
+stage may not touch. **(d)** — grading the seed against `@depth20` — is correct and needs the audit
+stream subscribed, which is D's; nothing here forecloses it.
+
+**Deliverables 1 and 2 are coupled, and the coupling ran one way.** The brief warned that choosing
+(b) *and* raising the ceiling would triple how long the lie renders LIVE. That is exactly right, and
+it is an argument against (b) rather than against the ceiling: **(b)'s cost IS the threshold, and
+this stage's threshold decision was still open when the remedy was chosen.** (a) has no threshold
+dependency at all — it needs no detector, no timer and no calibration — so **the threshold decision
+constrained the remedy, and the remedy then constrained nothing.**
+
+**Measured cost of (a).** The grey window is the seed-to-first-diff gap: ~100 ms on BTCUSDT at the
+100 ms tick, and up to **10.5 s** on a quiet pair (stage 0's measured worst legitimate inter-message
+gap). **No committed capture loses a Snapshot to it** — `dc_binance_oracle` grades the adapter's
+ladder, which is seeded at seed time either way, and returns the same figures as B1 and B2:
+**235/235 and 235/235** on the deep-seed witnesses, **88/88 and 88/88** on the mixed captures.
+
+**What it does not buy, and this is half the answer.** It bounds the CONNECT case only. The ping is
+emitted below the subscription, so a subscription dropped server-side an hour into a session still
+presents as health — to this remedy and to the liveness clock alike. What (a) converts is
+*permanent* into *bounded*, which is where invariant #5 draws its line.
+
+**Red before green, on the fixture built for it.** `binance_btcusdt_DEFECT_silent_stream_20260826`
+replayed through `dc_ladder` before: `adapter events=1`, `snapshots_adopted=1`, a populated
+100-level ladder, *** LIVE**. After: `events=0`, `snapshots_adopted=0`, `seed published=NO`,
+`STALE — book unknown (awaiting snapshot) — not live data`. The fixture's expiry clause required
+the two assertions marked THE LIE to be **inverted in the commit that makes the remedy pass**, and
+they are.
+
+### 3 · The transport-versus-feed hole, and where it is now written
+
+Item 5 has no fix and this stage did not invent one. What C owed was that the limit is stated **at
+the point of use**, and it now is: `liveness_clock.hpp` carries it beside `on_liveness`, in the
+object that computes every venue's green clock, with the three venues' emission points in a table.
+Previously it lived only in ARCHITECTURE §9 and a strain card.
+
+**One point of use is NOT covered and the reason is a scope constraint, not an oversight.**
+`LivenessWatchdog::on_liveness` in `firmware/src/liveness_watchdog.hpp` is where the board stamps
+liveness, and this stage may not touch `firmware/`. **The same sentence belongs there and D should
+add it** when it next opens that file.
+
+### 4 · `age_ms`: three limits recorded per venue, and item 8 decided
+
+All three measured at B2; none re-measured here.
+
+| limit | Anvil | Kraken | **Binance** |
+| --- | --- | --- | --- |
+| socket backlog | tracks | tracks | **tracks, 1.00×** (1,797.1 s read / 1,796.8 s injected) |
+| feed backlog | not constructible | not constructible | **BLIND — 0.3 s through 1,797 s** |
+| no reading at all, from connect (`kBaselineSamples` = 32) | 16 s | 32 s | **638.8 s (~11 min)** |
+| supremum window (`kAgeWindowSamples` = 256) | 128 s | 256 s | **85.2 min** |
+
+**Item 8 decided: 256 stays, and does not become per-venue.** The window bounds the estimator's
+REACH, not its accuracy — `age_estimator.hpp`'s own ceiling derivation shows the sup binds only on
+a backlog *older than the window itself*, so wider can only let the meter describe an older
+backlog, never overstate a newer one. At a 20 s cadence, wider is the safe direction; the number
+that would need justifying is a smaller one. Shrinking it per venue would buy back 2 KiB and cost
+exactly that. **And it is not the constant that bites** — `kBaselineSamples` is, and that one cannot
+shrink either, because 32 is what a measurement set (n=8 manufactured 4.4% of wall-clock as phantom
+lag on the reconnect capture).
+
+**The state D needs for the no-reading window already existed and C did not add one.** `has_age` is
+M4 stage A2's *no reading yet*, published for A2's reason. It is now pinned as a behaviour rather
+than described: on the 221 s calibration capture `has_age` is false and `age_baseline_ms` is 0,
+with an Anvil control that reads, because a flag false everywhere proves nothing. **What the header
+looks like in that state is D's.**
+
+### 5 · The re-seed-in-flight state (DESIGN strain 28's C-half)
+
+`DisplaySnapshot::reseed` — `{None, Wanted, InFlight}` — stamped feed-side one line after
+`Book::publish`, exactly as `age_ms` is and for the same reason (`engine/` has no transport).
+**Nothing branches on it.**
+
+**It costs nothing, and that is checked rather than argued.** `SymbolSpec` is 12 bytes at offset 8
+and `seq` is 8-aligned, so the struct already carried four pad bytes there; one is now used.
+`sizeof(DisplaySnapshot) == 1168` and `sizeof(SnapshotChannel) == 3528` verified on **both**
+toolchains — host GCC 15.2 (the suite's own `static_assert`) and **xtensa-esp32s3 GCC 8.4.0, the
+version `platformio.ini` pins**, with a negative control asserting 1169 to prove the check
+discriminates. The three documents quoting a byte count derived from it do not move.
+
+**`InFlight` is unreachable in this build, and that is the card rather than an omission.** Nothing
+here issues a fetch, so the published state is `Wanted` and stays there — which puts strain 28's
+condition where a bench sitting can see it instead of on a report line. The adoptability
+measurement that constrains D's choice is B2's and is unchanged: **0 of 7 adoptable at `limit=1000`
+on the liquid pair, 19 of 19 everywhere else**; the venue snapshots roughly three quarters of the
+way through the round trip and spends the rest shipping ~120 KB.
+
+### 6 · Can M5 claim parity with M4's definition of done? **No — and here is the reduced claim.**
+
+M4's definition of done named two mechanisms: the panel *greys within the calibrated liveness
+threshold*, and it *shows a book age that is a lag estimate rather than a time-since-anything*. At
+Binance, on this stage's evidence:
+
+> **The panel greys within the calibrated liveness threshold of the SOCKET falling silent — 39.9 s,
+> calibrated from the ping's own median for the first time — and it refuses to colour a ladder the
+> feed has never confirmed. It does not detect a subscription that stops server-side while the
+> socket stays up. `age_ms` is a lag estimate for a socket backlog only, and reads nothing at all
+> for the first ~11 minutes of every connection.**
+
+Both halves are narrower than M4's, from **one cause**: the liveness signal is emitted below the
+subscription. What C changed is that the first half is now *bounded* at connect rather than
+unbounded, and that both halves are stated where they are used rather than inferred. **B2 asked for
+this to be answered in writing rather than discovered at the bench; this is the answer.**
+
+### 7 · Two things raised rather than done
+
+**(i) The duplicate strain card 26, with a count.** At `HEAD` there are **15 textual references to
+"strain 26" / "card 26" across 8 files**; 14 mean the M5 card (the ping / the lying socket) and
+**one means the M4 card** — and both live in `ROADMAP.md`, two rows of the same table apart, which
+is the collision made concrete rather than argued. This stage adds **six more references to the M5
+card in four further files** (`binance_adapter.hpp` ×3, `liveness_clock.hpp`, `venue.hpp`,
+`dc_ladder_main.cpp`), so the count is ~20 across 12 files and grows with every stage.
+**Not executed.** DESIGN's own precedent inside card 23 says the newer card moves and *"the older
+number keeps its references"* — and here the reference weight is inverted, so following the
+precedent's letter contradicts its reason. Recommendation, for the owner: **move the M4 card to 30
+and let the M5 card keep 26** — one reference to edit instead of twenty. Note the pattern while
+deciding: **both collisions were created by a stage B1 opening a card, a milestone apart, and
+nothing checks.**
+
+**(ii) Strain 29's tripwire is written against the wrong event.** It reads *"if any stage before the
+close-out needs to quote or re-pin a Binance cadence figure, this closes first."* C quotes one —
+**19,963.97 ms, six times** — so read literally the clause fires and the convention change must land
+inside this split, which the *same* clause forbids two sentences earlier (*"a convention change that
+moves pins must be its own stage, so the moved pins have nothing else in the diff to hide behind"*).
+The two halves contradict each other for a stage that quotes the **correct** figure. The hazard was
+never *quoting a cadence figure*; it was **quoting one from the wrong home**. C quotes
+`lower_median`'s answer, re-pins nothing, and adds an assertion that the two conventions cannot
+change this stage's decision — interpolated gives 2.0 × 19,969.35 = 39,938.7 ms against 39,927.94,
+a difference of **10.8 ms or 0.027%**, both strictly inside the same floor and ceiling. **So the
+clause is read as not firing, and its wording is handed back to the M5 close-out to correct or to
+overrule.**
+
+### 8 · Two ground-truth traces were CRLF in the working tree for nineteen days
+
+`anvil_101_baseline.ndjson` and `anvil_101_reconnect.ndjson` — the two oldest traces in the corpus,
+committed at M0 (`f103b72`) — differed from their committed blobs in **every line and nothing else**:
+1,407 and 1,289 CR bytes, exactly one per line. They were checked out on this Windows desk with
+`core.autocrlf=true` **before** `a56ccd6` added `*.ndjson -text` to `.gitattributes`; that rule
+protects every trace captured after it and never healed the two that predate it. The other twenty
+are clean LF.
+
+Restored, and confirmed the way the brief asked: `git hash-object` now equals
+`git rev-parse HEAD:<path>` for both — `762cb1e2...` and `37fae0f7...`.
+
+**THE REPAIR PRODUCES NO COMMIT, AND THAT IS THE FINDING.** The committed blobs were always LF, so
+restoring the working copy leaves nothing to commit. Worse, `git status` reported the tree **clean**
+throughout the nineteen days, because the index's cached stat data was written when the file *was*
+CRLF and git therefore never compared content — and `git checkout --` on its own does not repair it
+for the same reason; the file must be deleted first. Two things follow, and the second is what
+shipped: the exposure was `git add -A` (a named guard failure in `CLAUDE.md`) silently committing
+CRLF over the project's two oldest ground-truth files and moving two goldens with them; and **a
+repair with no commit is a repair the next stale clone undoes in silence.** So the commit is the
+guard rather than the repair: `test_replay_goldens.cpp` now asserts that **no committed trace
+contains a CR byte**, positively scoped to the trace directory (which enumerates itself, so there is
+no list to remember to extend) with a count assertion so an empty sweep cannot wave through.
+Mutation-verified: one CR injected into a committed trace takes it red at the injected byte offset.
