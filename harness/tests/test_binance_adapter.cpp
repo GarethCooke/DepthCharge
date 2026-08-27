@@ -50,6 +50,8 @@
 #include <depthcharge/binance/binance_frame.hpp>
 
 #include "dc_harness/replay_driver.hpp"
+#include "dc_harness/trace.hpp"
+#include "dc_harness/venue.hpp"
 
 using depthcharge::FeedEvent;
 using depthcharge::GapReason;
@@ -94,6 +96,19 @@ std::string diff(std::int64_t U, std::int64_t u, const std::string& bids,
                  const std::string& asks) {
     return "{\"e\":\"depthUpdate\",\"E\":1,\"s\":\"BTCUSDT\",\"U\":" + std::to_string(U) +
            ",\"u\":" + std::to_string(u) + ",\"b\":[" + bids + "],\"a\":[" + asks + "]}";
+}
+
+// The 221 s calibration capture, replayed. Four cases below need it and each
+// used to spell the path and the options itself; one spelling means a re-cut of
+// that file cannot leave three cases reading it and one reading something else.
+std::string liveness_trace_path() {
+    return std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
+}
+
+dc::harness::ReplayResult liveness_replay() {
+    return dc::harness::run_replay_file(
+        liveness_trace_path(), depthcharge::binance::kBinanceAtomEur.spec,
+        dc::harness::ReplayOptions{});
 }
 
 }  // namespace
@@ -660,11 +675,7 @@ TEST_CASE("a re-snapshot on a live book is counted, and its loss is measured") {
 // 20 KiB.
 
 TEST_CASE("the calibrated liveness path is reachable, and a committed trace enters it") {
-    const std::string path =
-        std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
-    depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;
-    const dc::harness::ReplayResult r =
-        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
+    const dc::harness::ReplayResult r = liveness_replay();
 
     REQUIRE(r.meta.venue == dc::harness::Venue::Binance);
     // What the capture is. If these move it has been re-captured and every claim
@@ -681,33 +692,40 @@ TEST_CASE("the calibrated liveness path is reachable, and a committed trace ente
     // against kMinSamples' 8 — and must NOT calibrate. A flag that is true
     // everywhere is not evidence that a path was entered.
     const dc::harness::ReplayResult before = dc::harness::run_replay_file(
-        std::string(DC_REPLAY_DIR) + "/binance_atomeur_d100ms_20260824.ndjson", spec,
-        dc::harness::ReplayOptions{});
+        std::string(DC_REPLAY_DIR) + "/binance_atomeur_d100ms_20260824.ndjson",
+        depthcharge::binance::kBinanceAtomEur.spec, dc::harness::ReplayOptions{});
     CHECK(before.liveness_arrivals == 5);
     CHECK_FALSE(before.liveness_calibrated);
 }
 
-TEST_CASE("...and what it calibrates to is INERT, which is the measurement C needs") {
-    // The ping is the most metronomic signal of the three venues, and this
-    // capture measures it over ten intervals rather than four: 19,957.0 to
-    // 20,068.0 ms, worst/median 1.005 against Kraken's 1.12.
+TEST_CASE("...and what it calibrates to is 39,928 ms, which is a decision and not an inheritance") {
+    // **THIS CASE WAS "...AND WHAT IT CALIBRATES TO IS INERT" UNTIL M5 STAGE C,
+    // AND IT WENT RED EXACTLY AS ITS AUTHOR INTENDED.** B2 wrote it to assert an
+    // inertness rather than observe one, so that whichever of the three shapes C
+    // chose — ceiling rises, multiplier falls, both become per-venue — the suite
+    // would refuse to stay green through it. It refused. What it asserted, kept
+    // here because a rewritten test with no memory of what it used to say is a
+    // test that lost its argument: 4.0 x 19,963.97 = 79,855.9 ms clamped to
+    // `kThresholdCeilingMs` = 30,000, the identical number
+    // `kUncalibratedThresholdMs` already held, so calibrating changed the
+    // threshold by exactly zero and the self-calibration the 2026-08-17 ruling
+    // rests on was a constant wearing a calibration's clothes.
     //
-    // Four times that is ~79,900 ms and the clock clamps at
-    // `kThresholdCeilingMs = 30,000` — which is the identical number
-    // `kUncalibratedThresholdMs` already held. So calibrating changes the
-    // threshold by exactly zero, and the self-calibration the 2026-08-17 ruling
-    // rests on is, at this venue, a constant wearing a calibration's clothes.
+    // WHAT C DECIDED, AND THE ONE-LINE REASON. Both the multiplier and the
+    // ceiling become per-venue (`dc_harness/venue.hpp`), and Binance's
+    // multiplier is derived the way `liveness_clock.hpp` derives Anvil's rather
+    // than inherited from it: the venue's worst HEALTHY inter-arrival as a
+    // multiple of its own median, times ~2 of margin. Anvil 1.937x -> 4.0; this
+    // signal 1.005x over these ten intervals -> 2.0. Same rule, third venue.
     //
-    // **THIS IS ASSERTED RATHER THAN OBSERVED SO THAT C'S CHANGE BREAKS IT.**
-    // Raise the ceiling, or drop the multiplier below ~1.5, and this test goes
-    // red and has to be rewritten deliberately — which is the whole point of
-    // pinning an inertness. A run that merely reported 30,000 ms would stay
-    // green through either change and say nothing.
-    const std::string path =
-        std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
-    depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;
-    const dc::harness::ReplayResult r =
-        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
+    // **THE COST OF THE OTHER TWO SHAPES, STATED WHERE THE NUMBER LIVES.**
+    // A global ceiling raised to clear 79,855.9 also raises
+    // `kUncalibratedThresholdMs` — it IS the ceiling — at Anvil and Kraken, the
+    // two venues where nothing is wrong. A global multiplier cannot reach a live
+    // calibration here at all: it would have to fall to <= 1.503 to come under
+    // today's 30,000 ceiling, which is below Anvil's measured 1.937x worst
+    // healthy multiple and would grey that panel on one slipped `summary`.
+    const dc::harness::ReplayResult r = liveness_replay();
 
     REQUIRE(r.liveness_calibrated);
     // 19,963.97 AND NOT 19,969.4, AND THE DIFFERENCE IS THE POINT.
@@ -721,11 +739,49 @@ TEST_CASE("...and what it calibrates to is INERT, which is the measurement C nee
     // that cannot fail; this one is tight enough to name which instrument
     // produced the number.
     CHECK(r.liveness_median_ms == doctest::Approx(19963.97).epsilon(1e-6));
-    CHECK(r.liveness_median_ms * depthcharge::kThresholdMultiple >
-          depthcharge::kThresholdCeilingMs);
-    CHECK(r.threshold_ms == doctest::Approx(depthcharge::kThresholdCeilingMs));
-    CHECK(depthcharge::kUncalibratedThresholdMs ==
-          doctest::Approx(depthcharge::kThresholdCeilingMs));
+
+    // THE ASSERTION THIS CASE NOW EXISTS FOR: the calibrated branch was entered
+    // and this is the number that came out of it. Written as the arithmetic
+    // rather than as 39927.94, so a reader can see it is `multiple x median` and
+    // not a figure somebody wrote down.
+    const depthcharge::LivenessPolicy& p =
+        dc::harness::venue_traits(dc::harness::Venue::Binance).liveness;
+    CHECK(p.multiple == doctest::Approx(2.0));
+    CHECK(r.threshold_ms == doctest::Approx(p.multiple * r.liveness_median_ms));
+    CHECK(r.threshold_ms == doctest::Approx(39927.94).epsilon(1e-6));
+
+    // AND IT IS NO LONGER CLAMPED, WHICH IS THE PROPERTY AND NOT THE VALUE. A
+    // threshold that equals its own ceiling tells you nothing about the venue;
+    // this one is strictly inside floor and ceiling, so it tracks the signal's
+    // observed cadence the way the 2026-08-17 ruling requires. If a later change
+    // makes it touch either bound again, that is the inertness returning and
+    // this line is what says so.
+    CHECK(r.threshold_ms > p.floor_ms);
+    CHECK(r.threshold_ms < p.ceiling_ms);
+
+    // The two venues that were already right are untouched, by construction:
+    // their rows are the shipping defaults, so a regression cannot be
+    // attributed to this change because there is nothing to attribute
+    // (ARCHITECTURE §9, 2026-08-25).
+    for (const dc::harness::Venue v :
+         {dc::harness::Venue::Anvil, dc::harness::Venue::Kraken}) {
+        const depthcharge::LivenessPolicy& q = dc::harness::venue_traits(v).liveness;
+        CHECK(q.multiple == doctest::Approx(depthcharge::kThresholdMultiple));
+        CHECK(q.floor_ms == doctest::Approx(depthcharge::kThresholdFloorMs));
+        CHECK(q.ceiling_ms == doctest::Approx(depthcharge::kThresholdCeilingMs));
+    }
+
+    // AND THE DEFERRED MEDIAN CONVENTION (strain 29) CANNOT REACH THIS
+    // DECISION, which is the argument that the M5 close-out's deferral costs
+    // this stage nothing. Nearest rank gives 19,963.97 and the interpolated copy
+    // in `trace.cpp` gives 19,969.35; at a multiplier of 2.0 the two thresholds
+    // differ by 10.8 ms, 0.027% — and both land strictly inside the same bounds,
+    // so no branch anywhere reads them differently.
+    const dc::harness::TraceStats t = dc::harness::read_trace(liveness_trace_path());
+    const double other = p.multiple * t.median_liveness_gap_ms;
+    CHECK(other > p.floor_ms);
+    CHECK(other < p.ceiling_ms);
+    CHECK(other - r.threshold_ms < 11.0);
 
     // And it never fires, over 221 s containing a 26.8 s book silence on a
     // socket whose pings never missed a beat. The Binance twin of Kraken's
@@ -773,12 +829,8 @@ TEST_CASE("the report's median and the clock's median are two conventions, and t
     // places — here, `taxonomy_pins.inc`'s Binance comment, and DESIGN strain 29
     // — which is the shape the silent-stream fixture already uses.
     // ARCHITECTURE §9, 2026-08-26.
-    const std::string path =
-        std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_LIVENESS_TRACE;
-    depthcharge::SymbolSpec spec = depthcharge::binance::kBinanceAtomEur.spec;
-    const dc::harness::ReplayResult r =
-        dc::harness::run_replay_file(path, spec, dc::harness::ReplayOptions{});
-    const dc::harness::TraceStats t = dc::harness::read_trace(path);
+    const dc::harness::ReplayResult r = liveness_replay();
+    const dc::harness::TraceStats t = dc::harness::read_trace(liveness_trace_path());
 
     // Same signal, same ten intervals, same file.
     CHECK(r.liveness_arrivals == 11);
