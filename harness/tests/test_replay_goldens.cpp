@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iterator>
 #include <ranges>
@@ -67,6 +69,16 @@ std::string trace_path(std::string_view name) {
     return std::string(DC_REPLAY_DIR) + "/" + std::string(name) + ".ndjson";
 }
 
+// Read a committed trace as raw bytes, with no line-ending translation
+// whatsoever. `std::ios::binary` is the whole point of this helper existing
+// rather than the corpus check below using `std::getline` — a text-mode read on
+// Windows would silently swallow the exact byte the check is looking for.
+std::string read_bytes(const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
 std::string baseline_path() {
     return trace_path("anvil_101_baseline");
 }
@@ -87,6 +99,64 @@ ReplayResult replay(const std::string& path, std::size_t max_frames = 0) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// THE CORPUS IS THE GROUND TRUTH, SO ITS BYTES ARE A THING TO ASSERT ABOUT
+// (M5 stage C, deliverable 0)
+// ---------------------------------------------------------------------------
+//
+// **THIS CASE EXISTS BECAUSE THE DEFECT IT CATCHES SAT IN THE TREE FOR NINETEEN
+// DAYS AND NOTHING COULD SEE IT.** `anvil_101_baseline.ndjson` and
+// `anvil_101_reconnect.ndjson` — the two oldest traces in the corpus, committed
+// at M0 — were CRLF in the working copy from 2026-08-07 until 2026-08-26, in
+// every line and nothing else. They were checked out on a Windows desk with
+// `core.autocrlf=true` BEFORE `a56ccd6` added `*.ndjson -text` to
+// `.gitattributes`; that rule protects every trace captured after it and never
+// healed the two that predate it.
+//
+// Nothing failed and nothing could: `trace.cpp` and `json_scan.hpp` both treat
+// `\r` as whitespace, so the suite is green on either. **The exposure was
+// `git add -A`**, which would have committed CRLF over the project's two oldest
+// ground-truth files and moved two goldens without anyone choosing to — and
+// `git status` reported the tree CLEAN throughout, because the index's cached
+// stat data was written when the file WAS CRLF, so git never compared content.
+//
+// SO THE REPAIR IS NOT THE FIX. Restoring the bytes is a working-copy edit that
+// produces no diff — the committed blobs were always LF — and a repair with no
+// commit is a repair the next fresh checkout on a stale clone undoes in silence.
+// CLAUDE.md's own rule is the one that applies: a guard that depends on the
+// right person reading the right document at the right moment is not a guard.
+// This is the check the repository can see.
+//
+// POSITIVELY SCOPED, on purpose, and it is the same discipline CLAUDE.md records
+// for the sentinel-token grep: the set to check is *every committed trace*, which
+// the directory enumerates for itself, and not a list somebody has to remember to
+// extend. The count assertion is what stops an empty or mis-spelled directory
+// passing vacuously — a wave-through is indistinguishable from a pass.
+TEST_CASE("no committed trace contains a CR byte") {
+    std::size_t checked = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(DC_REPLAY_DIR)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".ndjson") {
+            continue;
+        }
+        ++checked;
+        const std::string bytes = read_bytes(entry.path());
+        const std::size_t at = bytes.find('\r');
+        if (at != std::string::npos) {
+            INFO("CR at byte " << at << " of "
+                               << entry.path().filename().string()
+                               << " -- this trace has been through a CRLF working "
+                                  "copy. Restore it with `git checkout --` after "
+                                  "deleting it (a plain checkout will not notice), "
+                                  "and see .gitattributes.");
+        }
+        CHECK(at == std::string::npos);
+    }
+    // Twenty-two committed traces at M5 stage C. A LOWER BOUND rather than an
+    // equality, because adding a capture is routine and must not fail this case,
+    // while an empty sweep is the failure mode that matters.
+    CHECK(checked >= 22);
+}
 
 TEST_CASE("baseline trace: every frame is consumed and nothing is malformed") {
     const ReplayResult r = replay(baseline_path());
