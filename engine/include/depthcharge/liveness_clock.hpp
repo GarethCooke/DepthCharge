@@ -137,6 +137,52 @@ inline constexpr double kUncalibratedThresholdMs = kThresholdCeilingMs;
 inline constexpr std::size_t kMinSamples = 8;
 inline constexpr std::size_t kWindowSamples = 32;
 
+// ---------------------------------------------------------------------------
+// THE THREE NUMBERS AS ONE OBJECT, BECAUSE TWO OF THEM ARE ABSOLUTES AND AN
+// ABSOLUTE IN A VENUE-AGNOSTIC OBJECT IS A PER-VENUE QUANTITY (M5 stage C)
+// ---------------------------------------------------------------------------
+//
+// The multiplier above is dimensionless and that is the whole reason it
+// transfers. The floor and the ceiling are milliseconds, and milliseconds do
+// not transfer: expressed as a MULTIPLE of each venue's own median, the same
+// 30,000 ms ceiling is
+//
+//     Anvil     60x the median      never binds
+//     Kraken    30x                 never binds
+//     Binance    1.50x              BINDS ON A HEALTHY FEED
+//
+// A ceiling that sits at 1.5x the healthy median is not a ceiling. It IS the
+// threshold, and the self-calibration the 2026-08-17 ruling rests on becomes a
+// constant wearing a calibration's clothes — measured at M5 stage A and carried
+// to here (ARCHITECTURE §9, 2026-08-25). This is the exact mirror of the class
+// §9 recorded on 2026-08-26 for `kMinSamples`, `kBaselineSamples` and
+// `kAgeWindowSamples`: **a sample count in a venue-agnostic object is a
+// per-venue duration, and an absolute duration in one is a per-venue multiple.**
+// Both directions of that rule are now instances rather than one.
+//
+// SO THE POLICY IS A PARAMETER, WITH THE DEFAULTS EQUAL TO WHAT SHIPPED. The
+// default-constructed clock is byte-for-byte the object M4 stage D put on the
+// board, so no venue that already has a shipping threshold has its number moved
+// by the existence of this struct — which is what ARCHITECTURE §9's *changing
+// the constant and the venue in one step leaves no way to attribute a
+// regression* asks for, in the strongest available form: nothing to attribute.
+// `firmware/` constructs `LivenessClock` with no argument and is untouched.
+//
+// The precedent for a per-venue number reaching `engine/` through a constructor
+// is `Book`, which already takes `venue_traits(...).validated_depth` the same
+// way; the harness's table is in `dc_harness/venue.hpp`.
+struct LivenessPolicy {
+    double multiple = kThresholdMultiple;
+    double floor_ms = kThresholdFloorMs;
+    double ceiling_ms = kThresholdCeilingMs;
+
+    // The generous default before calibration is this venue's CEILING, for the
+    // reason `kUncalibratedThresholdMs` gives above — the honest failure
+    // direction is to be slow to grey rather than to grey a healthy feed. It is
+    // a function rather than a fourth field so the two cannot drift apart.
+    constexpr double uncalibrated_ms() const noexcept { return ceiling_ms; }
+};
+
 // A rolling median of the liveness signal's inter-arrival, and the threshold
 // derived from it.
 //
@@ -153,6 +199,16 @@ inline constexpr std::size_t kWindowSamples = 32;
 // catch up at all.
 class LivenessClock {
 public:
+    // The shipping object, unchanged: the defaults ARE the constants above.
+    LivenessClock() noexcept = default;
+
+    // ...and the same object told what this venue warrants. `explicit` so a
+    // policy can never be passed where a clock was meant.
+    explicit LivenessClock(LivenessPolicy policy) noexcept
+        : policy_(policy), threshold_ms_(policy.uncalibrated_ms()) {}
+
+    const LivenessPolicy& policy() const noexcept { return policy_; }
+
     // Record one liveness-signal arrival. Pass the arrival stamp in
     // nanoseconds; the first call establishes the origin and yields no interval.
     void on_liveness(std::int64_t rx_ns) noexcept {
@@ -202,13 +258,14 @@ private:
     // function so the test above has something to compare the cache against —
     // a cache checked against itself checks nothing.
     double compute_threshold_ms() const noexcept {
-        if (!calibrated()) { return kUncalibratedThresholdMs; }
-        const double t = kThresholdMultiple * median_ms();
-        return t < kThresholdFloorMs   ? kThresholdFloorMs
-             : t > kThresholdCeilingMs ? kThresholdCeilingMs
-                                       : t;
+        if (!calibrated()) { return policy_.uncalibrated_ms(); }
+        const double t = policy_.multiple * median_ms();
+        return t < policy_.floor_ms   ? policy_.floor_ms
+             : t > policy_.ceiling_ms ? policy_.ceiling_ms
+                                      : t;
     }
 
+    LivenessPolicy policy_{};
     SampleRing<double, kWindowSamples> intervals_;
     std::int64_t prev_ns_ = 0;
     bool have_prev_ = false;

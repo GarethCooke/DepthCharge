@@ -31,6 +31,10 @@
 // extracted for.
 #include <depthcharge/kraken/kraken_checksum.hpp>
 
+// For `LivenessPolicy`. The clamp the grey threshold is computed with is a
+// venue fact for the same reason `validated_depth` is (M5 stage C).
+#include <depthcharge/liveness_clock.hpp>
+
 namespace dc::harness {
 
 // The venues this build can read a trace for. Adding one is: a row in
@@ -131,6 +135,22 @@ struct VenueTraits {
     // so a reader never has to go looking for the evidence behind a policy.
     std::string_view liveness_note;
 
+    // ---- WHAT THIS VENUE'S SIGNAL EARNS IT (M5 stage C) --------------------
+    // The multiplier, floor and ceiling `LivenessClock` clamps with. NOT a
+    // threshold: the threshold is still calibrated from the signal's own median
+    // and is still never a constant in this table — the 2026-08-17 ruling is
+    // untouched. What is per-venue is the SHAPE of the clamp, because two of
+    // the three numbers are milliseconds and milliseconds do not transfer
+    // between a 500 ms broadcast and a 20 s one. `liveness_clock.hpp` carries
+    // the rule and the three multiples the single 30,000 ms ceiling works out
+    // to; each row below carries its own derivation.
+    //
+    // **Anvil's and Kraken's rows are `{}` — the shipping defaults, byte for
+    // byte.** That is the point rather than laziness: no venue with a shipping
+    // threshold has its number moved by this field existing, so a regression
+    // after it lands cannot be attributed to it (ARCHITECTURE §9, 2026-08-25).
+    depthcharge::LivenessPolicy liveness;
+
     // ---- THE WITHDRAWN CONSTANT, kept only as a historical reference -------
     // The per-venue book-silence threshold this venue declared before the
     // 2026-08-17 ruling: Anvil 1,000 ms, Kraken 15,000 ms. **Nothing decides
@@ -204,6 +224,9 @@ inline constexpr VenueTraits kVenueTable[] = {
      "queue -- 1,191 intervals, median 500.0 ms, worst healthy 968.8 ms (1.94x, one "
      "missed tick). Confirmed idle: anvil_101_feederoff_20260817, feeder never "
      "started, 241 byte-identical frames in 120 s with seq advancing",
+     // 4.0 x a 500.0 ms median = 2,000 ms, which is also the floor. The 30,000 ms
+     // ceiling is 60x the median and binds only on a feed that has decayed 15x.
+     /*liveness=*/{},
      /*legacy_book_threshold_ms=*/1000.0,
      "WITHDRAWN 2026-08-17. Was the book-silence threshold, derived from Anvil's "
      "391 ms worst healthy gap at 2.6x margin (ARCHITECTURE §9, 2026-08-09)",
@@ -219,6 +242,8 @@ inline constexpr VenueTraits kVenueTable[] = {
      "1 Hz connection-level broadcast -- 834 intervals across two hours of day, "
      "median 1000.3 ms, worst 1,119.0 ms (1.12x). Held 936-1,042 ms cadence right "
      "through the 25,843 ms book hole that proved book silence unusable",
+     // 4.0 x a 1000.3 ms median = 4,001 ms. Ceiling 30x the median, never binds.
+     /*liveness=*/{},
      /*legacy_book_threshold_ms=*/15000.0,
      "WITHDRAWN 2026-08-17, and it is the constant the ruling was written to "
      "retire: a second quiet-pair window measured a healthy 25,843 ms book "
@@ -259,6 +284,7 @@ inline constexpr VenueTraits kVenueTable[] = {
      "the same 30,000 ms. The two coincide here, so nothing misbehaves and no "
      "golden moves; what is inert is the self-calibration the 2026-08-17 ruling "
      "rests on. Owned by C, with the multiplier",
+     /*liveness=*/{},
      /*legacy_book_threshold_ms=*/-1.0,
      "NONE, and -1 is a sentinel rather than a number. This venue was added "
      "2026-08-25, after the ruling that withdrew Anvil's 1,000 ms and Kraken's "

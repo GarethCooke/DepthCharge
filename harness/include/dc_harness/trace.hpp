@@ -192,6 +192,13 @@ struct TraceStats {
     double median_liveness_gap_ms = 0.0;
     double max_liveness_gap_ms = 0.0;
     double liveness_threshold_ms = 0.0;   // as calibrated by the trace's own signal
+    // The multiplier THAT CLOCK USED, taken from its own `policy()` rather than
+    // looked up a second time (M5 stage C). The report prints the two side by
+    // side — "N ms (Kx the observed median)" — and reading K from the venue
+    // table while the threshold came from the clock is two homes for one number,
+    // which is the drift ARCHITECTURE §9 keeps catching. They cannot disagree if
+    // only one of them is ever read.
+    double liveness_multiple = 0.0;
     std::size_t liveness_firings = 0;
 
     // ---- THE AGE CLOCK: what the header will print as a number -------------

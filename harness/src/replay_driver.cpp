@@ -40,6 +40,11 @@ public:
     Replay(Decoder decoder, const depthcharge::SymbolSpec& symbol,
            const ReplayOptions& opts, const ReplayObserver& observer)
         : opts_(opts), observer_(observer), decoder_(std::move(decoder)),
+          // The clamp the grey threshold is computed with, from the same table
+          // the book takes `validated_depth` from. The THRESHOLD is still
+          // calibrated from the signal's own median and is still never a
+          // constant in that table (M5 stage C; the 2026-08-17 ruling stands).
+          liveness_(venue_traits(Decoder::kVenue).liveness),
           book_(symbol, opts.window_policy,
                 venue_traits(Decoder::kVenue).validated_depth) {}
 

@@ -489,8 +489,11 @@ TraceStats accumulate(TraceReader& reader) {
     // The clock that actually matters since the 2026-08-17 ruling. It is fed
     // ONLY the venue's declared liveness signal and calibrates itself from that
     // signal's own observed median — see liveness_clock.hpp for why the
-    // threshold cannot be a constant.
-    LivenessClock liveness;
+    // threshold cannot be a constant. Constructed with THIS venue's clamp, so
+    // the number this report prints is the number the shipped clock computes
+    // for the same trace (M5 stage C) — the drift `dc_replay` exists to catch
+    // is exactly a report quoting a threshold the board would not produce.
+    LivenessClock liveness(venue_traits(venue).liveness);
     std::vector<double> liveness_gaps;
     std::int64_t prev_liveness_ns = 0;
     bool have_prev_liveness = false;
@@ -629,6 +632,7 @@ TraceStats accumulate(TraceReader& reader) {
     }
 
     stats.liveness_threshold_ms = liveness.threshold_ms();
+    stats.liveness_multiple = liveness.policy().multiple;
     if (!liveness_gaps.empty()) {
         std::sort(liveness_gaps.begin(), liveness_gaps.end());
         const std::size_t m = liveness_gaps.size() / 2;

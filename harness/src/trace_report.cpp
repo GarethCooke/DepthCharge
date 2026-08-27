@@ -8,7 +8,6 @@
 
 namespace dc::harness {
 
-using depthcharge::kThresholdMultiple;
 
 void print_trace_findings(std::FILE* out, const TraceStats& s, const char* indent) {
     const VenueTraits& t = venue_traits(s.meta.venue);
@@ -74,7 +73,12 @@ void print_trace_findings(std::FILE* out, const TraceStats& s, const char* inden
     std::fprintf(out,
                  "%s  -> GREY     : %zu firing(s) at a self-calibrated %.0f ms "
                  "(%.1fx the observed median)\n",
-                 indent, s.liveness_firings, s.liveness_threshold_ms, kThresholdMultiple);
+                 // THE MULTIPLIER THE CLOCK ITSELF USED, carried on TraceStats
+                 // beside the threshold it produced — not looked up in the venue
+                 // table a second time. A report printing "4.0x" beside a
+                 // threshold computed at 2.0x is the drift ARCHITECTURE §9 keeps
+                 // catching, and two lookups is how it happens (M5 stage C).
+                 indent, s.liveness_firings, s.liveness_threshold_ms, s.liveness_multiple);
     std::fprintf(out, "%s  signal     : %.*s\n", indent,
                  static_cast<int>(t.liveness_note.size()), t.liveness_note.data());
     std::fprintf(out,
