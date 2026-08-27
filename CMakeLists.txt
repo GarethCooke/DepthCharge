@@ -589,8 +589,17 @@ unset(dc_trace_path)
 # bench. This one is staged: a misspelled stream, captured live, in which the
 # venue accepted the socket (HTTP 101), answered our pongs, sent three pings on
 # the normal cadence, served a successful REST seed from a different host, and
-# delivered ZERO depth frames. Replayed, it produces a populated, coloured, LIVE
-# ladder over a feed that has never spoken.
+# delivered ZERO depth frames. Replayed BEFORE M5 stage C, it produced a
+# populated, coloured, LIVE ladder over a feed that had never spoken.
+#
+# **C LANDED AND THE TEST INVERTED (2026-08-26).** Replayed today it produces an
+# honest GREY: remedy (a) withholds the Snapshot until a diff brackets the seed,
+# so a seed the feed never confirmed is never published. The fixture now pins a
+# CONTRACT where it used to pin a defect — see the READ THIS FIRST block in
+# `harness/tests/test_binance_adapter.cpp`, which keeps the same account. The
+# file keeps the `DEFECT` name deliberately: the defective CONDITION on the wire
+# is exactly as real after the remedy as before it; what changed is what
+# DepthCharge does with it. Renaming it would cost the provenance and buy a word.
 #
 # **IT IS NOT A GOLDEN AND IT IS NOT A WITNESS. IT IS A DEFECT FIXTURE**, which
 # is a third thing, and the name is in capitals so that nobody has to read this
@@ -616,9 +625,13 @@ if(NOT EXISTS ${DC_BINANCE_FIXTURE})
   message(FATAL_ERROR
     "The silent-stream defect fixture is missing: ${DC_BINANCE_FIXTURE_NAME}. It is "
     "the only artefact that can drive invariant #5's forbidden output on demand, and "
-    "`test_binance_adapter.cpp` asserts today's BROKEN behaviour against it so that "
-    "C's remedy flips the test. Restore it, or remove it from this list, the taxonomy "
-    "pin and that test in the same commit — never from one.")
+    "`test_binance_adapter.cpp` asserts M5 stage C's remedy against it — the panel "
+    "greys rather than colouring a seed the feed never confirmed. It is not the only "
+    "red-before-green behind that remedy, but it is the only one over a LIVE capture "
+    "and the only case reaching the never-bracketed path (`seed_bracket_ok == 0` AND "
+    "`seed_bracket_failed == 0`). Restore it, or remove it in one commit from this "
+    "block, the DC_BINANCE_FIXTURE compile definition near the top of this file, the "
+    "taxonomy pin and that test — never from one.")
 endif()
 
 # --- the third venue's traces, read end to end (M5 stage A) -------------------
