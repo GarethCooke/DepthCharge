@@ -46,6 +46,8 @@
 #include <string>
 #include <vector>
 
+#include <depthcharge/age_estimator.hpp>
+#include <depthcharge/anvil/anvil_adapter.hpp>
 #include <depthcharge/binance/binance_adapter.hpp>
 #include <depthcharge/binance/binance_frame.hpp>
 
@@ -842,6 +844,51 @@ TEST_CASE("...and what it calibrates to is 39,928 ms, which is a decision and no
     // MINA/GBP 25,843 ms hole, and the same verdict: market information, not the
     // book's age, and never a grey signal.
     CHECK(r.episodes.empty());
+}
+
+// ---------------------------------------------------------------------------
+// THE AGE METER'S THIRD PER-VENUE COST, PINNED RATHER THAN DESCRIBED
+// (M5 stage C, deliverable 5 — measured at B2, decided here)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("age_ms has NO READING for the first 638.8 s of a Binance connection") {
+    // ARCHITECTURE §9, 2026-08-26: a sample count in a venue-agnostic object is
+    // a per-venue duration. `kBaselineSamples = 32` intervals is 16 s at Anvil,
+    // 32 s at Kraken and **638.8 s at Binance** — over ten minutes, on every
+    // connection, during which the header can show no number at all.
+    //
+    // **THE STATE THAT SAYS SO ALREADY EXISTS AND C DID NOT ADD ONE.**
+    // `has_age` is exactly M4 stage A2's *no reading yet*, published for the
+    // reason A2 gives: "no reading yet" and "the book is current" are different
+    // statements and exactly one of them is reassuring. So C's whole job on item
+    // 7 was to check that the engine state D needs is already there and to pin
+    // the per-venue duration as a behaviour rather than a comment. **What the
+    // header LOOKS like in that state is D's**, by this stage's scoping ruling.
+    const dc::harness::ReplayResult r = liveness_replay();
+
+    // The longest Binance capture in the corpus is 221 s, and the arithmetic
+    // says the baseline needs 638.8 s — so the meter cannot possibly have
+    // latched. Written as the inequality, so it stays true if the trace is
+    // re-cut and becomes false only if the constant or the cadence moves.
+    const double needed_ms =
+        static_cast<double>(depthcharge::kBaselineSamples) * r.liveness_median_ms;
+    CHECK(needed_ms > 638000.0);
+    CHECK(needed_ms < 640000.0);
+    CHECK(r.span_seconds() * 1000.0 < needed_ms);
+
+    CHECK_FALSE(r.final_snapshot.has_age);
+    CHECK(r.final_snapshot.age_ms == 0);
+    CHECK(r.age_baseline_ms == doctest::Approx(0.0));
+
+    // THE CONTROL, WITHOUT WHICH THE LINES ABOVE PROVE NOTHING. At Anvil the
+    // same 32 intervals is 16 s, so a 2-minute capture latches comfortably and
+    // the meter reads. A flag that is false everywhere is not evidence of a
+    // per-venue cost — it is evidence of a broken meter.
+    const dc::harness::ReplayResult anvil = dc::harness::run_replay_file(
+        std::string(DC_REPLAY_DIR) + "/anvil_101_baseline.ndjson",
+        depthcharge::anvil::kAnvilTicker101, dc::harness::ReplayOptions{});
+    CHECK(anvil.final_snapshot.has_age);
+    CHECK(anvil.age_baseline_ms > 0.0);
 }
 
 // ---------------------------------------------------------------------------

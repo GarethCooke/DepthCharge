@@ -209,6 +209,49 @@ public:
 
     const LivenessPolicy& policy() const noexcept { return policy_; }
 
+    // =====================================================================
+    // WHAT A GREEN CLOCK IS ENTITLED TO MEAN, AND IT IS NOT THE SAME THING AT
+    // EVERY VENUE (M5 stage C, deliverable 4)
+    // =====================================================================
+    //
+    // **THIS OBJECT KNOWS ONLY THAT SOMETHING ARRIVED. IT CANNOT KNOW WHAT
+    // SUBSYSTEM SENT IT, AND AT ONE OF THE THREE VENUES THAT DISTINCTION IS THE
+    // WHOLE ANSWER.** Stated here rather than only in ARCHITECTURE §9 and a
+    // strain card, because the next reader of a green clock is reading this
+    // file, and a limit recorded two documents away is a limit nobody meets in
+    // time.
+    //
+    //   Anvil    `summary`   emitted by the application that publishes the book
+    //   Kraken   `heartbeat` emitted by the application that publishes the book
+    //   Binance  `ping`      emitted by the WEBSOCKET LAYER, BELOW the
+    //                        subscription
+    //
+    // At the first two, *the feed is alive* and *the socket is alive* coincide,
+    // and the 2026-08-17 ruling never had to distinguish them. At Binance they
+    // do not coincide, so a calibrated, un-fired, entirely green clock proves
+    // THE SOCKET IS UP and proves nothing whatever about the subscription. B1
+    // measured it on the wire: a misspelled stream returns HTTP 101, answers its
+    // pings in 0.107 ms, and delivers no depth frame ever.
+    //
+    // **THERE IS NO FIX AND THIS STAGE DID NOT INVENT ONE.** The venue publishes
+    // no subscription-state signal on the market-data streams at all, so no care
+    // with stream names closes it — a server-side subscription drop on a socket
+    // that stays up presents identically to health. What M5 stage C did was
+    // bound the CONNECT case, where evidence is available: the Binance adapter
+    // will not publish its seed until a diff has bracketed it (DESIGN strain 26,
+    // remedy (a)), so a subscription that never starts is grey rather than
+    // permanently frozen. **Mid-session, the hole is open**, and invariant #5's
+    // line is drawn at *bounded* rather than at *closed*.
+    //
+    // The same emission point costs `age_ms` its other half: a deficit measured
+    // against a signal that cannot itself fall behind reads zero. B2 narrowed
+    // that rather than confirming it — a SOCKET backlog delays the ping too,
+    // because it is a control frame on the same TCP stream, and the meter tracks
+    // it at 1.00x; a FEED backlog is invisible, 0.3 s read through 1,797 s
+    // injected. See age_estimator.hpp.
+    //
+    // ARCHITECTURE §9, 2026-08-25 (M5 stage B1, both rows) and 2026-08-26.
+
     // Record one liveness-signal arrival. Pass the arrival stamp in
     // nanoseconds; the first call establishes the origin and yields no interval.
     void on_liveness(std::int64_t rx_ns) noexcept {

@@ -239,6 +239,39 @@ namespace depthcharge {
 
 // The window, in liveness arrivals. See ITS CEILING above for what the number
 // buys; 256 x 8 B = 2 KiB, which is the whole reason it is not larger.
+//
+// ===========================================================================
+// 256 STAYS, AND IT IS NOT PER VENUE — DECIDED AT M5 STAGE C, ON B2's FIGURES
+// ===========================================================================
+//
+// The question handed here was blunt: 256 arrivals is 128 s at Anvil, 256 s at
+// Kraken and **85.2 min at Binance**, and the constant's own comment says it is
+// a 2 KiB memory budget and never a duration (ARCHITECTURE §9, 2026-08-26). Is
+// an 85-minute supremum window defensible at a 20 s cadence?
+//
+// **YES, AND THE REASON IS THE DIRECTION OF THE ERROR.** This window bounds the
+// estimator's REACH, not its accuracy: ITS CEILING above works out that the sup
+// binds only on a backlog OLDER THAN THE WINDOW ITSELF, so a wider window can
+// only let the meter describe an older backlog, never overstate a newer one. At
+// Binance, wider is therefore strictly the safe direction, and the number that
+// would need justifying is a SMALLER one — a window that stopped being able to
+// characterise a fault that had been running for an hour. Shrinking it per venue
+// would buy back at most 2 KiB and cost exactly that.
+//
+// **AND IT IS NOT THE CONSTANT THAT BITES.** Of the three sized in arrivals, the
+// one with a cost at this venue is `kBaselineSamples` — 638.8 s during which the
+// meter reads nothing at all — and that one cannot be shrunk either, because 32
+// is what a MEASUREMENT set (see below: n=8 manufactured 4.4% of wall-clock as
+// phantom lag on the reconnect capture). So the honest answer to the class §9
+// named is: state the duration at every venue, which the sentence below now
+// does, and move only the constant whose cost is on the wrong side of the
+// trade. Neither of these two is.
+//
+// The interaction is the part worth carrying rather than either figure alone: at
+// Binance the meter cannot read for the first ~11 minutes and then holds a
+// window 85 minutes wide, so the shortest fault it can characterise and the
+// longest it can hold are both set by a count of arrivals. Pinned as behaviour
+// by `test_binance_adapter.cpp`'s no-reading case, with an Anvil control.
 inline constexpr std::size_t kAgeWindowSamples = 256;
 
 // How many intervals the baseline is measured over, and it is deliberately NOT
