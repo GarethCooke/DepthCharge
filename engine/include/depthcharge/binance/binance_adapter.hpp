@@ -123,6 +123,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <new>
 #include <string_view>
 
 #include "depthcharge/binance/binance_frame.hpp"
@@ -427,7 +429,45 @@ public:
         std::uint64_t resnapshots_adoptable = 0;
     };
 
-    explicit BinanceAdapter(const SymbolConfig& cfg) noexcept : cfg_(cfg) {}
+    // ONE HEAP BLOCK, TAKEN AT CONSTRUCTION, AND IT IS THE WHOLE OF M5 STAGE
+    // D-A1'S SECOND LEVER. `buf_lvl_` used to be a 32,768-byte member array;
+    // on the target `FeedTask g_feed` is namespace-scope (`main.cpp:77`), so
+    // that array was `.bss` — internal SRAM, claimed before the heap exists and
+    // therefore before the panel can be offered any of it. Moving it to the
+    // heap moves it to PSRAM without one line of ESP-IDF in `engine/`: this
+    // build sets `CONFIG_SPIRAM_USE_MALLOC 1` with
+    // `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 4096` (the pinned framework's
+    // `sdkconfig.h:313-314`, quoted in `firmware/src/heap_probe.hpp`), so any
+    // allocation of 4,097 bytes or more is already tried in PSRAM first. 32,768
+    // clears that by a factor of eight. On the host it is an ordinary heap
+    // block and nothing changes.
+    //
+    // WHY THIS ONE ARRAY AND NOT THE OTHERS. `bids_`, `asks_` and `frame_` are
+    // touched on every diff at 100 ms and stay internal — PSRAM's latency is
+    // the first of the three grounds `heap_probe.cpp` gives, and that objection
+    // is correct for the per-diff path. `buf_lvl_` is not the per-diff path: it
+    // is the pre-seed and re-seed buffer, written once while a REST fetch is in
+    // flight and drained once when the body lands. ARCHITECTURE §5 already
+    // sanctions exactly this division — *"on target the window lives in
+    // internal SRAM, the tail in PSRAM"* — and this is the tail.
+    //
+    // NOT A BREACH OF INVARIANT #7, which names the steady state: "after
+    // connect + first snapshot, the feed->render path performs no heap
+    // allocation". This is one allocation at construction, before Wi-Fi
+    // associates, and it is never resized, freed or reallocated afterwards.
+    // Same standing as the panel's DMA framebuffers, taken once inside
+    // `Panel::begin()` and noted in `main.cpp` for the same reason.
+    //
+    // `std::nothrow` rather than a throwing `new`, because this constructor is
+    // `noexcept` and the target compiles with `-fno-exceptions`
+    // (`CMakeLists.txt`'s `dc_engine_target_check`). A failed allocation is
+    // therefore a null pointer rather than a terminate, and `buffer_diff`
+    // treats null as a buffer that cannot hold this event — which routes into
+    // the `Gap{Overflow}` path that already exists for the case the buffer
+    // could not hold the connect. A board with no PSRAM degrades into
+    // re-seeding rather than into a wild write.
+    explicit BinanceAdapter(const SymbolConfig& cfg) noexcept
+        : cfg_(cfg), buf_lvl_(new (std::nothrow) BookLevel[kBinanceBufferLevels]) {}
 
     const SymbolSpec& symbol() const noexcept { return cfg_.spec; }
     std::string_view wire_symbol() const noexcept { return cfg_.wire_symbol; }
@@ -949,13 +989,23 @@ private:
     template <typename Sink>
     void buffer_diff(Sink& sink) {
         const std::uint32_t need = frame_.bid_count + frame_.ask_count;
-        if (buf_events_ >= kBinanceBufferEvents ||
+        if (buf_lvl_ == nullptr || buf_events_ >= kBinanceBufferEvents ||
             buf_levels_ + need > kBinanceBufferLevels) {
             // The connect outran the buffer. Not silent: the events held so far
             // can no longer be reconciled with a snapshot, so the whole attempt
             // restarts. Measured worst case is 15 events / 823 levels against
             // bounds of 64 / 2,048, so this is a real bound rather than a
             // likely one.
+            //
+            // `buf_lvl_ == nullptr` is the fourth way in and the only one that
+            // is not about this connect: the constructor's one allocation
+            // failed, so there is no buffer at all and there never will be.
+            // It lands here rather than in a check of its own because the
+            // honest consequence is identical — these events cannot be
+            // reconciled with a snapshot — and inventing a second `GapReason`
+            // for it would reopen a frozen §4 (and §6) to say the same word
+            // twice. The board says so in the open: `buffer_overflows` climbs
+            // from the first held event instead of staying at zero.
             ++stats_.buffer_overflows;
             ++stats_.deltas_before_seed;
             buf_events_ = 0;
@@ -1060,7 +1110,12 @@ private:
     std::uint32_t ask_count_ = 0;
 
     BufferedEvent buf_[kBinanceBufferEvents]{};
-    BookLevel buf_lvl_[kBinanceBufferLevels]{};
+    // 32,768 bytes, and the one member of this class that is NOT `.bss` on the
+    // target. See the constructor for why it is the only one that may move.
+    // Move-only, which makes `BinanceAdapter` move-only: `venue_build.hpp`'s
+    // `make_adapter()` returns a prvalue and C++17 guaranteed elision means
+    // that is still neither a copy nor a move.
+    std::unique_ptr<BookLevel[]> buf_lvl_;
     std::uint32_t buf_events_ = 0;
     std::uint32_t buf_levels_ = 0;
 
