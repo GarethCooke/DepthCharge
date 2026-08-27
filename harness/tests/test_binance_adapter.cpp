@@ -187,12 +187,53 @@ TEST_CASE("a snapshot older than the first surviving event re-fetches rather tha
     CHECK(a->stats().seed_bracket_ok == 0);
     CHECK_FALSE(a->has_baseline());
     CHECK(a->reseed_wanted());
-    // The Snapshot went out and was immediately followed by the Gap that
-    // withdraws it — the honest order, and the same one Kraken's checksum path
-    // uses: what we adopted did happen, and the Gap says it cannot be trusted.
-    CHECK(ev.count(FeedEvent::Kind::Snapshot) == 1);
+    // **NO SNAPSHOT EVER WENT OUT, AND THAT IS THE M5 STAGE C CHANGE.** This
+    // case used to assert Snapshot-then-Gap — "what we adopted did happen, and
+    // the Gap says it cannot be trusted" — which was the honest order for a
+    // baseline that had already been published. It is a strictly better order
+    // not to publish it: the bracket is the feed's corroboration, this seed
+    // never got one, and a Snapshot the engine never received cannot be a
+    // coloured ladder for the width of one event. The Gap still goes out,
+    // because `drop_book` cannot know what the engine is holding.
+    CHECK(ev.count(FeedEvent::Kind::Snapshot) == 0);
+    CHECK(a->stats().seeds_unconfirmed == 1);
     REQUIRE(ev.count(FeedEvent::Kind::Gap) == 1);
     CHECK(ev.v.back().reason == GapReason::SeqGap);
+}
+
+TEST_CASE("the OTHER bracket site answers the same way — no buffered event, first diff misses") {
+    // **THE SAME EVENT REACHES `drop_book` DOWN TWO PATHS, AND THEY MUST NOT
+    // DISAGREE.** The case above brackets against a surviving BUFFERED event, in
+    // `replay_buffer`; this one has nothing buffered, so the first diff after the
+    // seed plays the survivor's role in `check_continuity`. Both are "a seed the
+    // feed never confirmed", so both must publish nothing, raise `SeqGap` and
+    // count one `seeds_unconfirmed`.
+    //
+    // It is a case rather than a line in the one above because that symmetry did
+    // not hold when it was written: `check_continuity` set `bracket_checked_`
+    // BEFORE testing, so `drop_book` — which counts off exactly that flag —
+    // arrived with it already true and counted nothing. Harmless for three
+    // milestones, because until M5 stage C nothing read the flag on the way out.
+    Adapter a = make();
+    Events ev;
+    a->on_rest_body(seed_body(100, level("100.00000000", "1.00000000"), ""), ev);
+    REQUIRE(a->has_baseline());
+    REQUIRE_FALSE(a->seed_confirmed());
+    // Nothing was buffered, so no bracket has been attempted yet and no Snapshot
+    // has gone out.
+    CHECK(ev.v.empty());
+
+    // U = 200 leaves a hole: the seed named 100 and this event does not span 101.
+    a->on_frame(diff(200, 201, level("100.00000000", "2.00000000"), ""), ev);
+
+    CHECK(a->stats().seed_bracket_failed == 1);
+    CHECK(a->stats().seed_bracket_ok == 0);
+    CHECK(a->stats().seeds_unconfirmed == 1);
+    CHECK(ev.count(FeedEvent::Kind::Snapshot) == 0);
+    REQUIRE(ev.count(FeedEvent::Kind::Gap) == 1);
+    CHECK(ev.v.back().reason == GapReason::SeqGap);
+    CHECK_FALSE(a->has_baseline());
+    CHECK(a->reseed_wanted());
 }
 
 // ---------------------------------------------------------------------------
@@ -226,9 +267,15 @@ TEST_CASE("removing a level we do not hold is a counted no-op, never an error") 
     Adapter a = make();
     Events ev;
     a->on_rest_body(seed_body(10, level("100.00000000", "1.00000000"), ""), ev);
+    // CONFIRM THE SEED FIRST (M5 stage C). The Snapshot is published when a diff
+    // brackets `lastUpdateId + 1`, so measuring `before` straight after the REST
+    // body would put the seed's own Snapshot inside the frame under test and
+    // this case would be counting it instead of the removal.
+    a->on_frame(diff(11, 11, "", ""), ev);
+    REQUIRE(a->seed_confirmed());
     const std::size_t before = ev.v.size();
 
-    a->on_frame(diff(11, 12, level("42.00000000", "0.00000000"), ""), ev);
+    a->on_frame(diff(12, 13, level("42.00000000", "0.00000000"), ""), ev);
 
     CHECK(a->stats().levels_absent_removals == 1);
     CHECK(a->stats().levels_removed == 0);
@@ -242,8 +289,11 @@ TEST_CASE("a level re-sent at the quantity we already hold emits nothing") {
     Adapter a = make();
     Events ev;
     a->on_rest_body(seed_body(10, level("100.00000000", "1.00000000"), ""), ev);
+    // Same reason as the case above: the seed publishes on the bracketing diff.
+    a->on_frame(diff(11, 11, "", ""), ev);
+    REQUIRE(a->seed_confirmed());
     const std::size_t before = ev.v.size();
-    a->on_frame(diff(11, 12, level("100.00000000", "1.00000000"), ""), ev);
+    a->on_frame(diff(12, 13, level("100.00000000", "1.00000000"), ""), ev);
     CHECK(a->stats().levels_unchanged == 1);
     CHECK(a->stats().levels_applied == 0);
     CHECK(ev.v.size() == before);
@@ -360,39 +410,32 @@ TEST_CASE("a transport gap drops the book and asks for a seed") {
 }
 
 // ---------------------------------------------------------------------------
-// THE SILENT-STREAM DEFECT FIXTURE
+// THE SILENT-STREAM FIXTURE — INVERTED AT M5 STAGE C, IN THE COMMIT THAT MADE
+// THE REMEDY PASS, WHICH IS WHAT ITS OWN EXPIRY CLAUSE REQUIRED
 // ---------------------------------------------------------------------------
 //
 // ============================ READ THIS FIRST ==============================
-// **THIS CASE PINS A DEFECT, NOT A CONTRACT, AND IT IS EXPECTED TO INVERT.**
+// **THIS CASE PINNED A DEFECT AND NOW PINS A CONTRACT.** It was written at B2
+// asserting today's broken behaviour, with the instruction that when C landed
+// any of DESIGN strain 26's four remedies the case MUST fail and the correct
+// response was to INVERT it — not to delete it and not to relax it. It failed.
+// The two assertions marked THE LIE are flipped below and nothing else about
+// the case has moved, so what it now asserts is a red-before-green over the
+// same file rather than a fresh claim.
 //
-// A test that asserts broken behaviour is a specification to whoever reads it
-// next, so it gets the expiry treatment ARCHITECTURE §9 already uses for the
-// untracked-evidence clause on the 2026-08-25 audit-stream ruling:
+// WHAT IT USED TO SAY, kept because a fixture with no memory of its own defect
+// is just a passing test: replaying `binance_btcusdt_DEFECT_silent_stream_...`
+// produced a populated, COLOURED, **LIVE** 100-level ladder over a feed that had
+// never spoken — invariant #5's one forbidden output, staged and replayable, the
+// first artefact in this project's history that could produce it on demand.
 //
-//   * WHAT IT PINS. Today, replaying `binance_btcusdt_DEFECT_silent_stream_...`
-//     produces a populated, COLOURED, **LIVE** ladder over a feed that has never
-//     spoken. That is invariant #5's one forbidden output — a frozen ladder that
-//     looks live — and this file is the first artefact in this project's history
-//     that can produce it ON DEMAND. M3's frozen ladder was real but incidental;
-//     this one is staged and replayable.
-//   * WHY IT IS ASSERTED RATHER THAN LEFT ALONE. Whichever of DESIGN strain 26's
-//     four remedies C picks, it must have a red-before-green. Without this case
-//     the remedy ships against an argument instead of a measurement, and strain
-//     26 closes on the same.
-//   * **WHEN C LANDS A REMEDY, THIS CASE MUST FAIL, AND THE CORRECT RESPONSE IS
-//     TO INVERT IT — NOT TO DELETE IT AND NOT TO RELAX IT.** Flip the two
-//     assertions marked THE LIE below to `Stale` and a non-empty episode list,
-//     and the fixture becomes the remedy's regression test in the same commit
-//     that makes it pass.
-//   * **EXPIRY.** If C ships without inverting this, the fixture does NOT lapse:
-//     it moves to whichever stage next touches liveness, with this clause
-//     attached, exactly as the audit-stream ruling's untracked-evidence clause
-//     moves rather than lapsing. A defect fixture nobody ever flipped is a
-//     defect nobody ever fixed, and it should be as hard to lose as the ruling
-//     it is evidence for.
+// THE FILE IS STILL NAMED `DEFECT`, and deliberately. It is a capture of a real
+// defective CONDITION on the wire — a misspelled stream that returns HTTP 101,
+// answers its pings and delivers nothing — and that condition is exactly as real
+// after the remedy as before it. What changed is what DepthCharge does with it.
+// Renaming it would cost the provenance and buy a word.
 // ===========================================================================
-TEST_CASE("the silent stream draws a LIVE ladder over a feed that never spoke") {
+TEST_CASE("the silent stream is grey, because a seed the feed never confirmed is never published") {
     const std::string path = std::string(DC_REPLAY_DIR) + "/" + DC_BINANCE_FIXTURE;
     depthcharge::SymbolSpec spec = kBinanceBtcUsdt.spec;
     const dc::harness::ReplayResult r =
@@ -407,29 +450,40 @@ TEST_CASE("the silent stream draws a LIVE ladder over a feed that never spoke") 
     CHECK(r.binance.partial_frames == 0);
     CHECK(r.liveness_arrivals == 3);
 
-    // THE MECHANISM, and it is the emission point rather than a missing
-    // detector. `adopt_seed()` emits the Snapshot from the REST body before any
-    // WebSocket event arrives, so the engine's book initialises off the seed
-    // alone — while `bracket_checked_` stays false for ever, because no diff
-    // ever comes to satisfy it.
+    // THE MECHANISM WAS THE EMISSION POINT RATHER THAN A MISSING DETECTOR, and
+    // that is why the remedy is one line moving rather than a new object.
+    // `adopt_seed()` used to emit the Snapshot from the REST body before any
+    // WebSocket event arrived; it now holds it until a diff brackets
+    // `lastUpdateId + 1`. Here no diff ever comes, so the bracket is never
+    // satisfied and the Snapshot is never emitted.
     CHECK(r.binance.seed_bracket_ok == 0);
     CHECK(r.binance.seed_bracket_failed == 0);
-    CHECK(r.book.snapshots_adopted == 1);
+    CHECK(r.book.snapshots_adopted == 0);
     CHECK(r.binance.seq_breaks == 0);
 
     // The liveness clock was fed normally throughout and never fired. That is
     // the 2026-08-25 ruling working exactly as written, on a signal that proves
-    // the socket and never the feed.
+    // the socket and never the feed — UNCHANGED BY THE REMEDY, and the reason
+    // this case still matters. Nothing here detected anything; the panel is grey
+    // because it was never given grounds to be anything else.
     CHECK(r.liveness_median_ms > 19000.0);
     CHECK(r.liveness_median_ms < 21000.0);
+    CHECK(r.episodes.empty());   // no Gap, no firing — there was nothing to lose
 
-    // ---- THE LIE. These two are the ones C's remedy must flip. ----
-    CHECK(r.final_snapshot.status == depthcharge::FeedStatus::Live);
-    CHECK(r.episodes.empty());
-    // ...and it is a POPULATED ladder, not an empty one. An empty book drawn
-    // live would be bad; a full one is worse, because it looks like a market.
-    CHECK(r.final_snapshot.bid_count > 0);
-    CHECK(r.final_snapshot.ask_count > 0);
+    // ---- WHAT THE LIE BECAME. ----
+    CHECK(r.final_snapshot.status == depthcharge::FeedStatus::Stale);
+    // ...and the ladder is EMPTY rather than populated. Both halves are the
+    // assertion: a full ladder drawn live is worse than an empty one, because it
+    // looks like a market.
+    CHECK(r.final_snapshot.bid_count == 0);
+    CHECK(r.final_snapshot.ask_count == 0);
+
+    // AND IT IS "NOTHING YET" RATHER THAN "NOTHING THERE", which is the
+    // distinction `initialised` was published for at M4 stage C and the one D
+    // needs in order to draw this state at all. A book that has been told
+    // nothing and a book told the market is empty both read `bid_count == 0`,
+    // and only the second is a statement anybody made.
+    CHECK_FALSE(r.final_snapshot.initialised);
 }
 
 // ---------------------------------------------------------------------------

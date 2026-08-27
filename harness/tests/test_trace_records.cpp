@@ -476,10 +476,20 @@ TEST_CASE("the seam stage A froze is the seam B1 filled, not reshaped") {
     //
     // The counters moved with the behaviour — from the decoder to the adapter —
     // which is exactly where Kraken's went at M4 B1.
+    //
+    // **THE FOURTH RECORD ARRIVED AT M5 STAGE C**, and its absence is what the
+    // remedy exposed rather than broke. The seed here names `lastUpdateId = 500`
+    // and the buffered diff carries `u = 9`, so the snapshot already contains it
+    // and there is no survivor to bracket with — meaning the feed never
+    // corroborated this seed at all. Until stage C the Snapshot went out anyway,
+    // so a sequence with nothing to corroborate it still produced one; now it
+    // does not, and a diff that DOES bracket `lastUpdateId + 1` is what this
+    // case has to supply in order to still be about the seam.
     const std::string text = binance_trace({
         depth_update(1000, 8).c_str(),
         control(2000, "ping", 1900).c_str(),
         rest_record(3000, 2900, 500).c_str(),
+        depth_update(4000, 501).c_str(),
     });
     TraceReader reader(text, in_memory);
     BinanceTraceDecoder decoder(depthcharge::binance::kBinanceBtcUsdt);
@@ -489,20 +499,24 @@ TEST_CASE("the seam stage A froze is the seam B1 filled, not reshaped") {
     while (reader.next(rec)) { decoder.decode(rec, sink); }
 
     const auto& st = decoder.adapter().stats();
-    CHECK(st.diff_frames == 1);
+    CHECK(st.diff_frames == 2);
     CHECK(st.rest_snapshots == 1);
     // A CONTROL RECORD REACHES NO ADAPTER AT ALL. It stamps the liveness clock
     // through `classify()` and there is nothing for a book to do with it, so the
-    // adapter never sees one — `frames_in` counts the diff and the REST body.
-    CHECK(st.frames_in == 2);
+    // adapter never sees one — `frames_in` counts the two diffs and the REST body.
+    CHECK(st.frames_in == 3);
     CHECK(decoder.adapter().has_baseline());
 
-    // The seed emitted a Snapshot. Before it, the diff was BUFFERED rather than
-    // dropped, which is the venue's documented procedure and the reason a book
-    // seeded 1.4 s late is still correct.
+    // The seed emitted a Snapshot — WHEN THE BRACKETING DIFF ARRIVED, not when
+    // the REST body did (M5 stage C). Before the seed, the first diff was
+    // BUFFERED rather than dropped, which is the venue's documented procedure
+    // and the reason a book seeded 1.4 s late is still correct.
     REQUIRE_FALSE(events.empty());
     CHECK(events[0].kind == depthcharge::FeedEvent::Kind::Snapshot);
     CHECK(st.buffered_events == 1);
+    CHECK(st.buffered_dropped_by_seed == 1);
+    CHECK(st.seed_bracket_ok == 1);
+    CHECK(decoder.adapter().seed_confirmed());
     CHECK(BinanceTraceDecoder::name() == "binance");
 
     // And the transport gap still reaches the adapter through the frozen

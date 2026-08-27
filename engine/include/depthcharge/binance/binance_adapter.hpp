@@ -70,6 +70,55 @@
 // rather than in a comment. `validated_depth` in the harness venue table is
 // still 0 because nothing in THIS build performs the comparison; C is where a
 // rendered row starts claiming it was checked.
+//
+// -------------------------------------------------------------------------
+// THE SEED IS NOT PUBLISHED UNTIL THE FEED HAS SPOKEN (M5 stage C)
+// -------------------------------------------------------------------------
+// DESIGN strain 26, remedy (a), chosen from four. B1 measured the defect on the
+// wire: `...@depth@100mss` — one character wrong — returns HTTP 101, answers its
+// pings in 0.107 ms and delivers no depth frame ever, and this adapter drew a
+// populated, coloured, **LIVE** 100-level ladder over it. Invariant #5's one
+// forbidden output, arriving through the mechanism installed to prevent it.
+//
+// The mechanism was never a missing detector. `adopt_seed()` emitted the
+// `Snapshot` from the REST body, so `Book::adopt` set `FeedStatus::Live` off a
+// document the *feed* had not corroborated — while `bracket_checked_` stayed
+// false for ever, because no diff ever came to satisfy it. **So the fix is not
+// to detect the lie but to stop asserting it: the Snapshot is emitted at the
+// instant the bracket is satisfied, and not before.** Between the seed and that
+// instant the ladder is held here, the engine's book is uninitialised — an
+// explicit state since M4 stage C and grey since M4 stage D — and the panel is
+// grey with no threshold, no new detector, no new `GapReason` and no new
+// `FeedEvent::Kind`. §6 and §4 do not move.
+//
+// WHY (a) AND NOT (b), (c) OR (d), one line each, because the other three were
+// costed rather than dismissed:
+//
+//   (b) the ping does not stamp liveness until the bracket is satisfied — it
+//       does not work on the board, and that is a finding rather than a
+//       preference: `LivenessWatchdog::expired()` is gated on `armed_`, which
+//       only the first `on_liveness` sets, so withholding liveness on a lying
+//       socket leaves the watchdog UNARMED and the lie never self-terminates.
+//       It would need a never-armed-since-connect deadline, which is (c).
+//   (c) a never-started detector — a genuinely new question with a threshold of
+//       its own to calibrate, and it needs firmware this stage may not touch.
+//   (d) grade the seeded book against `@depth20` — correct, and it requires the
+//       audit stream to be subscribed, which is a board decision (D's). Nothing
+//       here forecloses it; it would arrive as a second, stronger witness.
+//
+// WHAT IT COSTS, STATED. A fraction of a second of grey on a healthy connect
+// (the seed-to-first-diff gap, ~100 ms on BTCUSDT at the 100 ms tick), and up to
+// ~10.5 s on a quiet pair, which is this venue's measured worst legitimate
+// inter-message gap (M5 stage 0). No committed capture loses a Snapshot to it.
+//
+// **AND WHAT IT DOES NOT BUY, WHICH IS THE HALF THAT MATTERS.** It closes the
+// window at CONNECT and nothing else. The ping is emitted by the WebSocket layer
+// BELOW the subscription, so it proves the socket and never the feed — and a
+// subscription dropped server-side an hour into a session still presents exactly
+// as health, to this remedy and to the liveness clock alike. What (a) converts is
+// *permanent* into *bounded*, and bounded is where invariant #5 draws its line:
+// a panel that greys late is honest, a panel that never greys is the one
+// unacceptable output. ARCHITECTURE §9, 2026-08-25 (both M5 stage B1 rows).
 #pragma once
 
 #include <cstddef>
@@ -314,6 +363,14 @@ public:
         std::uint64_t seed_bracket_failed = 0;    // ...and it did not
         std::uint64_t reseeds_requested = 0;
 
+        // A SEEDED LADDER THAT THE FEED NEVER CONFIRMED, dropped without ever
+        // having been published (M5 stage C). Zero on every healthy connect and
+        // on all nine committed captures; it is the counter that says the
+        // deferred-Snapshot remedy actually held something back, rather than the
+        // absence of one saying nothing. See THE SEED IS NOT PUBLISHED UNTIL THE
+        // FEED HAS SPOKEN, above.
+        std::uint64_t seeds_unconfirmed = 0;
+
         // ---- the diff stream ----------------------------------------------
         std::uint64_t seq_breaks = 0;             // U != prev_u + 1 -> Gap{SeqGap}
         std::uint64_t levels_applied = 0;
@@ -377,7 +434,17 @@ public:
     const Stats& stats() const noexcept { return stats_; }
     Seq next_seq() const noexcept { return next_seq_; }
     SeedState seed_state() const noexcept { return seed_; }
+    // A REST body has baselined THIS adapter's ladder. Since M5 stage C that is
+    // NOT the same question as "does the engine have a book": between the seed
+    // and the bracket this returns true while nothing has been published, which
+    // is the whole of the remedy. `seed_confirmed()` is the second question.
     bool has_baseline() const noexcept { return seed_ == SeedState::Seeded; }
+
+    // The feed corroborated the seed — a diff bracketed `lastUpdateId + 1` — so
+    // the Snapshot went out and the engine's book exists. False on a socket that
+    // holds open, answers pings and never delivers a depth frame, which is
+    // precisely the case DESIGN strain 26 was opened for.
+    bool seed_confirmed() const noexcept { return bracket_checked_; }
     std::int64_t last_update_id() const noexcept { return last_u_; }
     ParseStatus last_status() const noexcept { return last_status_; }
     std::uint32_t bid_count() const noexcept { return bid_count_; }
@@ -580,6 +647,11 @@ private:
     template <typename Sink>
     void drop_book(GapReason reason, Sink& sink) {
         const bool had_book = seed_ == SeedState::Seeded;
+        // A LADDER THIS ADAPTER HELD AND NEVER PUBLISHED (M5 stage C). It is the
+        // deferred-Snapshot remedy's own evidence: a non-zero reading is a seed
+        // the feed never corroborated, which before this stage would have been a
+        // coloured LIVE ladder instead of a counter.
+        if (had_book && !bracket_checked_) { ++stats_.seeds_unconfirmed; }
         bid_count_ = 0;
         ask_count_ = 0;
         seed_ = SeedState::Unseeded;
@@ -648,16 +720,33 @@ private:
         cover_trigger_latched_ = false;
         note_depth();
 
-        // The Snapshot conveys the EMITTED window, not the stored book: the
-        // spans point into this adapter's ladder, which outlives the sink call,
-        // and are clamped to what the engine can hold.
+        // **NOTHING IS EMITTED HERE (M5 stage C).** The Snapshot used to go out
+        // on this line, off the REST body alone, and that is the whole of DESIGN
+        // strain 26's mechanism — see THE SEED IS NOT PUBLISHED UNTIL THE FEED
+        // HAS SPOKEN at the head of this file. The ladder is now held until a
+        // diff brackets it, and `replay_buffer` or `check_continuity` publishes
+        // it at that instant. If neither ever does, nothing is ever published,
+        // and a book nobody published cannot be drawn live.
+        replay_buffer(sink);
+    }
+
+    // The seed, published at the moment the FEED corroborated it and never
+    // before. Called from exactly the two places the bracket can be satisfied,
+    // and from nowhere else — a third caller would be the defect coming back.
+    //
+    // The Snapshot conveys the EMITTED window, not the stored book: the spans
+    // point into this adapter's ladder, which outlives the sink call, and are
+    // clamped to what the engine can hold. The ladder is still the seed's at
+    // this point — in both callers the bracketing event's own levels are applied
+    // AFTER this returns, so the engine receives baseline-then-amendment in the
+    // order it did before, with the same seq numbers.
+    template <typename Sink>
+    void publish_seed(Sink& sink) {
         FeedEvent ev{};
         ev.kind = FeedEvent::Kind::Snapshot;
         ev.bids = LevelSpan{bids_, emit_count(bid_count_)};
         ev.asks = LevelSpan{asks_, emit_count(ask_count_)};
         emit(ev, sink);
-
-        replay_buffer(sink);
     }
 
     // THE DOCUMENTED PROCEDURE, once, where it can be read: drop every buffered
@@ -681,6 +770,10 @@ private:
             if (ev.first_id <= last_u_ + 1 && last_u_ + 1 <= ev.final_id) {
                 ++stats_.seed_bracket_ok;
                 bracket_checked_ = true;
+                // THE FEED HAS SPOKEN, so the seed may be published — before the
+                // survivors below are applied on top of it, which is the order
+                // the engine has always seen.
+                publish_seed(sink);
             } else {
                 ++stats_.seed_bracket_failed;
                 buf_events_ = 0;
@@ -718,10 +811,25 @@ private:
             // The first event after a seed with no surviving buffered event.
             // It plays the survivor's role: the venue's rule is about the first
             // event applied on top of the snapshot, not about where it came from.
-            bracket_checked_ = true;
+            //
+            // **`bracket_checked_` IS SET IN THE SUCCESS BRANCH AND NOT BEFORE
+            // THE TEST (moved at M5 stage C).** It used to be set here, which was
+            // harmless while nothing read it on the way out — `drop_book` clears
+            // it anyway. It stopped being harmless the moment `drop_book` began
+            // counting `seeds_unconfirmed` off it: a bracket FAILURE on this path
+            // would have arrived at `drop_book` with the flag already true and
+            // gone uncounted, while the identical failure through
+            // `replay_buffer` was counted. One event, two answers, depending on
+            // which of the two bracket sites saw it.
             if (frame_.first_update_id <= last_u_ + 1 &&
                 last_u_ + 1 <= frame_.final_update_id) {
+                bracket_checked_ = true;
                 ++stats_.seed_bracket_ok;
+                // THE FEED HAS SPOKEN. The seed goes out here, and this frame's
+                // own levels are applied on top of it by `on_diff` the moment
+                // this returns — so the engine sees Snapshot then Delta, exactly
+                // as it did when the Snapshot left at seed time (M5 stage C).
+                publish_seed(sink);
                 return;
             }
             ++stats_.seed_bracket_failed;

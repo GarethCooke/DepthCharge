@@ -229,6 +229,14 @@ void print_binance_adapter(const ReplayResult& r) {
     std::printf("            U/u seq breaks=%llu -> Gap{SeqGap}. A TRANSPORT CHECK: it "
                 "caught 2,204 missed updates at a reconnect and 0 of 3 book mutants\n",
                 ull(b.seq_breaks));
+    // THE SEED IS NOT PUBLISHED UNTIL THE FEED CONFIRMS IT (M5 stage C, DESIGN
+    // strain 26 remedy (a)). Printed as a state and not only as a counter,
+    // because "held, and never corroborated" is precisely the run whose old
+    // report read entirely healthy while the panel drew a lie.
+    std::printf("            seed published=%s   held and never confirmed=%llu   "
+                "-- the ladder is not drawn until a diff brackets lastUpdateId+1\n",
+                b.seed_bracket_ok > 0 ? "yes" : "NO",
+                ull(b.seeds_unconfirmed));
     std::printf("levels    : applied=%llu removed=%llu unchanged=%llu   absent "
                 "removals=%llu (NORMAL: the venue's book is deeper than it sends)\n",
                 ull(b.levels_applied), ull(b.levels_removed), ull(b.levels_unchanged),
