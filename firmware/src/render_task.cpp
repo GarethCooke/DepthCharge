@@ -240,6 +240,44 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned long long>(a.levels_removed),
              static_cast<unsigned long long>(a.levels_evicted),
              static_cast<unsigned long long>(a.levels_deeper_than_subscribed));
+#elif DC_VENUE == DC_VENUE_BINANCE
+    ESP_LOGI(kTag, "-- adapter: in=%llu out=%llu diff=%llu partial=%llu rest=%llu/%llu",
+             static_cast<unsigned long long>(a.frames_in),
+             static_cast<unsigned long long>(a.events_out),
+             static_cast<unsigned long long>(a.diff_frames),
+             static_cast<unsigned long long>(a.partial_frames),
+             static_cast<unsigned long long>(a.rest_snapshots),
+             static_cast<unsigned long long>(a.rest_no_body));
+    // THE SEED LEDGER, AND IT IS THIS VENUE'S ANSWER TO KRAKEN'S CRC LINE.
+    // Binance publishes no checksum, so there is no ledger that says "is my
+    // book the venue's book?" — what there is instead is the bracket, and
+    // `seeds_unconfirmed` is the number M5 stage D-A1's acceptance is read off:
+    // a socket that opens, answers pings and never delivers a bracketing diff
+    // leaves it climbing while the ladder stays honestly grey. Until D-A2
+    // builds the REST client there is no seed to confirm, so `bracket ok/FAIL`
+    // reads 0/0 and `unconfirmed` counts — that is the expected shape of this
+    // line on a D-A1 board, not a fault.
+    ESP_LOGI(kTag, "-- seed   : buffered=%llu dropped=%llu overflow=%llu"
+                   " | bracket ok=%llu FAIL=%llu unconfirmed=%llu reseeds=%llu",
+             static_cast<unsigned long long>(a.buffered_events),
+             static_cast<unsigned long long>(a.buffered_dropped_by_seed),
+             static_cast<unsigned long long>(a.buffer_overflows),
+             static_cast<unsigned long long>(a.seed_bracket_ok),
+             static_cast<unsigned long long>(a.seed_bracket_failed),
+             static_cast<unsigned long long>(a.seeds_unconfirmed),
+             static_cast<unsigned long long>(a.reseeds_requested));
+    ESP_LOGI(kTag, "-- errors : parse=%llu price=%llu qty=%llu symbol=%llu unknown=%llu"
+                   " | seqbreak=%llu overflow=%llu | levels applied=%llu removed=%llu evicted=%llu",
+             static_cast<unsigned long long>(a.parse_errors),
+             static_cast<unsigned long long>(a.price_errors),
+             static_cast<unsigned long long>(a.qty_errors),
+             static_cast<unsigned long long>(a.other_symbol),
+             static_cast<unsigned long long>(a.unknown_kind),
+             static_cast<unsigned long long>(a.seq_breaks),
+             static_cast<unsigned long long>(a.overflow_frames),
+             static_cast<unsigned long long>(a.levels_applied),
+             static_cast<unsigned long long>(a.levels_removed),
+             static_cast<unsigned long long>(a.levels_evicted));
 #else
     ESP_LOGI(kTag, "-- adapter: in=%llu out=%llu snap=%llu book=%llu trade=%llu summary=%llu",
              static_cast<unsigned long long>(a.frames_in),

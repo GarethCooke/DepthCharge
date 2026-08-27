@@ -234,7 +234,14 @@ public:
     // look exactly like a join key and correlate with nothing outside this
     // board, which is the worst thing an instrument can do.
     std::int64_t last_wire_seq() const noexcept {
-#if DC_VENUE_HAS_SUBSCRIPTION
+        // GUARDED ON `DC_VENUE_HAS_WIRE_SEQ` SINCE M5 STAGE D-A1, AND IT USED TO
+        // BE `DC_VENUE_HAS_SUBSCRIPTION`. That was one macro answering two
+        // questions, correct only while there were two venues; Binance has no
+        // subscription and no wire seq, so it took the Anvil arm and failed to
+        // compile on a member only Anvil's adapter has. See venue_build.hpp for
+        // the full note — the failure was loud, and the same conflation in the
+        // transport direction would not have been.
+#if !DC_VENUE_HAS_WIRE_SEQ
         // -1 and not the synthesised counter: printing that would look exactly
         // like a join key and correlate with nothing outside this board.
         // Instruments that consume a COUNTER rather than displaying one are

@@ -30,15 +30,17 @@
 // venue behaviour leaking out of `engine/` past invariant #2.
 #pragma once
 
-#define DC_VENUE_ANVIL  1
-#define DC_VENUE_KRAKEN 2
+#define DC_VENUE_ANVIL   1
+#define DC_VENUE_KRAKEN  2
+#define DC_VENUE_BINANCE 3
 
 #ifndef DC_VENUE
 #define DC_VENUE DC_VENUE_ANVIL
 #endif
 
-#if DC_VENUE != DC_VENUE_ANVIL && DC_VENUE != DC_VENUE_KRAKEN
-#error "DC_VENUE must be DC_VENUE_ANVIL or DC_VENUE_KRAKEN"
+#if DC_VENUE != DC_VENUE_ANVIL && DC_VENUE != DC_VENUE_KRAKEN && \
+    DC_VENUE != DC_VENUE_BINANCE
+#error "DC_VENUE must be DC_VENUE_ANVIL, DC_VENUE_KRAKEN or DC_VENUE_BINANCE"
 #endif
 
 // THE PREDICATE THE PREPROCESSOR BRANCHES ON, DEFINED ONCE.
@@ -63,6 +65,35 @@
 #define DC_VENUE_HAS_SUBSCRIPTION 0
 #endif
 
+// THE SECOND PREDICATE, AND M5 STAGE D-A1 ADDED IT BECAUSE THE THIRD VENUE
+// PROVED ONE WAS NOT ENOUGH.
+//
+// `feed_task.hpp::last_wire_seq()` guarded itself with
+// `DC_VENUE_HAS_SUBSCRIPTION`, which was correct for exactly as long as there
+// were two venues: Kraken had a subscription AND no wire seq, Anvil had neither
+// a subscription NOR a missing seq, so one macro happened to answer both
+// questions. **Binance has no subscription and no wire seq**, so it fell into
+// the Anvil arm and the build failed on `adapter_.last_wire_seq()` — a member
+// only Anvil's adapter has.
+//
+// It failed LOUDLY, which is the good case and is worth recording as such: the
+// same confusion in the transport direction is the one this file's header
+// describes, where a third venue *with* a subscription would have compiled
+// cleanly and connected to a socket nobody subscribes on. A predicate that is
+// two facts wearing one name is a defect whether or not today's venues happen
+// to agree, and the fix is to separate them rather than to widen the arm.
+//
+// A macro for the same reason `DC_VENUE_HAS_SUBSCRIPTION` is one: the branch
+// must be PREPROCESSED, because `if constexpr` outside a template still
+// instantiates the discarded arm and `adapter_.last_wire_seq()` does not
+// compile against two of the three adapters. The `static_assert` at the bottom
+// of this file ties it to `kHasWireSeq` so the two spellings cannot separate.
+#if DC_VENUE == DC_VENUE_ANVIL
+#define DC_VENUE_HAS_WIRE_SEQ 1
+#else
+#define DC_VENUE_HAS_WIRE_SEQ 0
+#endif
+
 #include <cstdint>
 #include <string_view>
 
@@ -73,6 +104,10 @@
 #include <depthcharge/kraken/kraken_checksum.hpp>
 #include "kraken_endpoint.hpp"
 #include "kraken_root_ca.hpp"
+#elif DC_VENUE == DC_VENUE_BINANCE
+#include <depthcharge/binance/binance_adapter.hpp>
+#include "binance_endpoint.hpp"
+#include "binance_root_ca.hpp"
 #else
 #include <depthcharge/anvil/anvil_adapter.hpp>
 #include "anvil_endpoint.hpp"
@@ -189,6 +224,158 @@ inline constexpr std::size_t kParseStatusCount = 6;
 static_assert(static_cast<std::size_t>(ParseStatus::OtherSymbol) + 1 == kParseStatusCount,
               "kraken::ParseStatus gained a value; widen the reject tally to match");
 
+#elif DC_VENUE == DC_VENUE_BINANCE
+
+using Adapter = binance::BinanceAdapter;
+using ParseStatus = binance::ParseStatus;
+
+inline constexpr std::string_view kName = "binance";
+
+inline constexpr const char* kHost = kBinanceHost;
+inline constexpr const char* kPath = kBinancePath;
+inline constexpr std::uint16_t kPort = kBinancePort;
+inline constexpr const char* kPortText = kBinancePortText;
+inline constexpr const char* kRootCaPem = kBinanceRootCaPem;
+inline constexpr std::size_t kRootCaPemBytes = sizeof(kBinanceRootCaPem);
+
+// NO SUBSCRIPTION, AND THIS VENUE SITS EXACTLY WHERE ANVIL DOES. Binance names
+// the stream in the URL path (`/ws/btcusdt@depth@100ms`), so the socket IS the
+// subscription: there is nothing to send after the upgrade and nothing to
+// re-send. The empty strings are never read; `kHasSubscription` is what guards
+// them, and `DC_VENUE_HAS_SUBSCRIPTION` above already resolves to 0 for
+// anything that is not Kraken, so no branch in the transport changes.
+inline constexpr bool kHasSubscription = false;
+inline constexpr const char* kSubscribeText = "";
+inline constexpr const char* kUnsubscribeText = "";
+
+inline constexpr SymbolSpec kSymbol = binance::kBinanceBtcUsdt.spec;
+// Not a subscribed depth at this venue — the diff stream carries whatever
+// changed — but the number the SEED asks for, which is the quantity the other
+// two venues' `kSubscribeDepth` also names: how deep this build's book is
+// baselined. Its lower bound is enforced in the engine
+// (`kBinanceReseedCoverLevels < kBinanceRestLimit`).
+inline constexpr std::int32_t kSubscribeDepth =
+    static_cast<std::int32_t>(binance::kBinanceRestLimit);
+
+// ZERO, AND IT IS A STATEMENT RATHER THAN AN UNSET FIELD — the same statement
+// Anvil's makes and for a sharper reason. Binance publishes NO checksum of any
+// kind (M5's ROADMAP row: "`U`/`u` bracketing detects lost or misordered
+// messages and says nothing about whether the resulting book is correct"), so
+// no rendered row on this build was ever externally confirmed. The oracle that
+// grades this venue is the `@depth20` stream, and it is a HOST instrument: it
+// runs in ctest against the committed corpus and is deliberately not on the
+// board (see binance_endpoint.hpp). DESIGN strain 24 is what reads this field.
+inline constexpr std::uint32_t kValidatedDepth = 0;
+
+// ===========================================================================
+// THE LIVENESS SIGNAL AT THIS VENUE IS THE SERVER'S WEBSOCKET PING, AND THIS
+// FUNCTION CANNOT SEE IT. READ THIS BEFORE BELIEVING THE BOARD'S GREY.
+// ===========================================================================
+//
+// At Anvil the clock is a `summary` frame and at Kraken a `heartbeat` frame:
+// both are application frames, so both reach `BinanceAdapter`'s counterparts as
+// parsed messages and `feed_task.cpp` can difference a counter across the
+// parse. **Binance emits neither.** Its clock is a WebSocket PING every ~20 s —
+// measured across the committed corpus at a median 19,964.0 ms with a
+// worst/median of 1.005, the tightest cadence of the three venues
+// (`NOTES-binance.md`, M5 stage C addendum) — and a ping is a CONTROL frame.
+// It is answered in `WsTransport::on_ping` on the RX task and never becomes a
+// message, so it never passes through `handle_message` and this function is
+// never called for it.
+//
+// So this returns a CONSTANT, and the consequence is stated rather than left to
+// be discovered on the bench:
+//
+//   * `venue::liveness_count(adapter_) != liveness_before` is never true, so
+//     `LivenessWatchdog::on_liveness` is never stamped on this build, so
+//     `armed_` is never set and `expired()` is permanently false.
+//   * The panel is therefore NOT greyed by the liveness watchdog here. It is
+//     grey because remedy (a) withholds the Snapshot until a diff brackets the
+//     seed, and — once a socket dies — because the transport's own silence
+//     recycle and `Gap{Disconnect}` grey it, neither of which routes through
+//     the watchdog.
+//   * `age_ms` reads nothing, which is the already-recorded behaviour for the
+//     first ~11 minutes of every connection at this cadence anyway (the age
+//     baseline latches on the 32nd interval = 639 s).
+//
+// A CONSTANT RATHER THAN A PLAUSIBLE COUNTER, deliberately. `frames_in` or
+// `diff_frames` would compile, would stamp the watchdog, and would be a market
+// event dressed as a clock — the exact dishonesty the other two venues' comment
+// exists to prevent ("the one frame kind on either wire that carries a CLOCK
+// rather than a market event"). A quantity this build cannot measure is
+// reported as absent, not approximated.
+//
+// **WHAT IS OWED, AND BY WHOM.** Wiring the ping to the watchdog is what stage
+// C's *Owed by stage D* item 5 requires before its reduced parity claim — *"the
+// panel greys within the calibrated liveness threshold of the socket falling
+// silent — 39.9 s"* — can be TESTED rather than asserted, which is D-C's. It is
+// not free and it is not D-A1's: the count lives in `PingProbe` on the RX task
+// while the watchdog is stamped on the feed task, so it crosses a task boundary
+// that invariant #8 governs, and `liveness_count(const Adapter&)`'s signature
+// would have to change for all three venues. Raised here rather than improvised
+// under a stage whose acceptance does not reach it.
+inline std::uint64_t liveness_count(const Adapter&) noexcept { return 0; }
+inline constexpr std::string_view kLivenessSignal = "server-ping (NOT WIRED — see venue_build.hpp)";
+
+// Binance's diff stream carries `U`/`u` — a per-symbol update-id range that IS
+// meaningful for ordering, and the adapter brackets on it. But it is not a
+// join key in Anvil's sense: it correlates a capture with THIS symbol's stream
+// and with nothing else on the wire, and no second observer of the same socket
+// exists to join against. False, like Kraken's, so the instruments that print
+// one are told not to.
+inline constexpr bool kHasWireSeq = false;
+
+// WHAT A FRAME FROM THIS VENUE STARTS WITH, for the reject log's spliced-
+// second-frame scan. A raw `/ws/` stream delivers the event object itself, so
+// every frame opens with the event-type key `{"e":"depthUpdate"`. The alternate
+// covers the `/stream?streams=` combined wrapper (`{"stream":`), which the
+// board does not use today but the corpus is full of — a capture replayed
+// through this build would otherwise scan for a prefix that never appears,
+// which is precisely the permanent no-op review found at Kraken.
+inline constexpr std::string_view kFrameHeadPrefix = "{\"e\":";
+inline constexpr std::string_view kFrameHeadPrefixAlt = "{\"stream\":";
+
+// The board's own construction of the adapter. Returned as a prvalue and used
+// to initialise a member directly, so C++17's guaranteed elision means no copy
+// and no move — which matters MORE here than at Kraken: since M5 stage D-A1
+// this object owns a heap block (`buf_lvl_`, 32 KiB, PSRAM on the target), so
+// it is move-only and a copy would not compile.
+inline Adapter make_adapter() noexcept { return Adapter{binance::kBinanceBtcUsdt}; }
+
+// No checksum at this venue, so no failures to report — the same honest zero
+// Anvil returns, and the SOAK line says in words which of the two statements
+// it means. `resyncs_requested` IS real here and is the re-seed counter: the
+// adapter asks for a fresh REST snapshot when seeded coverage exhausts.
+inline std::uint64_t checksum_failures(const Adapter::Stats&) noexcept { return 0; }
+inline std::uint64_t resyncs_requested(const Adapter::Stats& s) noexcept {
+    return s.reseeds_requested;
+}
+
+inline const char* parse_status_name(ParseStatus st) noexcept {
+    switch (st) {
+        case ParseStatus::Ok:            return "ok";
+        case ParseStatus::NotJson:       return "not-json";
+        case ParseStatus::BadShape:      return "bad-shape";
+        case ParseStatus::BadPrice:      return "bad-price";
+        case ParseStatus::BadQty:        return "bad-qty";
+        case ParseStatus::OtherSymbol:   return "other-symbol";
+        case ParseStatus::TooManyLevels: return "too-many-levels";
+    }
+    return "?";
+}
+
+// SEVEN, NOT SIX, AND IT IS THE FIRST VENUE THAT DIFFERS. Anvil and Kraken both
+// have exactly six statuses; Binance adds `TooManyLevels`, because at a DIFF
+// venue a truncated message is a book that has silently missed amendments
+// rather than merely a shallower one (see `binance_frame.hpp`). `reject_log.hpp`
+// sizes `by_status_[]` from this constant, so six here would not overflow — it
+// would do the quieter thing its own comment warns about: count the new status
+// in `total_` and in no column, and never print it, so the one line a bench
+// greps silently stops adding up.
+inline constexpr std::size_t kParseStatusCount = 7;
+static_assert(static_cast<std::size_t>(ParseStatus::TooManyLevels) + 1 == kParseStatusCount,
+              "binance::ParseStatus gained a value; widen the reject tally to match");
+
 #else  // DC_VENUE_ANVIL
 
 using Adapter = anvil::AnvilAdapter;
@@ -267,5 +454,10 @@ static_assert(kSymbol.valid(), "the selected venue's SymbolSpec must be decodabl
 // separating — which is exactly what had happened before review.
 static_assert(kHasSubscription == (DC_VENUE_HAS_SUBSCRIPTION != 0),
               "DC_VENUE_HAS_SUBSCRIPTION and kHasSubscription must agree");
+
+// The same tie for the second predicate. Added with it at M5 stage D-A1: the
+// macro and the constant are one fact, and this is what stops them separating.
+static_assert(kHasWireSeq == (DC_VENUE_HAS_WIRE_SEQ != 0),
+              "DC_VENUE_HAS_WIRE_SEQ and kHasWireSeq must agree");
 
 }  // namespace depthcharge::fw::venue
