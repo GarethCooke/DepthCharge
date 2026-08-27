@@ -98,7 +98,123 @@ inline constexpr int kMinColourDepth = 2;
 // for some other reason. The lever that actually bought headroom was the colour
 // depth ceiling above, which is a cosmetic cost; lowering the reserve trades
 // against the feed.
-inline constexpr std::uint32_t kReserveInternalBytes = 96u * 1024u;
+//
+// ===========================================================================
+// 96 KiB -> 80 KiB, M5 STAGE D-A1, 2026-08-27. THE PRECONDITION ABOVE WAS MET.
+// ===========================================================================
+//
+// The sentence above is a real guard and it is not being waived — it is being
+// SATISFIED, and this note is the run it asks for.
+//
+// WHAT THIS NUMBER WAS SIZED FOR NO LONGER EXISTS. Read the paragraph above:
+// it covers "two esp_websocket_client handles' buffers (~10 KiB each — the
+// spare-handle reconnect)". That design was deleted on 2026-08-16 when the
+// owned transport landed — `ws_transport.hpp` records it going, "~10 KiB of
+// heap for the spare's buffers, its 6 KiB task stack" and all — so ~20 KiB of
+// this 96 KiB has been held back for a second socket that cannot be opened.
+// **This is the same stale premise that voided stage D-A1's first lever**,
+// which claimed +16,384 B from moving "the four WebSocket buffers (rx+tx x two
+// handles)" to PSRAM: those buffers went with the spare handle, the owned
+// transport reads into 4 KiB of `.bss`, and that reclamation had already
+// happened and was already inside the baseline. One obsolete sentence, two
+// numbers derived from it, and only this one is recoverable.
+//
+// THE RUN, and it is the reconnect-heavy case rather than a quiet one.
+// `firmware/logs/kraken-b3-soak2-20260824.log`, on the owned transport, panel
+// up at depth 5 double-buffered (57,416 B taken), `connects=4`:
+//
+//     dma-internal free at panel begin      168,900
+//     ...after the panel took its buffers   111,484
+//     heap baseline at steady state          61,080   free
+//     LOW WATER over the whole run           49,344   <-- the number that matters
+//
+// So the network stack's worst-ever draw is 111,484 - 49,344 = **62,140 B**
+// against 98,304 held back — **36,164 B never touched**, and not touched
+// through three TLS contexts being rebuilt, which is precisely the case this
+// reserve exists to survive. 80 KiB keeps **19,780 B** over that measured worst
+// case.
+//
+// ONE CAVEAT, STATED BECAUSE IT IS REAL AND BECAUSE THIS TREE ALREADY KNOWS IT.
+// The two figures above come from two different masks: `panel.cpp` samples
+// `MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA` and `heap_probe.cpp` samples
+// `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, differing in two bits, and
+// `heap_probe.hpp` says in as many words that comparing them directly needs
+// both the same-pool note AND 8BIT being non-restrictive within internal on
+// this part — "and only the first of those is written down anywhere in this
+// tree". So 62,140 is an estimate with a known soft edge, not a reading. It is
+// used here for a decision whose margin is 19,780 B, roughly 32% of the
+// quantity, which is why the soft edge does not change the verdict. **The bench
+// confirmation is deliverable 7's**: the Anvil build's `budget=` line moves by
+// exactly 16,384 and nothing else does.
+//
+// WHAT IT BUYS, AND WHY IT IS SPENT HERE. The Binance image's static footprint
+// is +59,656 B over Anvil's, measured off the linker rather than projected
+// (146,560 -> 206,216 bytes of RAM). Against the Anvil board's 177,040 B free
+// at panel init that leaves ~117,384 B, and at 96 KiB reserved the budget is
+// 19,080 B — short of `panel_cost_bytes(3, true)` = 32,000 by 12,920 B, i.e. a
+// SINGLE-BUFFERED panel. At 80 KiB the budget is 35,464 B and the board boots
+// double-buffered with 3,464 B to spare. That is the whole of stage D-A1's
+// acceptance, and `panel.cpp` argues the discontinuity it turns on: "lower the
+// colour depth before giving up the second buffer — tearing on a book that
+// redraws 13 times a second is a visible defect on a panel whose whole job is
+// to be believed."
+//
+// WHAT IT COSTS, MEASURED ON THE BOARD THE SAME EVENING — because "returns
+// 16,384 B" is only half the story and the other half is a real debit.
+//
+// On the ANVIL build the change is pure arithmetic and costs nothing: d6 was
+// already the chosen rung (it is `kMaxColourDepth`), so the extra budget buys
+// no second buffer that was not already taken, and the steady-state heap is
+// unmoved. Confirmed 2026-08-27: `free=176,804 reserve=81,920 budget=94,884`,
+// still `depth=6 double-buffered`, and `94,884 - (176,804 - 98,304) = 16,384`
+// exactly.
+//
+// On the BINANCE build it costs ~16 KB of real heap, and that is the point of
+// it: at 96 KiB the budget was 19,244 and only `panel_cost_bytes(3, false)`
+// fit, so the board would have run SINGLE-buffered. The second buffer is
+// 15,816 B and it comes out of the heap the network stack would otherwise
+// have. Measured on the flashed board: `free=117,548 budget=35,628`,
+// `depth=3 double-buffered`, and a steady state of **free 32,244 / largest
+// block 17,396**.
+//
+// ===========================================================================
+// THE NAMED CHECK THIS DECISION OWES THE SOAK (D-C), WITH ITS NUMBER
+// ===========================================================================
+//
+// 17,396 B is the tightest largest-block this project has run at, and there is
+// a specific threshold it must not cross. mbedTLS is pinned internal
+// (`esp_mbedtls_mem_calloc` with `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`) and
+// needs **two contiguous 16,717 B blocks per session**
+// (`hardware/bench-2026-08-11-feed-lag.md`, `mbedtls_ssl_setup+0x12/+0x62`,
+// literal `0x414d`). So the margin is **679 B** — and it was observed with
+// `connects=1`, i.e. **the reconnect case was never exercised**.
+//
+//     D-C CHECK: record the largest free INTERNAL block at every reconnect.
+//     If it ever falls below 16,717 B, THE RESERVE CUT IS WRONG AT THE SECOND
+//     SOCKET and this constant goes back up.
+//
+// It is written as a threshold rather than as a watch-list line because a
+// sawtooth is exactly what this quantity does: M4 stage D's B3 measured the
+// largest block moving as a sawtooth across a 25.39 h soak, so a single
+// end-of-run reading would say nothing and a mid-run dip is the event. **The
+// sampling point is the reconnect, not the interval**, because that is when a
+// fresh TLS context is allocated.
+//
+// The mitigation, stated so the check is read correctly rather than
+// alarmingly: at socket-down the old context is freed first and the hole
+// grows — the 2026-08-11 bench saw free jump +54,720 the instant the socket
+// died — so an ordinary reconnect allocates from a much larger hole than
+// 17,396. The case this check exists for is the one where that does not
+// happen: a half-open socket whose context is still held when the new one is
+// built. M4 stage D's B3 observed two half-open outages in 25.39 h, so it is
+// not hypothetical.
+//
+// AND THE GUARD STILL STANDS FOR THE NEXT PERSON. Lowering this again wants
+// another run of the shape above — a reconnect-heavy soak whose low-water mark
+// leaves room — and not an argument. If a bench evening ever sees a TLS
+// handshake fail to allocate on reconnect, this constant is the first suspect
+// and 96 KiB is the known-good value to restore.
+inline constexpr std::uint32_t kReserveInternalBytes = 80u * 1024u;
 
 // What begin() will really take: framebuffer + DMA descriptors + the allocator's
 // own bookkeeping. The arithmetic lives in panel_budget.hpp, ESP-IDF-free and
