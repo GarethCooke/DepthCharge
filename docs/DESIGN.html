@@ -3700,8 +3700,39 @@ classDiagram
       <code>recv_ns</code> (1.0) puts <code>limit=100</code> at <b>1.00 on every fetch</b> and
       <code>limit=1000</code> at <b>0.21&ndash;0.86, median ~0.76</b>. <b>The deeper the seed, the
       older it is when it lands</b> &mdash; the venue snapshots the book roughly three quarters of
-      the way through the round trip and spends the rest shipping ~120 KB. That is a cost of
+      the way through the round trip and spends the rest shipping <s>~120 KB</s>
+      <b>64,046 B</b>. That is a cost of
       <code>limit=1000</code> nobody had priced, and it is why (c) is not obviously wrong.
+    </p>
+    <p>
+      <b>Corrected 2026-08-27 (M5 stage D, scoping):</b> the body is <b>64,046 B</b>, not
+      <s>~120 KB</s> &mdash; out by <b>nearly 2&times;</b>: 1.92&times; reading that
+      &ldquo;KB&rdquo; as binary, which &sect;9's 2026-08-16 (eve) row says every figure in this
+      repo has always been, and 1.87&times; if it was decimal. The figure was never measured, so
+      it does not carry a third significant figure either way. Measured off the committed corpus:
+      <b>every BTCUSDT <code>limit=1000</code> body is exactly 64,046 bytes</b>, eleven of them
+      across four traces. It is exact rather than approximate because a BTCUSDT body at this
+      depth is 1,000 full levels a side and every field in it is constant width across this
+      corpus &mdash; 8 padded decimals on every price and quantity, a 5-digit price integer part,
+      a 1-digit quantity, an 11-digit <code>lastUpdateId</code>. <b>The padding alone is not
+      enough</b>: ATOMEUR at <code>limit=1000</code> is padded identically and its two bodies
+      differ (9,340 and 9,369 B), because its book does not reach 1,000 levels.
+    </p>
+    <p>
+      <b>Where it came from.</b> Not here: this card quoted it from
+      <code>NOTES-binance.md</code>, which now carries the correction and its provenance. It was
+      written as prose there, in the same section as a <em>genuinely</em> ~128&nbsp;KiB figure
+      &mdash; the 15 s deferred-diff buffer this card prices at <b>128 KiB</b> above &mdash; and
+      the likeliest account is that the two were conflated. It propagated from there into
+      <code>M5-stage-C</code> twice, into this card once, and into the first draft of the stage D
+      brief. <b>Nothing else in this card moves</b> &mdash; the adoptability counts and the
+      round-trip positions are measured and unaffected, and the argument for (c) rests on those
+      rather than on the byte count; what changes is that the same three-quarter fraction is now
+      explained by half the bytes. The rule it fails is ARCHITECTURE &sect;9's 2026-08-16 (eve)
+      row, which states it of percentages and reaches this case unchanged: <b>a percentage in
+      prose is a claim, and claims get recomputed when they are quoted &mdash; a ratio nobody
+      re-derives is a ratio nobody has checked.</b> Read <em>figure</em> for <em>percentage</em>,
+      with one thing added: a ratio can be re-derived from the page and this could not.
     </p>
     <p>
       Until one is built, <code>reseed_wanted()</code> at this venue is a request no layer

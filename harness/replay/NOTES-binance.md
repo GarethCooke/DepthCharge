@@ -1133,6 +1133,51 @@ at `sent_ns` (0.0) and at `recv_ns` (1.0):
 | `limit=100` | **1.00** on every fetch — the body names the instant it was received |
 | `limit=1000` | **0.21 – 0.86**, median ~0.76 |
 
+**CORRECTED 2026-08-27 (M5 stage D, scoping): the body is 64,046 B, not ~120 KB — out by nearly
+2×.** 1.92× reading that "KB" as binary, which §9's 2026-08-16 (eve) row says every figure in
+this repo has always been; 1.87× if it was decimal. The figure was never measured, so it does
+not carry a third significant figure either way. The paragraph below is left standing unedited,
+because where the figure came from is the reusable part and an edited sentence would hide it.
+
+**The measurement.** Off this repository's own corpus, which has held the falsifying evidence
+since **2026-08-25** — captured 2026-08-24, committed in `5f23d22`: **every BTCUSDT `limit=1000`
+body is exactly 64,046 bytes** — eleven of them, across `binance_btcusdt_deepseed_20260824`
+(lines 32 and 432), `deepseed2` (32), `mixed1` (19, 295, 571, 849) and `mixed2` (19, 297, 573,
+851). Note the `frame` field is a JSON **object**, not a string: the wire body is its *compact*
+serialisation, which is what the venue sends and what 64,046 counts.
+
+**Why it is exact rather than approximate, stated carefully, because only half of it is a venue
+rule.** § *Precision is uniform, and it is **not** the declared tick size* fixes the fractional
+width — 8 digits on every price and quantity, no exponent notation — and that is the venue's.
+The rest is a property of *this pair on this tape*: a BTCUSDT body at this depth is 1,000 full
+levels a side, and across all 22,000 entries of all eleven bodies every price string is 14
+characters and every quantity string 10, with an 11-digit `lastUpdateId`. **Padding alone is not
+enough**, and the corpus says so: ATOMEUR at `limit=1000` is padded identically and its two
+bodies are 9,340 and 9,369 B — *different* — because its book reaches only 15 and 16 bids
+against 304 asks, and its price and quantity strings run 10–13 characters. Read 64,046 B as this
+pair at this price, not as a constant. BTCUSDT at `limit=100` is 6,446 B.
+
+**Nothing else in this section moves.** The round-trip positions, the 0-of-7 adoptability and
+the ~370 ms conclusion are measured quantities and are unaffected — only the byte count in the
+sentence below is wrong.
+
+**Where it came from, as far as the tree can show.** It was never measured — nothing in the
+corpus yields 120 KB under any serialisation. It sat in the same section as a *genuinely*
+~128 KiB figure — the 15 s deferred-diff buffer at the head of it, `:1112`, either side of the
+adoptability tables — and the likeliest account is that the two were conflated, though nothing
+records that and the conflation does not by itself explain 120 rather than 128. From here it
+propagated unchecked into `M5-stage-C` twice, `docs/DESIGN.html` once, **once more into this
+file's own stage-C addendum below** (corrected there), and into the first draft of the stage D
+brief, where it was the headline number of a blocking decision.
+
+**The rule it fails is already written down**, in ARCHITECTURE §9's 2026-08-16 (eve) row, which
+states it of percentages and reaches this case unchanged: *"a percentage in prose is a claim,
+and claims get recomputed when they are quoted — a ratio nobody re-derives is a ratio nobody
+has checked."* Read *figure* for *percentage* and this is that defect exactly, with one thing
+added: a ratio can be re-derived from the page, and this could not — it needed a fresh
+measurement against the corpus, which is one line of Python against a committed trace. Same
+species as the median with two homes and the `min_bid_levels` instrument.
+
 So **the deeper the seed, the older it is when it lands**: at `limit=1000` the venue
 snapshots the book roughly three quarters of the way through the round trip and spends the
 rest serialising and shipping ~120 KB. That is a cost of `limit=1000` nobody had priced, it
@@ -1512,6 +1557,11 @@ condition where a bench sitting can see it instead of on a report line. The adop
 measurement that constrains D's choice is B2's and is unchanged: **0 of 7 adoptable at `limit=1000`
 on the liquid pair, 19 of 19 everywhere else**; the venue snapshots roughly three quarters of the
 way through the round trip and spends the rest shipping ~120 KB.
+
+> **CORRECTED 2026-08-27 (M5 stage D, scoping): ~120 KB is 64,046 B.** Left standing above per
+> the correction beside the figure's source, § *A re-snapshot on a live book*, which carries the
+> eleven-body measurement and where the number came from. The adoptability figures this paragraph
+> is actually about — 0 of 7, 19 of 19 — are measured and unaffected.
 
 ### 6 · Can M5 claim parity with M4's definition of done? **No — and here is the reduced claim.**
 

@@ -183,6 +183,11 @@ every capture — **0 of 7 adoptable at `limit=1000` on the liquid pair, 19 of 1
 deeper the seed the older it lands: the venue snapshots roughly three quarters of the way through the
 round trip and spends the rest shipping ~120 KB.
 
+> **CORRECTED 2026-08-27 (M5 stage D, scoping): ~120 KB is 64,046 B** — quoted here from
+> `NOTES-binance.md`, which carries the correction, the eleven-body measurement and where the figure
+> came from. Left standing per ARCHITECTURE §9's own rule. The adoptability measurement this
+> paragraph exists for is unaffected.
+
 ### 4 · Write the transport-versus-feed hole where the code can see it
 
 Item 5 has no fix and this stage is not to invent one. The ping is emitted below the subscription;
@@ -563,6 +568,16 @@ diagnosis without the practice. Same two-column shape.
 | 4 | **The uncalibrated-default window.** `kUncalibratedThresholdMs` **is** the ceiling, so Binance's pre-calibration threshold is **60 s** where it used to be 30 s, for the **159.7 s** `kMinSamples = 8` takes at this cadence — on *every* connection, and the board reconnects. Decoupling the two was deliberately not done at C: it would be a fourth number with no measurement behind it, in a stage whose argument is that the multiplier was derived. **State whether that window matters on the board.** That is a soak observation and not a desk one. | §9 2026-08-26; `NOTES-binance.md` §C.1's *cost, stated*. M4 stage D's B3 is the precedent for what a reconnect-heavy night looks like: 2 half-open outages in 25.39 h, and 21 reconnects in 86 minutes at M3. |
 | 5 | **Parity: NO, and D is where the reduced claim is TESTED rather than asserted.** *The panel greys within the calibrated liveness threshold of the **socket** falling silent — 39.9 s — and refuses to colour a ladder the feed has never confirmed. It does not detect a subscription that stops server-side while the socket stays up. `age_ms` is a lag estimate for a socket backlog only, and reads nothing for the first ~11 minutes of every connection.* Both halves are narrower than M4's from **one cause**. | `NOTES-binance.md` §C.6; §9 2026-08-26. The three per-venue `age_ms` limits are B2's and need no re-measuring: **tracks a socket backlog 1.00×, BLIND to a feed backlog, 638.8 s with no reading, 85.2 min supremum window.** |
 | 6 | **M4's card 30 (opened as 26) is a LIVE DEPENDENCY, not a residue.** Remedy (b) — *the ping does not stamp liveness until the bracket is satisfied* — is **not wrong in principle; it is blocked by that card being open.** `LivenessWatchdog::expired()` is `armed_ && now >= deadline_ns()` and `armed_` has exactly one setter, so withholding liveness leaves the watchdog never armed and the lie permanent. **If `armed_` ever gains a second setter, (b) becomes available and its trade against (a) reopens.** Written down here so the next stage does not re-derive the rejection from scratch. | DESIGN cards 26 and 30; §9 2026-08-26 (the remedy row); `binance_adapter.hpp`'s *WHY (a) AND NOT (b), (c) OR (d)*. |
+
+> **CORRECTED 2026-08-27 (M5 stage D, scoping): item 2's closing "~120 KB" is 64,046 B.** Left
+> standing per ARCHITECTURE §9's own rule; the correction, the eleven-body measurement and the
+> figure's provenance are in `NOTES-binance.md` § *A re-snapshot on a live book*. **Item 2's
+> *other* number is right and is a different quantity** — the ~128 KiB deferred buffer is the
+> 15 s diff hold, not a body size. The two sit in one row here, one in each column, and in
+> `NOTES-binance.md` in one section either side of the adoptability tables; that co-location is
+> the likeliest account of how the wrong one came to be written.
+> Nothing else in the row moves: the three candidates and the 0-of-7 / 19-of-19 measurement that
+> decides between them are unaffected.
 
 Two cautions carried with the list, both inherited from B2's and still true:
 
