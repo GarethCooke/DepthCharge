@@ -13,9 +13,17 @@
 // WHY A COMPILE-TIME BOUND AT ALL, WHEN THE REAL FIT IS A RUNTIME ONE
 // ===========================================================================
 //
-// The Binance build clears the double-buffer floor by **3,248 bytes** (below).
-// At that margin **one more field in the adapter removes the panel**, and the
-// way it removes it is the problem: `Panel::begin()` measures the free heap,
+// At M5 stage D-A1 the Binance build cleared the double-buffer floor by
+// **3,628 bytes**, and at that margin one more field in the adapter removed the
+// panel. **D-A2 widened it to 44,596 B** by moving `FramePipe`'s 64 KiB out of
+// `.bss`, and the assertion is worth MORE rather than less for that: the margin
+// is no longer the thing holding the panel up, so a regression would now be
+// silent for a long time before it bit. It also now guards a second input — the
+// reserve rose 80 -> 104 KiB in the same stage to cover a concurrent TLS
+// session, and a future rise spends this margin without touching `engine/` at
+// all.
+//
+// The failure it prevents is unchanged: `Panel::begin()` measures the free heap,
 // finds no rung fits, prints
 //
 //     "no colour depth fits in %u B — running WITHOUT a panel."
@@ -51,11 +59,14 @@
 // is what makes this arithmetic legitimate:
 //
 //     image                 static RAM     delta vs Anvil   sizeof(Adapter) delta
-//     depthcharge           146,560 B      —                —
-//     depthcharge-kraken    154,888 B      +8,328           +8,344   (16 B out)
-//     depthcharge-binance   206,216 B      +59,656          +59,660  ( 4 B out)
+//     depthcharge            81,032 B      —                —
+//     depthcharge-kraken     89,360 B      +8,328           +8,344   (16 B out)
+//     depthcharge-binance   140,688 B      +59,656          +59,660  ( 4 B out)
 //
-// The residuals are pointer-width and alignment noise. So
+// The residuals are pointer-width and alignment noise. **The absolute figures
+// fell by 65,528 B across all three at D-A2** when `FramePipe`'s slabs left
+// `.bss`; the DELTAS are what this derivation uses and they did not move, which
+// is the point of expressing it as a difference. So
 //
 //     free_internal(venue) ~= free_internal(anvil) - (A_venue - A_anvil)
 //
@@ -69,25 +80,30 @@
 // ===========================================================================
 //
 // `free_internal(anvil)` is the `dma-internal free=` figure `panel.cpp` prints
-// at `Panel::begin()`. The four most recent Anvil runs — 2026-08-24, same
-// firmware, same desk — read
+// at `Panel::begin()`, and **it is the only input here that is not compiler or
+// linker output — so it is the one that goes stale, and it did, within one
+// stage.**
 //
-//     176,828   177,040   177,048   177,236        spread 408 B
+//     2026-08-24, D-A1 build   176,828  177,040  177,048  177,236   spread 408
+//     2026-08-28, D-A2 build   241,720                              <-- in use
 //
-// **176,828 is used: the worst of the four, not the median.** This is a
-// CEILING on a footprint, so the conservative direction is the lowest free
-// heap, and the whole point of the constant is to fire before the board does.
-// That is a different question from the one stage C's multiplier finding warns
-// about — there, sizing a REQUIREMENT to the worst observed left a margin of
-// 1.000x; here the worst observed is the input to a bound whose margin is
-// stated separately below.
+// D-A2 moved it by 64,892 B, because `FramePipe`'s 65,536 B of slabs left
+// `.bss` for the heap. **The old reading was not wrong; it was measured on a
+// build that no longer exists** — which is precisely the failure mode
+// ARCHITECTURE §9's 2026-08-27 row names, arriving one stage after that row was
+// written, and it is why this constant is re-measured rather than adjusted.
+//
+// **Only one reading this time, and that is a real weakness of the figure.**
+// D-A1 had four and could take the worst; this has one, so it carries no spread
+// of its own and the 408 B from the earlier set is the only guide to how much
+// it might move. It errs the right way — a HIGH reading makes the budget
+// generous and the assertion lax, so the risk is a missed regression rather
+// than a false alarm — but if this is ever tightened, take four readings first.
 //
 // **Note what this number is NOT.** The D-A1 brief carries 179,300, a single
-// sample from 2026-08-20; the four readings above are more recent and lower.
-// The figure is a board measurement and the only input here that is not from a
-// linker or a compiler, so it is the one that can go stale. If a bench evening
-// reads a materially different `dma-internal free=` on the Anvil build, this
-// constant is what has to be re-derived.
+// sample from 2026-08-20 taken on a third build again. If a bench evening reads
+// a materially different `dma-internal free=` on the Anvil build, this constant
+// is what has to be re-derived.
 #pragma once
 
 #include <cstddef>
@@ -97,9 +113,17 @@
 
 namespace depthcharge::fw {
 
-// The Anvil board's free internal DMA-capable heap at `Panel::begin()`, worst
-// of four runs on 2026-08-24. See the header note for provenance and staleness.
-inline constexpr std::size_t kAnvilFreeInternalAtPanelInit = 176'828;
+// The Anvil board's free internal DMA-capable heap at `Panel::begin()`.
+//
+// **MEASURED 2026-08-28 on the D-A2 build**, which is the only honest way to
+// carry it: this is the one number in this file that is neither compiler nor
+// linker output, and D-A2 moved it by returning `FramePipe`'s 65,536 B to the
+// heap. The projection said 176,828 + 65,536 = 242,364 and the board read
+// **241,720** — 644 B low, which is inside the run-to-run spread the four
+// 2026-08-24 readings already showed (408 B). The projection was close enough
+// to trust the model and not close enough to substitute for the reading, which
+// is why the reading is what is written down.
+inline constexpr std::size_t kAnvilFreeInternalAtPanelInit = 241'720;
 
 // `sizeof(AnvilAdapter)`, the footprint the measurement above was taken with.
 // Spelled as a literal rather than read from `anvil::AnvilAdapter` so this
@@ -131,10 +155,14 @@ inline constexpr std::size_t kVenueInternalBudgetBytes =
     kReserveInternalBytes -
     static_cast<std::size_t>(panel_cost_bytes(kMinDoubleBufferedDepth, /*double_buffered=*/true));
 
-// 176,828 + 8,400 - 81,920 - 32,000 = 71,308. Pinned so that a change to the
-// reserve or to the panel ladder cannot move this bound silently: both are
-// legitimate things to change, and both must be seen to change it.
-static_assert(kVenueInternalBudgetBytes == 71'308,
+// 241,720 + 8,400 - 106,496 - 32,000 = 111,624. Pinned so that a
+// change to the reserve or to the panel ladder cannot move this bound silently:
+// both are legitimate things to change, and both must be seen to change it.
+// It was 71,308 at D-A1; D-A2 moved two of the three inputs in opposite
+// directions — FramePipe returned 65,536 B of internal SRAM and the reserve took
+// 24 KiB of it back to cover a second TLS session — and the pin is what makes
+// that visible rather than a quiet net figure.
+static_assert(kVenueInternalBudgetBytes == 111'624,
               "the venue budget moved — check kReserveInternalBytes and the d3 rung, "
               "and re-read the derivation in this file's header before adjusting");
 

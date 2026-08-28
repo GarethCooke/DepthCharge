@@ -214,7 +214,55 @@ inline constexpr int kMinColourDepth = 2;
 // leaves room — and not an argument. If a bench evening ever sees a TLS
 // handshake fail to allocate on reconnect, this constant is the first suspect
 // and 96 KiB is the known-good value to restore.
-inline constexpr std::uint32_t kReserveInternalBytes = 80u * 1024u;
+// ===========================================================================
+// 80 KiB -> 104 KiB, M5 STAGE D-A2. THE EVIDENCE ABOVE DOES NOT REACH TWO
+// CONCURRENT TLS SESSIONS, AND D-A2 NEEDS TWO.
+// ===========================================================================
+//
+// Everything above is measured on a build with **one** TLS session. D-A2's seed
+// is an HTTPS GET to `data-api.binance.vision` while the WebSocket to
+// `data-stream.binance.vision` is up, so the reserve has to forecast a peak it
+// has never seen. Raising it is not a retreat from the cut above — the cut
+// stands on its own evidence for the build it was measured on, and this is a
+// different build.
+//
+// THE DERIVATION, from measured parts:
+//
+//     one-session draw, measured (D-A1, connects=4)          62,140
+//     second session's mbedTLS in+out buffers                33,434
+//     second session's esp_tls_t + ssl ctx + x509 scratch    ~6,500
+//     -------------------------------------------------------------
+//     two-session estimate                                  102,074
+//     104 KiB reserved                                      106,496   (+4,422)
+//
+// **The 33,434 is not a guess and it is not negotiable at run time.**
+// `CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN` is 16,384 with no
+// `CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN`, so a session takes two contiguous
+// 16,717 B blocks (16,384 + 333), and `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC 1`
+// pins them to internal SRAM. Three routes out of that were checked and all
+// three are closed to this stage:
+//
+//   * a reduced TLS fragment for the REST session only — **measured 2026-08-27:
+//     `data-api.binance.vision` does not negotiate `max_fragment_length`. The
+//     ServerHello extension list is byte-identical with and without the
+//     request and extension id=1 is absent from both**;
+//   * `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC` — `libmbedtls.a` is a **precompiled**
+//     archive in the pinned framework package, so this is a second framework
+//     rebuild with its own provenance README, not a build flag;
+//   * shrinking `SSL_MAX_CONTENT_LEN` — same archive, same wall.
+//
+// **What pays for it is FramePipe leaving `.bss`** (`frame_pipe.hpp`, same
+// stage): 65,536 B of internal SRAM returned, against the 24 KiB this raise
+// takes. Net, the panel is better off than it was at D-A1 — the Binance build's
+// budget goes 35,628 -> ~76,588, which reaches `panel_cost_bytes(5, true)`
+// where it previously reached only d3.
+//
+// STILL A FORECAST, AND SAID SO. The 102,074 is one measured number plus two
+// derived ones; nothing has yet run two sessions on this board. **D-A2's own §4
+// replaces it with the measured two-session draw**, printed at every fetch, and
+// if that exceeds 104 KiB this number moves again and the panel loses a rung —
+// which is the honest outcome, not a failure.
+inline constexpr std::uint32_t kReserveInternalBytes = 104u * 1024u;
 
 // What begin() will really take: framebuffer + DMA descriptors + the allocator's
 // own bookkeeping. The arithmetic lives in panel_budget.hpp, ESP-IDF-free and
