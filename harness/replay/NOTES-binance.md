@@ -1801,3 +1801,97 @@ alarm:** at socket-down the old context frees first and the hole grows (2026-08-
 +54,720), so an ordinary reconnect allocates from a much larger hole than 17,396. The case this
 guards is the half-open socket whose context is still held while the new one is built — B3
 observed two of those in 25.39 h, so it is not hypothetical.
+
+---
+
+## Addendum — M5 stage D-A2, 2026-08-29: the seed on the board
+
+### 1 · The pre-seed buffer was sized against the wrong quantity
+
+Its own comment sized it at ~2.5× a measured **round trip** (~1.0–1.5 s). What it has to survive is
+`kBinanceFetchDeadlineMs` — **15 s**, ten times larger. Measured over every committed capture of the
+board's stream shape, at the old 64 / 2,048 bounds:
+
+| | value |
+| --- | ---: |
+| median time to overflow | **6.20 s** |
+| minimum | **0.69 s** |
+| 15 s windows surviving | **0 of 2,668** |
+
+So the deadline was unkeepable in principle: any fetch slower than a few seconds lost its seed to
+`Gap{Overflow}` before the body arrived, and nothing attributed the grey to the buffer.
+
+Re-sized against the worst 15 s window over the same corpus — **152 events / 12,458 levels** — to
+**256 / 32,768**, and the two bounds are sized differently on purpose:
+
+- **events are cadence-bounded.** 15 s ÷ 100 ms = **150** is a structural ceiling, so the 152
+  observed is that plus boundary jitter and 1.68× guards jitter rather than the market.
+- **levels are market-bounded** and get 2.63×. This is the quantity B1 warned about, whose two
+  witnesses disagreed 5× an hour apart.
+
+`buf_` followed `buf_lvl_` to PSRAM, so the adapter's **internal** footprint *fell* 2,040 B while the
+horizon rose 6×. The two are one buffer in two arrays and now move together.
+
+### 2 · `esp_tls_conn_new_async` does not converge on this build
+
+Polled **1,780 times over 15 s, four runs running**, never leaving `conn_state=1` (CONNECTING) with
+`errno=119` (EINPROGRESS). The CONNECTING dispatch (`27: l32i conn_state` / `29: bnei a8,1` /
+`2c: j fd`) jumps past the `FD_ZERO`/`FD_SET` at `0xb8–0xfb` that arms its `fd_set`s, and `select()`
+zeroes those on timeout — so every poll after the first selects on empty sets.
+
+**Corroborated only in part, and recorded that way:** raising `timeout_ms` 2 → 600 ms changed step
+duration not at all (~8 ms both), which the empty-set account alone does not explain. The **outcome**
+is certain and was measured four times; the **mechanism** is inferred. The synchronous call succeeds
+first time — HTTP 200 and a byte-exact 64,046 B body.
+
+Everything else in the contract *was* verified and two clauses are load-bearing: a `select()` timeout
+returns 0 with `conn_state` untouched, and `mbedtls_ssl_set_hostname` — which sets both SNI and the CN
+verification target — is given `cfg->common_name` when non-NULL, which is what makes a literal-IP
+connect safe. `getaddrinfo` is called unconditionally inside the connect with no `AI_NUMERICHOST`, and
+DNS on this board measured 14,000 ms, so the fetch takes a dotted quad and never a hostname.
+
+### 3 · What a second concurrent TLS session actually costs
+
+| | value |
+| --- | ---: |
+| draw, four fetches | **44,296 – 47,744 B** (reserve forecast 106,496) |
+| free internal during a fetch | **10,588 – 10,664 B** |
+| **largest free block during a fetch** | **3,060 – 4,596 B** |
+| one mbedTLS session needs | **2 × 16,717 B contiguous** |
+
+**The total was over-forecast and the fragmentation was badly under-forecast.** The largest block
+during a fetch is an order of magnitude below what a single session needs, so a reconnect concurrent
+with a fetch cannot succeed. That is why the non-overlap rule is policy rather than care, and it
+sharpens what D-C should watch: *below 16,717 B* is not a tripwire **at the fetch** — it is the normal
+state there. The reading that matters is at the **reconnect**, and the rule is what keeps the two
+apart.
+
+### 4 · `kFrameCapacity` was Anvil's number carrying Anvil's reasoning
+
+16,384 B, sized as 1.9× Anvil's largest message, with the comment *"a dropped frame costs one refresh —
+Anvil republishes the whole book every ~80 ms"*. **That reasoning is false at a diff venue.** A dropped
+Binance diff fails the next `U == last_u + 1`, drops the whole book, greys the panel and spends a
+50-weight REST seed rebuilding it.
+
+Measured on this venue's own stream: largest **28,639 B**, p99 11,935, p50 607, and **13 of 3,119
+messages (0.417%) over the old slot — one every ~23 s on BTCUSDT**. The board reproduced it exactly:
+`oversize` climbing, `live` toggling every 10–20 s, `resync_req` 1→4 in 80 s.
+
+Raised to **64 KiB = 2.29× the largest observed**, deliberately near the 1.9× the constant was
+originally sized at, so the venues are held to one standard. Affordable only because the slabs are in
+PSRAM: +196,608 B of `.bss` would have taken the D-A1 board past no-panel by a factor of five.
+
+**Before → after, same board, same evening:**
+
+| | 16 KiB slot | 64 KiB slot |
+| --- | --- | --- |
+| `live` | toggling every 10–20 s | **held 60 s → 140 s** |
+| `oversize` | 4 and climbing | **0** |
+| `resync_req` | 1 → 4 in 80 s | flat at 3 |
+| `bracket` | ok=3 FAIL=0 | **ok=4 FAIL=0** |
+
+### 5 · Owed
+
+`worst_frame` reads **99,597 us**, up 23× from D-A1's 4,297 and unexplained. It is not the fetch —
+that is a different task now — and it wants rooting out before the soak, because it is the term the
+per-step budget arithmetic was derived from.
