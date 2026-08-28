@@ -236,6 +236,7 @@ add_executable(dc_tests
   harness/tests/test_console_ladder.cpp
   harness/tests/test_frame_reassembler.cpp
   harness/tests/test_gap_histogram.cpp
+  harness/tests/test_http_response.cpp
   harness/tests/test_kraken_adapter.cpp
   harness/tests/test_kraken_checksum.cpp
   harness/tests/test_ladder_render.cpp
@@ -246,6 +247,7 @@ add_executable(dc_tests
   harness/tests/test_resync.cpp
   harness/tests/test_venue_build.cpp
   harness/tests/test_rx_budget.cpp
+  harness/tests/test_seed_schedule.cpp
   harness/tests/test_snapshot_channel.cpp
   harness/tests/test_stall_probe.cpp
   harness/tests/test_liveness_watchdog.cpp
