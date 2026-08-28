@@ -1,6 +1,10 @@
 // firmware/src/feed_task.cpp — see feed_task.hpp.
 #include "feed_task.hpp"
 
+#if DC_VENUE == DC_VENUE_BINANCE
+#include "lwip/inet.h"
+#endif
+
 #include <string_view>
 
 #include "esp_timer.h"
@@ -17,6 +21,17 @@ constexpr std::int64_t kRepublishPeriodUs = 1'000'000;
 }  // namespace
 
 bool FeedTask::start(std::uint32_t stack_bytes, UBaseType_t priority) noexcept {
+#if DC_VENUE == DC_VENUE_BINANCE
+    // The 96 KiB seed buffer, taken BEFORE the task exists so that a board with
+    // no room for it says so at boot rather than at the first re-seed — and so
+    // that the allocation is nowhere near the steady state invariant #7 names.
+    //
+    // NOT FATAL. A board that cannot hold a seed body still runs the feed, still
+    // draws an honestly grey ladder and still prints the whole serial evidence;
+    // `RestFetch::start` declines with `NoBuffer` and the schedule counts the
+    // failures. Same rule the panel follows.
+    if (seed_.begin()) { (void)seed_.start(); }
+#endif
     // Pinned to Core 0 (ARCHITECTURE §2). Core 1 is the render side's, and at
     // stage D the HUB75 DMA driver will want it to itself.
     const BaseType_t ok = xTaskCreatePinnedToCore(&FeedTask::trampoline, "dc_feed",
@@ -46,19 +61,23 @@ void FeedTask::run() noexcept {
         // cached on the liveness arrival that could change it — so recomputing
         // this on every wake costs an add and a compare rather than a soft-float
         // sort of thirty-two doubles.
-        TickType_t wait = portMAX_DELAY;
-        if (watchdog_.armed()) {
-            const std::int64_t remaining_ns =
-                watchdog_.deadline_ns() - ns_from_us(esp_timer_get_time());
-            const std::int64_t remaining_us = remaining_ns / 1000;
-            wait = (remaining_us <= 0)
-                       ? 0
-                       : pdMS_TO_TICKS(static_cast<std::uint32_t>((remaining_us + 999) / 1000));
-        }
+        const std::int64_t loop_now = esp_timer_get_time();
+        const TickType_t wait = nearest_deadline(loop_now);
 
         FeedMessage msg;
         if (!pipe_.receive(msg, wait)) {
+            // A TIMEOUT IS NO LONGER NECESSARILY THE WATCHDOG. It used to be —
+            // "the wait IS the watchdog" — and that was true while the watchdog
+            // owned the only deadline. Since M5 stage D-A2 the seed schedule
+            // owns one too, and `on_watchdog()` must not be called for a wake-up
+            // that was the fetch's. It checks `armed()` itself, so an unarmed
+            // watchdog makes this a no-op, which is exactly the Binance case:
+            // that build's liveness signal is the server ping, which never
+            // reaches this task, so the watchdog is never armed at all.
             on_watchdog();
+#if DC_VENUE == DC_VENUE_BINANCE
+            service_seed(esp_timer_get_time());
+#endif
             continue;
         }
 
@@ -66,6 +85,14 @@ void FeedTask::run() noexcept {
             case FeedMessage::Kind::Frame:        on_frame(msg); break;
             case FeedMessage::Kind::Connected: {
                 ++stats_.connects;
+#if DC_VENUE == DC_VENUE_BINANCE
+                // The seed may be asked for again. A new socket is also new
+                // information for the schedule: it clears a give-up, because
+                // the commonest cause of a run of failures is a link that has
+                // since come back.
+                socket_up_ = true;
+                schedule_.note_socket_change();
+#endif
                 const std::int64_t at = esp_timer_get_time();
                 // Each connect gets its own capture budget: the reject burst
                 // recurs per connect and is smaller on a reconnect, so a budget
@@ -89,10 +116,147 @@ void FeedTask::run() noexcept {
                 // data, never on the mere fact of a socket.
                 break;
             }
-            case FeedMessage::Kind::Disconnected: on_disconnected(); break;
+            case FeedMessage::Kind::Disconnected:
+#if DC_VENUE == DC_VENUE_BINANCE
+                // THE OTHER HALF OF THE NON-OVERLAP RULE, and it is set BEFORE
+                // `on_disconnected()` runs so that the very next
+                // `service_seed()` sees the socket down and abandons. The
+                // reconnect that follows must not have to contend with a fetch
+                // holding two 16,717 B internal blocks — the board measured a
+                // fetch taking the largest free block to 10,740 B, already
+                // below what one session needs.
+                socket_up_ = false;
+#endif
+                on_disconnected();
+                break;
         }
     }
 }
+
+// HOW LONG THE LOOP MAY SLEEP: THE SOONEST OF EVERYTHING THAT WANTS TO HAPPEN.
+//
+// This used to be "the wait IS the watchdog", and the comment said so. That was
+// correct while the watchdog was the only thing with a deadline. It is not any
+// more, and **at Binance the watchdog is never armed** — `venue_build.hpp`'s
+// `liveness_count()` returns a constant there because that venue's clock is the
+// server's WebSocket ping, a control frame that never becomes a message. So on
+// that build the old code left `wait = portMAX_DELAY` on every pass, and a seed
+// fetch stepped only on frame arrival would have stalled the instant the stream
+// went quiet — with nothing left to wake it.
+//
+// Generalised rather than special-cased: every deadline is folded in here, and
+// adding a third means adding a line rather than finding this one.
+TickType_t FeedTask::nearest_deadline(std::int64_t now_us) const noexcept {
+    std::int64_t soonest_us = -1;   // -1 = nothing wants anything
+
+    if (watchdog_.armed()) {
+        const std::int64_t remaining_us =
+            (watchdog_.deadline_ns() - ns_from_us(now_us)) / 1000;
+        soonest_us = remaining_us > 0 ? remaining_us : 0;
+    }
+
+#if DC_VENUE == DC_VENUE_BINANCE
+    SeedInput in;
+    in.wanted = !adapter_.has_baseline() || adapter_.reseed_wanted();
+    in.in_flight = seed_.busy();
+    in.socket_up = socket_up_;
+    in.now_us = now_us;
+    const std::int64_t seed_us = schedule_.due_in_us(in);
+
+    // WHILE THE SEED TASK HAS SOMETHING FOR US, COME BACK SOON — but not fast.
+    // The fetch no longer runs here, so this is not a step interval: it is only
+    // how long a finished body may sit unconsumed. 50 ms against measured fetch
+    // round trips of 4.1-6.3 s is noise, and it matters at all only because at
+    // Binance the liveness watchdog is never armed, so a quiet stream would
+    // otherwise let this task sleep on `portMAX_DELAY` through its own result.
+    const std::int64_t poll_us =
+        (seed_.busy() || seed_.ready() || seed_.failed()) ? kSeedResultPollUs : -1;
+    for (const std::int64_t candidate : {seed_us, poll_us}) {
+        if (candidate < 0) { continue; }
+        if (soonest_us < 0 || candidate < soonest_us) { soonest_us = candidate; }
+    }
+#endif
+
+    if (soonest_us < 0) { return portMAX_DELAY; }
+    if (soonest_us == 0) { return 0; }
+    // Round UP to a whole tick: rounding down busy-waits, and this task at
+    // priority above idle would spin a core doing it.
+    return pdMS_TO_TICKS(static_cast<std::uint32_t>((soonest_us + 999) / 1000));
+}
+
+#if DC_VENUE == DC_VENUE_BINANCE
+// CONSUME WHAT THE SEED TASK PRODUCED, THEN DECIDE WHETHER TO ASK AGAIN.
+//
+// Called once per loop pass. It never blocks and never touches the body buffer
+// except while `SeedTask` says `Ready`, which is the ownership transfer.
+void FeedTask::service_seed(std::int64_t now_us) noexcept {
+    // The body first, so a completed fetch is consumed in the same pass it
+    // lands and the schedule below sees an accurate `in_flight`.
+    if (seed_.ready()) {
+        // THE SAME SINK `on_frame` USES. `on_rest_body` may emit a Snapshot, a
+        // Gap, or nothing at all — the bracket decides — and every one of those
+        // must reach the book through the one path that publishes. This is also
+        // the only place a REST body ever becomes book state: invariant #8 says
+        // one writer, and the seed task deliberately produces bytes only.
+        adapter_.on_rest_body(seed_.body(), [this](const FeedEvent& ev) { apply_and_publish(ev); });
+        schedule_.note_result(true, seed_.report().http_status, now_us);
+        // Released immediately: `BinanceFrame` copies what it needs and retains
+        // no `string_view` into the JSON, so the 96 KiB buffer is free the
+        // moment this returns.
+        seed_.release();
+    } else if (seed_.failed()) {
+        schedule_.note_result(false, seed_.report().http_status, now_us);
+        seed_.release();
+    }
+
+    SeedInput in;
+    // LEVEL, NOT EDGE, and read fresh every pass. `reseed_wanted()` is
+    // re-raised from inside `drop_book`, so consuming it on an edge would
+    // swallow the request the drop just made — the M4 stage A2 defect, and a
+    // permanently grey panel over a healthy socket.
+    in.wanted = !adapter_.has_baseline() || adapter_.reseed_wanted();
+    in.in_flight = seed_.busy();
+    // THE NON-OVERLAP RULE'S INPUT. Tracked from the pipe's own
+    // Connected/Disconnected messages, which are ordered with the frames, so
+    // this cannot see the socket up after the drop that killed it.
+    in.socket_up = socket_up_;
+    // The buffer overflowing under a fetch means the seed is already spent:
+    // `test_binance_adapter.cpp` measures that the body would be adopted, fail
+    // its bracket against the zeroed buffer and be dropped inside one call.
+    in.buffer_overflowed =
+        seed_.busy() && adapter_.stats().buffer_overflows > overflows_at_issue_;
+    in.now_us = now_us;
+
+    switch (schedule_.step(in)) {
+        case SeedAction::Issue: {
+            // CLEARED AT ISSUE, NEVER AT COMPLETION. `on_rest_body`'s failure
+            // path calls `drop_book`, which re-raises the latch; clearing after
+            // would erase the request it had just made.
+            adapter_.clear_reseed_wanted();
+            overflows_at_issue_ = adapter_.stats().buffer_overflows;
+            schedule_.note_issued(now_us);
+            if (!seed_.request(subscription_.seed_addr(), kBinanceSeedPath)) {
+                // No address yet, or the task is not idle. Counted as a failure
+                // so the schedule backs off rather than spinning on it.
+                schedule_.note_result(false, 0, now_us);
+            }
+            break;
+        }
+        case SeedAction::Abandon:
+            // Condemned. The seed task honours this between esp-tls calls, so
+            // the buffer comes back within one `kFetchCallTimeoutMs` and the
+            // result is discarded whenever it lands.
+            seed_.abandon();
+            break;
+        case SeedAction::GiveUp:
+            // Counted, not logged: this task does not log (see the header).
+            ++seed_give_ups_;
+            break;
+        case SeedAction::None:
+            break;
+    }
+}
+#endif
 
 void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     const std::int64_t now = esp_timer_get_time();

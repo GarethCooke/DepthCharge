@@ -224,6 +224,41 @@ std::int64_t WsTransport::warm_dns() noexcept {
         ESP_LOGW(kTag, "dns: %s did not resolve (rc %d) after %d ms", venue::kHost, rc,
                  static_cast<int>(elapsed / 1000));
     }
+
+#if DC_VENUE == DC_VENUE_BINANCE
+    // THE SEED HOST, RESOLVED HERE BECAUSE THIS IS THE ONE PLACE ALREADY
+    // ALLOWED TO BLOCK ON A RESOLVER (M5 stage D-A2).
+    //
+    // `data-api.binance.vision` is a different name from the stream's, so the
+    // cache warm above does not cover it. It matters more than a warm here: the
+    // seed fetch runs on the FEED task, and `esp_tls_conn_new_async` calls
+    // `getaddrinfo` unconditionally before it opens a socket — measured at
+    // 14,000 ms on this board. So the fetch is handed a literal address and
+    // never a hostname, and this is where that address comes from.
+    //
+    // Published as ONE 32-BIT WORD and not a string, which is the whole reason
+    // this is safe as a fourth cross-task datum: an `in_addr_t` is written and
+    // read atomically, so the feed task cannot observe a half-updated address.
+    // A `char[16]` would have been tearable into a valid-looking wrong IP.
+    // Written by the RX task on every connect; read by the feed task; zero
+    // means "not resolved yet", which `RestFetch::start` declines on rather
+    // than stalling.
+    addrinfo* seed_res = nullptr;
+    const int seed_rc = ::getaddrinfo(kBinanceRestHost, venue::kPortText, &hints, &seed_res);
+    if (seed_rc == 0 && seed_res != nullptr) {
+        const auto* sin = reinterpret_cast<const sockaddr_in*>(seed_res->ai_addr);
+        signal_.set_seed_addr(sin->sin_addr.s_addr);
+        char dotted[16] = {};
+        ESP_LOGI(kTag, "dns: %s -> %s (for the seed fetch)", kBinanceRestHost,
+                 ::inet_ntoa_r(sin->sin_addr, dotted, sizeof(dotted)) ? dotted : "?");
+    } else {
+        ESP_LOGW(kTag, "dns: %s did not resolve (rc %d) — the seed cannot be fetched"
+                       " until it does, and the ladder stays grey",
+                 kBinanceRestHost, seed_rc);
+    }
+    if (seed_res != nullptr) { ::freeaddrinfo(seed_res); }
+#endif
+
     return elapsed;
 }
 

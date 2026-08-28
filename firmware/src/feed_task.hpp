@@ -39,13 +39,22 @@
 #include <depthcharge/display_snapshot.hpp>
 #include <depthcharge/snapshot_channel.hpp>
 
+// `venue_build.hpp` FIRST, because two of the includes below are guarded on
+// DC_VENUE and a guard evaluated before its macro exists is a guard that is
+// silently false. That cost one build: `RestFetch does not name a type`, from
+// an include that was right and ordered wrong.
+#include "venue_build.hpp"
+
 #include "core_idle.hpp"
 #include "frame_pipe.hpp"
 #include "liveness_watchdog.hpp"
 #include "reject_log.hpp"
 #include "resync.hpp"
 #include "stall_probe.hpp"
-#include "venue_build.hpp"
+#if DC_VENUE == DC_VENUE_BINANCE
+#include "seed_schedule.hpp"
+#include "seed_task.hpp"
+#endif
 
 namespace depthcharge::fw {
 
@@ -266,6 +275,18 @@ private:
     static void trampoline(void* self) noexcept;
     void run() noexcept;
 
+    // How long the loop may sleep: the SOONEST of everything that wants to
+    // happen. Generalised at M5 stage D-A2 from "the wait IS the watchdog",
+    // which was true while the watchdog was the only deadline. It no longer is,
+    // and at Binance the watchdog is never armed at all.
+    TickType_t nearest_deadline(std::int64_t now_us) const noexcept;
+
+#if DC_VENUE == DC_VENUE_BINANCE
+    // Step the fetch, then the schedule. Called once per loop pass, after the
+    // slot has been recycled and outside the parse stopwatch.
+    void service_seed(std::int64_t now_us) noexcept;
+#endif
+
     void on_frame(const FeedMessage& msg) noexcept;
     void on_watchdog() noexcept;
     void on_disconnected() noexcept;
@@ -309,6 +330,28 @@ private:
     // a counter it reports — `Stats` is read across a core boundary and nothing
     // over there may steer what the panel does.
     LivenessWatchdog watchdog_;
+
+#if DC_VENUE == DC_VENUE_BINANCE
+    // THE SEED, AND IT IS THE FEED TASK'S BECAUSE OF INVARIANT #8. Only this
+    // task may mutate the adapter, so only this task may call `on_rest_body`.
+    // The fetch is therefore stepped from here in bounded slices rather than
+    // run to completion — see `rest_fetch.hpp` for why a blocking fetch would
+    // have destroyed the very thing it was fetching.
+    // THE FETCH RUNS ON ITS OWN TASK, and this holds only the handle to it plus
+    // the policy that decides when to ask. The buffer is transferred by
+    // `SeedTask`'s slot state; the adapter is still touched only here
+    // (invariant #8).
+    SeedTask seed_;
+    SeedSchedule schedule_;
+    std::uint32_t seed_give_ups_ = 0;
+    // What the feed task knows about the socket, learned from the pipe's own
+    // Connected/Disconnected messages rather than from a new shared word. It
+    // gates the seed: a fetch and a TLS reconnect must never overlap.
+    bool socket_up_ = false;
+    // The overflow count when the current fetch was issued, so `service_seed`
+    // can tell an overflow UNDER this fetch from one that predates it.
+    std::uint64_t overflows_at_issue_ = 0;
+#endif
 
     // `gap_raised_` keeps one outage to one Gap. The arming state that used to
     // sit beside it moved into `LivenessWatchdog` with the rule that reads it.

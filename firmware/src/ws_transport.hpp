@@ -510,6 +510,7 @@ private:
     std::atomic<bool> connect_requested_{false};
     std::atomic<std::int64_t> last_data_us_{0};
 
+
     TaskHandle_t rx_task_ = nullptr;
 
     WsSupervisor supervisor_;

@@ -107,6 +107,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include "venue_build.hpp"
+
 namespace depthcharge::fw {
 
 inline constexpr std::int64_t kResyncGapUs = 1'000'000;
@@ -147,6 +149,36 @@ public:
     // readers — it makes "saw it" and "cleared it" one step.
     bool take_refused() noexcept { return refused_.exchange(false, std::memory_order_acq_rel); }
 
+#if DC_VENUE == DC_VENUE_BINANCE
+    // THE SEED HOST'S ADDRESS, AND IT TRAVELS THE OTHER WAY DOWN THIS OBJECT
+    // (M5 stage D-A2). Everything above is the feed task telling the RX task
+    // something; this is the RX task telling the feed task.
+    //
+    // It lives here rather than in `WsTransport` because this is already the
+    // object main.cpp hands to BOTH tasks, so it needs no new constructor
+    // parameter and no new lifetime to reason about — `main.cpp` owns it, as it
+    // owns every cross-task object, and neither task can outlive it.
+    //
+    // WHY IT EXISTS AT ALL: `esp_tls_conn_new_async` calls `getaddrinfo`
+    // unconditionally before it opens a socket (disassembly; `rest_fetch.hpp`
+    // contract clause 7), and DNS on this board measured 14,000 ms. The seed
+    // fetch runs on the feed task, so the feed task must never be the thing
+    // that resolves. `WsTransport::warm_dns()` is already allowed to block on a
+    // resolver and already runs per connect, so it resolves and publishes here.
+    //
+    // ONE 32-BIT WORD, WHICH IS THE WHOLE SAFETY ARGUMENT. An `in_addr_t` is
+    // written and read atomically; a `char[16]` could tear into a
+    // valid-looking WRONG address, and a wrong address that still connects is
+    // the quietest failure available. 0 means "not resolved yet", which
+    // `RestFetch::start` declines on rather than stalling.
+    void set_seed_addr(std::uint32_t ipv4) noexcept {
+        seed_addr_.store(ipv4, std::memory_order_release);
+    }
+    std::uint32_t seed_addr() const noexcept {
+        return seed_addr_.load(std::memory_order_acquire);
+    }
+#endif
+
     // Reported, never branched on.
     std::uint32_t raised() const noexcept { return raised_; }
     std::uint32_t refusals() const noexcept { return refusals_; }
@@ -154,6 +186,9 @@ public:
 private:
     std::atomic<bool> wanted_{false};
     std::atomic<bool> refused_{false};
+#if DC_VENUE == DC_VENUE_BINANCE
+    std::atomic<std::uint32_t> seed_addr_{0};
+#endif
     std::uint32_t raised_ = 0;
     std::uint32_t refusals_ = 0;
 };
