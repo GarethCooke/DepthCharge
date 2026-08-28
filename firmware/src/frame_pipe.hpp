@@ -1,9 +1,26 @@
 // firmware/src/frame_pipe.hpp — the one place the network task and the feed task meet.
 //
-// There are exactly two cross-task hand-offs in this firmware, and they are
-// deliberately the only two:
+// There are exactly THREE cross-task hand-offs in this firmware, and they are
+// deliberately the only three:
 //
 //   network task  --[ FramePipe ]-->  feed task (Core 0)  --[ SnapshotChannel ]-->  consumer (Core 1)
+//                                          ^
+//                                          |  [ SeedTask ]  (Binance only)
+//                                     seed task (Core 0)
+//
+// **THIS SAID "EXACTLY TWO... DELIBERATELY THE ONLY TWO" UNTIL M5 STAGE D-A2**,
+// and the sentence was load-bearing rather than decorative — it is why the
+// third one had to be argued rather than added. The argument is in
+// ARCHITECTURE §9 (2026-08-28) and the mechanism in `seed_task.hpp`; the short
+// version is that Binance's seed is a blocking HTTPS GET, every existing task
+// was measured to be the wrong place for it, and the non-blocking alternative
+// does not work on this build's esp-tls.
+//
+// The third hand-off is the SAME SHAPE as this one, which is the reason it is
+// tolerable: one owner at a time, the state transition IS the transfer, and
+// nothing is shared while it is being written. It also carries BYTES and never
+// book state — only the feed task turns a REST body into events, so invariant
+// #8 is untouched.
 //
 // SnapshotChannel is the engine's, built at stage A. This is its transport-side
 // twin, and it exists for a reason invariant #8 forces rather than for tidiness.
@@ -70,7 +87,47 @@ namespace depthcharge::fw {
 // costs one refresh, whereas a growing buffer on a microcontroller costs the
 // device. If `oversize` is ever non-zero on the bench, raise this constant;
 // do not make it dynamic.
-inline constexpr std::size_t kFrameCapacity = 16 * 1024;
+//
+// ===========================================================================
+// 16 KiB -> 64 KiB, M5 STAGE D-A2. THE INSTRUCTION ABOVE WAS FOLLOWED.
+// ===========================================================================
+//
+// *"If `oversize` is ever non-zero on the bench, raise this constant"* — it was,
+// so it is. The board logged `oversize=4` climbing within 90 s on Binance, and
+// the corpus predicted it before the bench did.
+//
+// **AND THE PARAGRAPH ABOVE IS ANVIL'S REASONING, WHICH IS FALSE AT A DIFF
+// VENUE.** *"A dropped frame costs one refresh"* is true only where every frame
+// is an idempotent full replace. Binance sends DIFFS: a dropped message fails
+// the next `U == last_u + 1`, so the adapter drops the whole book, greys the
+// panel and spends a 50-weight REST seed rebuilding it. The board measured
+// exactly that — `live=1` at 40 s and 60 s with `live=0` between and
+// `resync_req` climbing 1→4, one cycle every ~20-30 s. The cost of a drop is
+// not one refresh here; it is the ladder.
+//
+// THE MARGIN, STATED. Measured over every committed capture of the board's own
+// stream shape (`btcusdt@depth@100ms`, the combined-stream wrapper removed so
+// the figures are payloads this pipe would actually reassemble):
+//
+//     largest    28,639 B      p99   11,935 B      p50   607 B
+//     over 16,384 B: 13 of 3,119 messages (0.417%) = one every ~23 s on BTCUSDT
+//
+//     64 KiB / 28,639 B = **2.29x the largest ever observed**
+//
+// That is deliberately near the 1.9x this constant was originally sized at for
+// Anvil, so the venues are held to one standard rather than to whatever each
+// happened to need. For reference at the other two: Anvil's largest message is
+// 8,726 B (7.5x) and Kraken's is 1,970 B (33x), so 64 KiB is generous there and
+// costs them nothing that matters — see the cost note below.
+//
+// WHY IT IS AFFORDABLE NOW AND WAS NOT BEFORE. 4 x 64 KiB is 262,144 B, against
+// 65,536 B at the old size. In `.bss` that was unthinkable: D-A1 measured the
+// Binance build reaching `Panel::begin()` with a 35,628 B budget, so +196,608 B
+// would have taken the board past no-panel by a factor of five. **The slabs
+// moved to PSRAM in this same stage**, and there this is 3.1% of 8 MB. The
+// internal-SRAM cost of this change is zero, which is the only reason the
+// measurement above could be acted on at all rather than merely recorded.
+inline constexpr std::size_t kFrameCapacity = 64 * 1024;
 
 // Four slots — and the first bench run is why it is not two.
 //
