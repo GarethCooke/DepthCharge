@@ -4,6 +4,15 @@
 namespace depthcharge::fw {
 
 bool FramePipe::begin() noexcept {
+    // THE SLABS, ONCE, HERE RATHER THAN IN `.bss` (M5 stage D-A2). See the
+    // header for the three problems this move solves and for the latency
+    // objection it has to answer. Taken in `begin()` and not in a constructor
+    // because this function already returns a failure the caller acts on, so a
+    // board with no PSRAM says so and runs without a pipe instead of
+    // dereferencing null on the first frame.
+    slots_.reset(new (std::nothrow) char[kFrameSlots * kFrameCapacity]);
+    if (slots_ == nullptr) { return false; }
+
     free_q_ = xQueueCreate(kFrameSlots, sizeof(std::uint8_t));
     ready_q_ = xQueueCreate(kReadyQueueDepth, sizeof(FeedMessage));
     if (free_q_ == nullptr || ready_q_ == nullptr) { return false; }

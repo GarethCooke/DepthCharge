@@ -34,13 +34,21 @@
 // parses it and recycles it. Nothing is shared while it is being written, so
 // there is no lock and nothing for the writer to wait on.
 //
-// NO HEAP. Both slots and both queues are static storage, sized at compile time.
-// FreeRTOS queues copy small fixed-size items, so posting is a memcpy of eight
-// bytes, not an allocation.
+// NO HEAP IN THE STEADY STATE — and since M5 stage D-A2 that is a narrower claim
+// than "no heap", so it is written narrowly. The queues are still static storage
+// and FreeRTOS copies small fixed-size items, so posting is a memcpy of eight
+// bytes and never an allocation. **The slabs are now one heap block**, taken
+// once in `begin()` before the socket exists so that they land in PSRAM rather
+// than in the internal SRAM the panel needs (see `slots_` for the three problems
+// that buys and for the latency objection it has to answer). Nothing is
+// allocated per message, per frame or per connection, which is what invariant #7
+// asks of this file.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <new>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -192,8 +200,11 @@ public:
     // because this runs in the WebSocket client's callback.
     bool acquire(std::uint8_t& slot) noexcept;
 
-    // Writable bytes of a slot the caller owns.
-    char* buffer(std::uint8_t slot) noexcept { return slots_[slot]; }
+    // Writable bytes of a slot the caller owns. The slabs are contiguous, so a
+    // slot is an offset rather than a row of a 2-D array — see `slots_`.
+    char* buffer(std::uint8_t slot) noexcept {
+        return slots_.get() + static_cast<std::size_t>(slot) * kFrameCapacity;
+    }
 
     // Hand a completed message to the feed task. Ownership passes on success; on
     // failure the slot is returned to the free list and `queue_full` counted.
@@ -251,8 +262,49 @@ private:
     QueueHandle_t free_q_ = nullptr;
     QueueHandle_t ready_q_ = nullptr;
 
-    // Static storage: the whole point of the fixed capacity above.
-    char slots_[kFrameSlots][kFrameCapacity]{};
+    // THE SLABS, AND SINCE M5 STAGE D-A2 THEY ARE IN PSRAM RATHER THAN `.bss`.
+    //
+    // 4 x 16 KiB = 65,536 B. As a member array of a namespace-scope `FramePipe`
+    // this was internal SRAM claimed before the heap existed, and D-A1 measured
+    // what that cost: the Binance build reached `Panel::begin()` with 117,548 B
+    // free and a 35,628 B budget, which fits `panel_cost_bytes(3, true)` and
+    // nothing better. One allocation in `begin()` moves all 64 KiB to PSRAM
+    // (>= 4,097 B is tried there first on this build) and hands that back.
+    //
+    // WHY THIS IS THE ONE LEVER WORTH PULLING — three problems, one move, and
+    // D-A1 measured all three:
+    //
+    //   1. The panel. 117,548 -> ~183,084 B free at `Panel::begin()`.
+    //   2. `kFrameCapacity` itself. It is 16,384 B, sized at M3 as 1.9x Anvil's
+    //      largest message (8,726 B). Binance's largest on the board's own
+    //      `@depth@100ms` stream is **28,639 B** — 0.57x the slot — and 13 of
+    //      3,119 messages over-run it, which on BTCUSDT is **one every ~23 s**.
+    //      Each is a defined drop, so the next diff fails `U == last_u + 1` and
+    //      the board greys and asks for a re-seed. In PSRAM the slot can afford
+    //      to grow; in `.bss` it could not (4 x 32 KiB is +65,536 B against a
+    //      35,628 B budget).
+    //   3. A second concurrent TLS session. D-A2's REST seed needs one while the
+    //      WebSocket holds the other, and mbedTLS is pinned internal
+    //      (`CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC 1`, and `libmbedtls.a` is
+    //      precompiled, so that is not a build flag) at two contiguous 16,717 B
+    //      blocks per session. The internal heap this frees is where the second
+    //      session's 33,434 B has to come from.
+    //
+    // AND THE OBJECTION, WHICH IS REAL AND WAS MEASURED RATHER THAN WAVED AWAY.
+    // This is the per-message path — the RX task writes a slab as the message
+    // arrives and the feed task parses out of it, ~10 times a second at this
+    // venue — so PSRAM latency reaches it in a way it does not reach
+    // `buf_lvl_`. That is exactly the objection that keeps `bids_`, `asks_` and
+    // `frame_` internal, and D-A1 declined to move this pipe for it. The
+    // measurement that settles it is `worst_frame` and the frame cadence, both
+    // already printed on the `-- feed` line, taken against the D-A1 baseline of
+    // **4,297 us and 10.0 frames/s** on this venue. See the session log.
+    //
+    // Not a breach of invariant #7: one allocation in `begin()`, before the
+    // socket exists, never resized and never freed. `std::nothrow` because
+    // `begin()` already returns a failure the caller handles, so a board with no
+    // PSRAM reports it and runs without a pipe rather than dereferencing null.
+    std::unique_ptr<char[]> slots_;
 
     // Written only by the network task except `recycle`, which does not touch
     // it; the counters are diagnostics and a torn read of one costs a wrong log
