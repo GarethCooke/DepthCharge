@@ -156,8 +156,60 @@ static_assert(kBinanceEmitDepth <= kBinanceMaxFrameLevels,
 // snapshot. The bounds below are ~2.5x that, and an overflow is NOT silent — it
 // raises `Gap{Overflow}` and asks for a re-seed, which is the honest answer for
 // a connect that took longer than the buffer was sized for.
-inline constexpr std::uint32_t kBinanceBufferEvents = 64;
-inline constexpr std::uint32_t kBinanceBufferLevels = 2048;
+//
+// ===========================================================================
+// RE-SIZED 2026-08-28 (M5 stage D-A2): 64/2,048 -> 256/32,768, BECAUSE THE OLD
+// BOUNDS WERE SIZED AGAINST THE ROUND TRIP AND THE DEADLINE IS 10x THAT.
+// ===========================================================================
+//
+// Read the paragraph above and note which quantity it measures: *"a
+// /api/v3/depth round trip measures ~1.0-1.5 s, so the snapshot names an
+// instant the stream has already moved 10-15 events past"*. The bounds were
+// then set at ~2.5x **that**. But the number the client actually has to
+// survive is not the typical round trip — it is `kBinanceFetchDeadlineMs`
+// (15,000), the interval this adapter is allowed to spend before it gives up.
+// **A buffer sized for the good case cannot survive the case the deadline
+// exists to bound**, and the two numbers were never checked against each other.
+//
+// What that cost, measured over every committed capture of the board's own
+// stream shape: at 64/2,048 the buffer overflows after a median of **6.20 s**
+// (minimum 0.69 s), and **0 of 2,668 fifteen-second windows survive**. So the
+// 15 s deadline was unreachable in principle — every fetch that took longer
+// than a few seconds lost its seed to `Gap{Overflow}` before the body arrived,
+// and the panel would have re-greyed for a reason no counter attributed to the
+// buffer.
+//
+// THE NEW BOUNDS, and the two are sized differently ON PURPOSE because they are
+// different kinds of quantity:
+//
+//   worst 15 s window over the corpus (BTCUSDT, `@depth@100ms`):
+//       events  152     levels  12,458
+//
+// * **`kBinanceBufferEvents` = 256 is bounded by the CADENCE, not the market.**
+//   The venue publishes this stream every 100 ms, so 15 s admits **150**
+//   messages and the 152 observed is that ceiling plus boundary jitter. The
+//   margin here therefore guards against jitter and a faster stream, not
+//   against a market move: 1.68x the observation, and 1.71x the structural
+//   ceiling. If the stream is ever switched to the 1,000 ms `@depth` variant
+//   this becomes 15 and the bound is enormous; if a 10 ms stream ever exists it
+//   becomes 1,500 and this is wrong — which is why the derivation is written
+//   down rather than the number alone.
+// * **`kBinanceBufferLevels` = 32,768 is bounded by the MARKET, and gets a real
+//   margin.** 2.63x the 12,458 observed. This is the quantity B1 warned about —
+//   *"the requirement is a property of how far the market walked"* — and whose
+//   two witnesses disagreed by 5x an hour apart, so sizing it near the worst
+//   observation is the failure stage C found in the multiplier. 2.63x over a
+//   corpus that already contains a $15.99 single-tick move is the honest
+//   answer, and an overflow is still not silent.
+//
+// WHAT IT COSTS, AND WHY IT IS AFFORDABLE NOW WHEN IT WAS NOT BEFORE. Both
+// arrays are on the heap since this stage, so both land in PSRAM: `buf_lvl_`
+// goes 32,768 -> 524,288 B, which is 6.4% of this board's 8 MB and would have
+// been impossible in `.bss`. `buf_` follows it for the same reason it did —
+// same lifetime, same one-shot access, same tail — and the adapter's INTERNAL
+// footprint therefore *falls* by ~2 KiB even as the buffer horizon rises 6x.
+inline constexpr std::uint32_t kBinanceBufferEvents = 256;
+inline constexpr std::uint32_t kBinanceBufferLevels = 32768;
 
 // ===========================================================================
 // THE RE-SNAPSHOT TRIGGER (M5 stage B2), AND WHY IT IS NOT B1'S LOW-WATER MARK
@@ -248,6 +300,28 @@ inline constexpr std::uint32_t kBinanceBufferLevels = 2048;
 // is an independent argument for `limit=1000` arriving from the schedule rather
 // than from the depth sweep.
 inline constexpr std::uint32_t kBinanceFetchDeadlineMs = 15000;
+
+// THE DEADLINE AND THE BUFFER ARE ONE FACT, AND UNTIL M5 STAGE D-A2 NOTHING
+// SAID SO. `kBinanceFetchDeadlineMs` is how long a fetch may run;
+// `kBinanceBufferEvents` / `kBinanceBufferLevels` are how much of the stream
+// can be held while it runs. If the second does not cover the first, the
+// deadline is a promise the buffer cannot keep — which is exactly what was
+// shipped: 0 of 2,668 fifteen-second windows survived at 64/2,048.
+//
+// Bound here so the two cannot separate again. The event side is arithmetic the
+// compiler can do: the stream's 100 ms cadence means the deadline admits at
+// most `deadline / 100` messages, and the buffer must hold them all. The level
+// side cannot be derived — it is a market quantity — so it is asserted against
+// the measured worst with its margin stated, and the measurement is named.
+inline constexpr std::uint32_t kBinanceStreamPeriodMs = 100;
+inline constexpr std::uint32_t kBinanceWorstLevelsIn15s = 12458;   // corpus, BTCUSDT
+
+static_assert(kBinanceBufferEvents >= kBinanceFetchDeadlineMs / kBinanceStreamPeriodMs,
+              "the pre-seed buffer must hold every message the fetch deadline admits; "
+              "raise kBinanceBufferEvents or lower kBinanceFetchDeadlineMs");
+static_assert(kBinanceBufferLevels >= 2u * kBinanceWorstLevelsIn15s,
+              "the pre-seed buffer must clear the measured worst 15 s level count by at "
+              "least 2x; re-measure before lowering this, and see the sizing note above");
 
 // WHAT THE DEADLINE COSTS IN LEVELS. The worst loss of seeded coverage over any
 // window of `kBinanceFetchDeadlineMs` or less, measured across all nine
@@ -467,7 +541,9 @@ public:
     // could not hold the connect. A board with no PSRAM degrades into
     // re-seeding rather than into a wild write.
     explicit BinanceAdapter(const SymbolConfig& cfg) noexcept
-        : cfg_(cfg), buf_lvl_(new (std::nothrow) BookLevel[kBinanceBufferLevels]) {}
+        : cfg_(cfg),
+          buf_(new (std::nothrow) BufferedEvent[kBinanceBufferEvents]),
+          buf_lvl_(new (std::nothrow) BookLevel[kBinanceBufferLevels]) {}
 
     const SymbolSpec& symbol() const noexcept { return cfg_.spec; }
     std::string_view wire_symbol() const noexcept { return cfg_.wire_symbol; }
@@ -989,7 +1065,7 @@ private:
     template <typename Sink>
     void buffer_diff(Sink& sink) {
         const std::uint32_t need = frame_.bid_count + frame_.ask_count;
-        if (buf_lvl_ == nullptr || buf_events_ >= kBinanceBufferEvents ||
+        if (buf_ == nullptr || buf_lvl_ == nullptr || buf_events_ >= kBinanceBufferEvents ||
             buf_levels_ + need > kBinanceBufferLevels) {
             // The connect outran the buffer. Not silent: the events held so far
             // can no longer be reconciled with a snapshot, so the whole attempt
@@ -997,9 +1073,9 @@ private:
             // bounds of 64 / 2,048, so this is a real bound rather than a
             // likely one.
             //
-            // `buf_lvl_ == nullptr` is the fourth way in and the only one that
-            // is not about this connect: the constructor's one allocation
-            // failed, so there is no buffer at all and there never will be.
+            // A null `buf_` or `buf_lvl_` is the way in that is not about this
+            // connect: one of the constructor's two allocations failed, so
+            // there is no buffer at all and there never will be.
             // It lands here rather than in a check of its own because the
             // honest consequence is identical — these events cannot be
             // reconciled with a snapshot — and inventing a second `GapReason`
@@ -1109,9 +1185,14 @@ private:
     std::uint32_t bid_count_ = 0;
     std::uint32_t ask_count_ = 0;
 
-    BufferedEvent buf_[kBinanceBufferEvents]{};
-    // 32,768 bytes, and the one member of this class that is NOT `.bss` on the
-    // target. See the constructor for why it is the only one that may move.
+    // BOTH HALVES OF THE PRE-SEED BUFFER, on the heap and therefore in PSRAM.
+    // `buf_` holds the event index and `buf_lvl_` the levels those events point
+    // into; they are one buffer in two arrays, with one lifetime and one
+    // one-shot access pattern, so they move together or the reasoning is
+    // inconsistent. Since D-A2 raised the bounds to cover the 15 s deadline
+    // that is 8 KiB + 512 KiB, and only PSRAM has it.
+    std::unique_ptr<BufferedEvent[]> buf_;
+    // See the constructor for why these are the only members that may move.
     // Move-only, which makes `BinanceAdapter` move-only: `venue_build.hpp`'s
     // `make_adapter()` returns a prvalue and C++17 guaranteed elision means
     // that is still neither a copy nor a move.

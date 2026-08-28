@@ -1010,3 +1010,68 @@ TEST_CASE("the report's median and the clock's median are two conventions, and t
     CHECK(t.median_liveness_gap_ms == doctest::Approx(19969.35).epsilon(1e-6));
     CHECK(r.liveness_median_ms != doctest::Approx(t.median_liveness_gap_ms));
 }
+
+// ---------------------------------------------------------------------------
+// D-A2 safety net: what a seed body is worth after the buffer has overflowed
+// ---------------------------------------------------------------------------
+//
+// NOT A DESIGN GATE, AND RECORDED AS SUCH. M5 stage D-A2 sizes the pre-seed
+// buffer to cover the whole 15 s fetch deadline (256 events / 32,768 levels
+// against a measured worst 15 s window of 152 / 12,458), so on the corpus this
+// case should not arise at all. This exists because "should not arise" is a
+// claim about the market, and the transport's abandon-on-overflow rule rests on
+// what the adapter does if it arises anyway.
+//
+// The question: a fetch is in flight, the buffer overflows, and the body then
+// lands. Is that body still worth adopting, or is it dead on arrival?
+//
+// The mechanism, from `buffer_diff`: an overflow ZEROES the buffer
+// (`buf_events_ = 0; buf_levels_ = 0`), raises `Gap{Overflow}` and re-latches
+// `reseed_wanted_`. Diffs after it refill from a LATER point in the stream, so
+// the body's `lastUpdateId` — named at an instant BEFORE the overflow — can no
+// longer be adjacent to the first survivor. The bracket must therefore fail.
+TEST_CASE("a seed body that arrives after a buffer overflow cannot bracket") {
+    Adapter a = make();
+    Events ev;
+
+    // Fill the pre-seed buffer past `kBinanceBufferEvents` while a notional
+    // fetch is in flight. Each diff carries one level a side so the LEVEL bound
+    // is not what trips; this is the event bound, deliberately.
+    const std::uint32_t over = depthcharge::binance::kBinanceBufferEvents + 4;
+    for (std::uint32_t i = 0; i < over; ++i) {
+        const std::int64_t U = 1000 + static_cast<std::int64_t>(i) * 2;
+        a->on_frame(diff(U, U + 1, level("100.00", "1.0"), level("101.00", "1.0")),
+                    [&ev](const FeedEvent& e) { ev(e); });
+    }
+    REQUIRE(a->stats().buffer_overflows > 0);
+    CHECK(a->stats().reseeds_requested > 0);
+    CHECK(ev.count(FeedEvent::Kind::Gap) > 0);
+
+    // The body now lands, naming an instant from BEFORE the overflow.
+    const std::size_t bracket_ok_before = a->stats().seed_bracket_ok;
+    a->on_rest_body(seed_body(1001, level("100.00", "2.0"), level("101.00", "2.0")),
+                    [&ev](const FeedEvent& e) { ev(e); });
+
+    // ANSWERED, AND THE ANSWER IS SHARPER THAN "IT DOES NOT BRACKET".
+    //
+    // The body IS adopted — `adopt_seed` runs unconditionally while the adapter
+    // is `Unseeded`, sets the ladder and latches the seeded bounds — and then
+    // `replay_buffer` immediately walks the post-overflow buffer, whose first
+    // survivor is no longer adjacent to `lastUpdateId + 1`. That raises
+    // `Gap{SeqGap}` through `drop_book`, which reverts `seed_` to `Unseeded`
+    // and re-latches the request. So the seed is not merely unconfirmed, it is
+    // SPENT: 50 IP weight bought a ladder that lived for the duration of one
+    // function call.
+    CHECK_FALSE(a->has_baseline());
+    CHECK(a->stats().seed_bracket_ok == bracket_ok_before);
+    CHECK_FALSE(a->seed_confirmed());
+
+    // `seeds_unconfirmed` is the counter M5 stage D-A1's brief asked the board
+    // for and could not get, because that build had no REST client and so never
+    // reached `Seeded`. This is the first path in the suite that exercises it.
+    CHECK(a->stats().seeds_unconfirmed > 0);
+
+    // And the adapter is still asking, which is what lets the transport retry
+    // rather than sit grey over a healthy socket.
+    CHECK(a->reseed_wanted());
+}
