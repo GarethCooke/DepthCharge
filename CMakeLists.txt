@@ -63,18 +63,36 @@ file(GLOB_RECURSE DC_ENGINE_HEADERS CONFIGURE_DEPENDS
 #
 # Writing only when the content actually differs removes both. The generated
 # text is one line per header, so the comparison costs nothing.
+#
+# AND THE EDGE, WHICH IS THE ACTUAL DEFECT. Write-if-different above removes the
+# churn; it does not tell the build system that these files are PRODUCED. A
+# source that CMake believes simply exists has no rule behind it, so `make -j`
+# is free to compile it concurrently with whatever regenerates it — and with
+# `CONFIGURE_DEPENDS` on the glob, the thing that regenerates it is a re-run of
+# cmake that make itself launches.
+#
+# That is why the failure was always the ALPHABETICALLY FIRST TU: it is the one
+# a parallel make reaches first, i.e. the one most likely to be opened while the
+# regeneration is still running. A real race would wander.
+#
+# `add_custom_command(OUTPUT ...)` gives each TU a rule, so make orders the
+# generation before every compile that consumes it. `copy_if_different` keeps
+# the mtime stable when nothing changed, which is what stops the ~20 objects
+# rebuilding on every configure. The `.in` staging file is written unconditionally
+# at configure time and compiled by nothing, so writing it can race with nothing.
 set(DC_HEADER_CHECK_TUS "")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/header_checks")
 foreach(hdr ${DC_ENGINE_HEADERS})
   string(REGEX REPLACE "[/.]" "_" tu_name "${hdr}")
   set(tu "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${tu_name}.cpp")
-  set(_dc_tu_want "#include <${hdr}>\n")
-  set(_dc_tu_have "")
-  if(EXISTS "${tu}")
-    file(READ "${tu}" _dc_tu_have)
-  endif()
-  if(NOT _dc_tu_have STREQUAL _dc_tu_want)
-    file(WRITE "${tu}" "${_dc_tu_want}")
-  endif()
+  set(tu_in "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${tu_name}.cpp.in")
+  file(WRITE "${tu_in}" "#include <${hdr}>\n")
+  add_custom_command(
+    OUTPUT "${tu}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tu_in}" "${tu}"
+    DEPENDS "${tu_in}"
+    COMMENT "header check: ${hdr}"
+    VERBATIM)
   list(APPEND DC_HEADER_CHECK_TUS "${tu}")
 endforeach()
 add_library(dc_engine_header_check OBJECT ${DC_HEADER_CHECK_TUS})
