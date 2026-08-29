@@ -114,6 +114,14 @@
 #include "anvil_root_ca.hpp"
 #endif
 
+// THE DEFECT-IMAGE MARKER, empty on every build that is not one. Defined by
+// `binance_endpoint.hpp` when `DC_BINANCE_SILENT_STREAM` is set; defaulted here
+// because the soak line that prints it is venue-agnostic and must compile at
+// all three. Exactly `DC_SOAK_TEST_TAG`'s shape, and appended beside it.
+#ifndef DC_SOAK_SILENT_TAG
+#define DC_SOAK_SILENT_TAG ""
+#endif
+
 namespace depthcharge::fw::venue {
 
 #if DC_VENUE == DC_VENUE_KRAKEN

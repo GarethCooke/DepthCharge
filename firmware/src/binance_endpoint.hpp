@@ -54,7 +54,50 @@ namespace depthcharge::fw {
 // APIs want it in — the same three facts and one derived spelling as
 // anvil_endpoint.hpp and kraken_endpoint.hpp, held together by a static_assert.
 inline constexpr char kBinanceHost[] = "data-stream.binance.vision";
+// THE SILENT-STREAM ARM (M5 stage D-B, question 1).
+//
+// D-B has to decide what a feed that NEVER SPEAKS should render, and the case is
+// stageable from the wire rather than from a test-only flag: a misspelled stream
+// name returns HTTP 101, answers pings, and delivers nothing for ever. B1
+// captured exactly that as
+// `binance_btcusdt_DEFECT_silent_stream_20260826.ndjson`, and this builds the
+// board that produces it.
+//
+// The shape is the one `DC_WS_PING` established and `DC_VENUE` repeated: an
+// `#ifndef` default so a bare compile is the SHIPPING configuration, and a named
+// PlatformIO environment supplying the `-D`. Nothing about the default build
+// changes, and `depthcharge-binance` cannot become this by accident.
+//
+// The extra `s` is the whole defect and is deliberately the committed capture's
+// exact spelling — a DIFFERENT misspelling would be a different experiment, and
+// might not even be silent.
+#ifndef DC_BINANCE_SILENT_STREAM
+#define DC_BINANCE_SILENT_STREAM 0
+#endif
+
+#if DC_BINANCE_SILENT_STREAM
+inline constexpr char kBinancePath[] = "/ws/btcusdt@depth@100mss";
+#else
 inline constexpr char kBinancePath[] = "/ws/btcusdt@depth@100ms";
+#endif
+
+// AND IT GOES ON EVERY SOAK LINE, NOT JUST THE BOOT BANNER, for the reason
+// `DC_SOAK_TEST_TAG` states in `liveness_watchdog.hpp` and the run of
+// 2026-08-20 proved: **every capture this project takes is attached WITHOUT
+// resetting the board** (`capture_noreset.py`), because resetting to attach
+// destroys the uptime the log is about. A marker that prints only at boot is
+// invisible to exactly the captures that matter.
+//
+// It bites harder here than it does there. A muted-liveness capture still looks
+// like a working board; a silent-stream capture looks like a FAULT, and it is
+// the one somebody will be staring at while deciding whether the firmware is
+// broken. Same mechanism as the mute tag — a string LITERAL chosen by the
+// preprocessor, so the shipping binary does not merely skip printing it, it
+// does not contain it — and `venue_build.hpp` supplies the empty default for
+// every other build.
+#if DC_BINANCE_SILENT_STREAM
+#define DC_SOAK_SILENT_TAG     " *** SILENT-STREAM DEFECT IMAGE: misspelled stream, NO frame will ever arrive ***"
+#endif
 inline constexpr std::uint16_t kBinancePort = 443;
 inline constexpr char kBinancePortText[] = "443";
 static_assert(kBinancePort == 443 && kBinancePortText[0] == '4' && kBinancePortText[1] == '4' &&
@@ -112,9 +155,21 @@ static_assert(names_symbol(stream_in(kBinancePath), kBinanceWireSymbol),
 // why: `btcusdt@depth@100mss` names the right symbol and the wrong stream, so a
 // symbol check alone passes it. This is the assertion that would have caught
 // the capture that returns 101 and never speaks.
+// INVERTED ON THE DEFECT BUILD RATHER THAN SKIPPED, and that distinction is the
+// point. This assertion exists to catch the path drifting by one character;
+// switching it off for the silent-stream arm would remove the only thing
+// standing between "the defect we meant" and "some other typo". So the arm
+// asserts the OPPOSITE: that the path is the committed capture's exact
+// spelling. Both builds are still pinned, to different pins.
+#if DC_BINANCE_SILENT_STREAM
+static_assert(ends_with(stream_in(kBinancePath), "@depth@100mss"),
+              "the silent-stream arm must carry the committed defect's exact path; a "
+              "different misspelling is a different experiment and might not be silent");
+#else
 static_assert(ends_with(stream_in(kBinancePath), "@depth@100ms"),
               "the board subscribes to the 100 ms DIFF stream; @depth20 is the harness's "
               "grading oracle and @depth@100mss is a committed silent-stream defect");
+#endif
 
 // The REST path D-A2 will build, checked now for the same reason. `limit` is
 // `kBinanceRestLimit`, whose floor is already enforced in the engine:

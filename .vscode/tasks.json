@@ -197,6 +197,28 @@
             "group": "build"
         },
         {
+            "label": "DepthCharge: Flash + Monitor (Binance SILENT-STREAM defect, USB)",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e depthcharge-binance-silent -t upload -t monitor",
+            "options": {
+                "cwd": "${workspaceFolder}/firmware",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
             "label": "DepthCharge: Monitor",
             "type": "shell",
             "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" device monitor",

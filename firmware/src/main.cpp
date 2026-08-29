@@ -112,6 +112,28 @@ void setup() {
     ESP_LOGI(kTag, "DepthCharge M4 stage D — venue=%.*s liveness=%.*s",
         static_cast<int>(venue::kName.size()), venue::kName.data(),
         static_cast<int>(venue::kLivenessSignal.size()), venue::kLivenessSignal.data());
+#if DC_VENUE == DC_VENUE_BINANCE && DC_BINANCE_SILENT_STREAM
+    // SAYS SO ON EVERY BOOT, AND LOUDLY, because this build is INDISTINGUISHABLE
+    // FROM A BROKEN BOARD by design: the socket comes up, the venue answers
+    // pings, and no depth frame ever arrives. That is the whole experiment (M5
+    // stage D-B question 1 — what a silent feed renders), and it is also exactly
+    // what a capture of it would look like to anyone who did not know which
+    // image was on the board.
+    //
+    // A warning rather than an info line — but the boot banner is the WEAKER
+    // half of the marking, and `DC_SOAK_TEST_TAG` in `liveness_watchdog.hpp`
+    // says why in its own comment: every capture this project takes is attached
+    // WITHOUT resetting the board, so a line printed only at boot is invisible
+    // to exactly the captures that matter. `DC_SOAK_SILENT_TAG` puts the same
+    // statement on every SOAK line, which is the one still on screen when
+    // somebody starts diagnosing. This line exists for the person watching the
+    // flash; that one exists for everybody else.
+    ESP_LOGW(kTag, "*** SILENT-STREAM BUILD: subscribing to a DELIBERATELY MISSPELLED"
+                   " stream (%s). The socket will open, pings will be answered, and NO"
+                   " depth frame will ever arrive. This board is not broken. ***",
+             venue::kPath);
+#endif
+
     ESP_LOGI(kTag, "engine: symbol %u, price scale 10^-%d, qty scale 10^-%d, depth %d,"
                    " checksum reaches %u level(s) a side",
         static_cast<unsigned>(venue::kSymbol.id),
