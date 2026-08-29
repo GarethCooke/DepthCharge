@@ -62,6 +62,7 @@
 // asks of this file.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -238,6 +239,25 @@ struct FramePipeStats {
     std::uint32_t continuation = 0;       // WS continuation frames seen (see .cpp)
     std::uint32_t control = 0;            // ping/pong/close opcodes
 
+    // THE MOST SLOTS EVER HELD AT ONCE, and it is the LEADING indicator that
+    // `no_slot` is the trailing one of.
+    //
+    // `no_slot` counts messages already lost. This counts the pipe reaching
+    // full, which happens first and happens whether or not anything was
+    // dropped — a run that reports `max_held=4 of 4` with `no_slot=0` came
+    // within one message of dropping and nothing else on the line would say so.
+    //
+    // It is also the quantity residency only implies. Residency says how long
+    // ONE slot was held; two consecutive runs showed 8 slow frames dropping 9
+    // messages and 30 slow frames dropping none, because what decides a drop is
+    // how many slots were held AT THE SAME TIME. This measures that directly.
+    //
+    // Bounded by `kFrameSlots` by construction: `acquire()` only succeeds when
+    // the free queue yields, so this can never exceed the slot count and
+    // "4 of 4" is the top of the scale rather than an alarming number in
+    // isolation.
+    std::uint8_t max_held = 0;
+
     // Inbound volume, so the next bench run MEASURES the wire instead of
     // inferring it. The first run could only be compared against M0's July
     // figures (15.5 frames/s, 8,726 B max) and came out at ~6.7 messages/s
@@ -342,6 +362,18 @@ private:
     // release() and recycle() - see the .cpp for why measuring only one would
     // report a pipe that looks healthiest when it is dropping most.
     void note_residency(std::uint8_t slot) noexcept;
+
+    // HOW MANY SLOTS ARE HELD RIGHT NOW, and this one genuinely crosses tasks:
+    // the RX task takes slots and the FEED task gives most of them back, so
+    // unlike the per-slot stamps there is no hand-off that separates the two
+    // writers. Hence an atomic.
+    //
+    // `max_held` beside it is NOT atomic and does not need to be: only
+    // `acquire()` can raise the occupancy, `acquire()` runs on one task, so
+    // only that task can ever set a new maximum. It is written by one writer
+    // and read by the console, which is the same trade every counter in this
+    // firmware already makes.
+    std::atomic<std::uint8_t> held_{0};
 
 public:
 

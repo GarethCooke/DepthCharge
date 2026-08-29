@@ -363,9 +363,16 @@ void RenderTask::print_stats() noexcept {
     print_soak(f, a);
     print_distributions(f, p);
     print_stall(f);
-    ESP_LOGI(kTag, "-- pipe   : published=%u oversize=%u no_slot=%u qfull=%u abandoned=%u cont=%u ctrl=%u",
+    // `max_held` leads `no_slot`: the pipe reaching full happens first and
+    // happens whether or not anything was dropped, so "4 of 4 with no_slot=0"
+    // is a run that came within one message of dropping and nothing else on
+    // this line would say so.
+    ESP_LOGI(kTag, "-- pipe   : published=%u oversize=%u no_slot=%u max_held=%u of %u"
+                   " qfull=%u abandoned=%u cont=%u ctrl=%u",
              static_cast<unsigned>(p.frames_published), static_cast<unsigned>(p.oversize),
-             static_cast<unsigned>(p.no_slot), static_cast<unsigned>(p.queue_full),
+             static_cast<unsigned>(p.no_slot),
+             static_cast<unsigned>(p.max_held), static_cast<unsigned>(kFrameSlots),
+             static_cast<unsigned>(p.queue_full),
              static_cast<unsigned>(p.abandoned), static_cast<unsigned>(p.continuation),
              static_cast<unsigned>(p.control));
     ESP_LOGI(kTag, "-- size   : msg min=%u max=%u B (cap %u), slots %u",

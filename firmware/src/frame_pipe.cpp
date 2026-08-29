@@ -35,6 +35,12 @@ bool FramePipe::acquire(std::uint8_t& slot) noexcept {
     // The slot's life starts here. Written before the slot is handed to anyone,
     // so no synchronisation is needed — see the member.
     acquired_us_[slot] = esp_timer_get_time();
+
+    // Occupancy went up, and only this path can raise it — which is why the
+    // maximum below needs no atomicity even though the counter does.
+    const std::uint8_t now_held =
+        static_cast<std::uint8_t>(held_.fetch_add(1, std::memory_order_acq_rel) + 1);
+    if (now_held > stats_.max_held) { stats_.max_held = now_held; }
     return true;
 }
 
@@ -74,6 +80,12 @@ void FramePipe::note_residency(std::uint8_t slot) noexcept {
     if (slot >= kFrameSlots) { return; }
     const std::int64_t started = acquired_us_[slot];
     if (started == 0) { return; }          // never acquired; nothing to measure
+    // Occupancy comes down here, on whichever task ended the slot's life. The
+    // guard is against a double-release rather than expected: an underflow
+    // would wrap to 255 and report a pipe holding sixty times its own slots.
+    if (held_.load(std::memory_order_acquire) > 0) {
+        (void)held_.fetch_sub(1, std::memory_order_acq_rel);
+    }
     const std::int64_t now = esp_timer_get_time();
     if (now > started) {
         stats_.residency.add(static_cast<std::uint64_t>(now - started));
