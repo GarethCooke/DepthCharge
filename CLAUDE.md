@@ -28,6 +28,14 @@ engine, host-first development, replay files as ground truth.
   configure/build/test presets individually while iterating).
 - Toolchain: C++20, GCC ≥13 (Windows MinGW-w64 or Ubuntu), warnings-as-errors, doctest.
 - Python lives in `tools/` only.
+- **A build arm `extends` the environment it is an arm OF; it never copies it.** An arm exists to
+  differ from a parent in ONE stated way, and a copied `build_src_filter` or `build_flags` stops
+  matching the moment the parent changes — silently, because the copy still compiles. In
+  PlatformIO a child's `build_flags` *replaces* the inherited value, so the parent's must be named
+  explicitly: `${env:<parent>.build_flags}`. Verify with `pio project config --json-output` that
+  every other option is identical and the flag list differs by exactly the intended define — the
+  point is a difference the build system enforces, not one a reader has to police. Tooling rather
+  than architecture, so no §9 row; the marker such an arm must carry IS a §9 row (2026-08-29).
 
 ## Review
 
