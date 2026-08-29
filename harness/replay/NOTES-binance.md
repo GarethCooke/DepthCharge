@@ -1948,3 +1948,30 @@ smaller capacity, accepting the oversize drops for its duration.
 derived — four consecutive frames at 25 ms consume one ~99.2 ms arrival interval,
 so the pipe stops gaining ground — and the derivation is a `static_assert` in
 `frame_pipe.hpp`, the only place both it and `kFrameSlots` are visible.
+
+### 7 · …and how many came in a row, which is what actually costs slots
+
+`slow(>25ms)=8 of 1,795` reads as negligible and is not, because slow frames
+**cluster**. `max_run` is reported against its own denominator:
+
+    -- frame : p99=10-25 worst=122702 us slow(>25ms)=8 of 1795 max_run=3 of 4 slots
+    -- pipe  : published=1796 oversize=0 no_slot=9 qfull=0
+    SOAK     : resync_req=3
+
+**And this run corrects the derivation behind the 25 ms edge.** The model was
+"four consecutive slow frames consume one arrival interval, so a run of
+`kFrameSlots` is where the pipe stops gaining ground". The worst run here reached
+**3**, one short of that — and **the pipe dropped anyway**: `no_slot=9` with
+`oversize=0`, so those nine are the only pipe-side loss, and the three re-seeds
+are consistent with them.
+
+The reason is that a slot's residency is not frame time. It is held from the
+start of reassembly until the feed task recycles it, so residency is reassembly
+plus queue wait plus frame time, and a 28 KB message spans several RX reads
+before the feed task ever sees it. **Frame time is only the last term.** So
+`kFrameSlots` is a LOWER bound on the run length that hurts, not the threshold.
+
+The 25 ms edge and its `static_assert` stand — they are the right order and the
+derivation is written down — but **`max_run` at 3 is not a safe margin**, and
+D-C should read `max_run`, `slow(>25ms)` and `no_slot` together rather than any
+one of them.
