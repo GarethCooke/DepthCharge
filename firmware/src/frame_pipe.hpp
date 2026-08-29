@@ -97,7 +97,10 @@ namespace depthcharge::fw {
 // the corpus predicted it before the bench did.
 //
 // **AND THE PARAGRAPH ABOVE IS ANVIL'S REASONING, WHICH IS FALSE AT A DIFF
-// VENUE.** *"A dropped frame costs one refresh"* is true only where every frame
+// VENUE.** (ARCHITECTURE §9, 2026-08-29, names the class: a RATIONALE that
+// goes stale while the number it protects keeps testing green. Worse than a
+// stale figure, because re-deriving the number confirms it — only re-reading
+// the reason finds it.) *"A dropped frame costs one refresh"* is true only where every frame
 // is an idempotent full replace. Binance sends DIFFS: a dropped message fails
 // the next `U == last_u + 1`, so the adapter drops the whole book, greys the
 // panel and spends a 50-weight REST seed rebuilding it. The board measured
