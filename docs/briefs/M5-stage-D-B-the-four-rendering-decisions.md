@@ -104,9 +104,12 @@ being looked at.
 ## Out of scope
 
 The re-seed **mechanism** and its memory, and the liveness ping wire — **D-A3**. The soak — **D-C**.
-`worst_frame`'s remaining outlier: attributed at D-A2 (wall-clock, **not** fetch-correlated, roughly
-one frame in a couple of thousand, PSRAM named as the untested hypothesis) and it does not touch the
-render path.
+`worst_frame`: **closed 2026-08-29** — it was the wrong instrument rather than a regression. As a
+distribution the modal frame is 1–2.5 ms and p99 is 10–25 ms, with 10 of 1,808 slow enough to cost
+pipe slots; the bare maximum was reporting 0.2% of the population as though it described the feed
+path. Not fetch-correlated, and it does not touch the render path. PSRAM slab scanning is the named,
+untested residue (four frames in 1,808 over 50 ms) and belongs to **D-C**, which watches
+`slow(>25ms)` rather than the maximum.
 
 ## Session log
 

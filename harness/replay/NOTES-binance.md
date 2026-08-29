@@ -1895,3 +1895,56 @@ PSRAM: +196,608 B of `.bss` would have taken the D-A1 board past no-panel by a f
 `worst_frame` reads **99,597 us**, up 23× from D-A1's 4,297 and unexplained. It is not the fetch —
 that is a different task now — and it wants rooting out before the soak, because it is the term the
 per-step budget arithmetic was derived from.
+
+### 6 · `worst_frame`, closed — it was the wrong instrument, not a regression
+
+D-A2's writeback listed `worst_frame` at 99,597 us against D-A1's 4,297 as owed
+and unexplained. It is now closed, and the answer is that the metric could not
+have answered the question it was being asked.
+
+**It is wall-clock** — `esp_timer_get_time()` differenced across `on_frame` — so
+every preemption of the feed task lands inside it, and Wi-Fi and lwIP run far
+above that task's priority 5.
+
+**Its peaks do not coincide with a fetch.** Split by whether a seed fetch was in
+flight, over three captures: the worst frame was always a `quiet` one, and the
+worst frame that *did* coincide with a fetch was 2,392 / 2,988 / 6,551 us across
+93–133 such frames — inside the typical range, not the tail.
+
+**And it is a distribution, not a level.** With the histogram in place:
+
+| | |
+| --- | --- |
+| modal frame | **1–2.5 ms**, 1,180 of 1,808 |
+| p99 | **10–25 ms** |
+| slow (≥25 ms) | **10 of 1,808 = 0.55%** |
+| over 50 ms | **4 of 1,808 = 0.22%** |
+| max | 116,216 us |
+
+So the bare maximum was describing 0.2% of the population as though it described
+the feed path. Nothing regressed 23×; the modal frame is ~1.5 ms.
+
+**Three hypotheses tested and discarded**, recorded so they are not retried:
+
+- *previously-dropped large messages now parsed* — refuted by onset: in the
+  16 KiB run `worst_frame` was 99,424 us while `oversize` was still 0.
+- *`ladder::rank_of` scanning a deep book* — refuted on the host: applying a
+  diff costs **~0.13 µs/level flat** across seeded depths 0/100/500/1,000, so it
+  is linear in levels and independent of ladder depth.
+- *a network stall and its recovery burst* — refuted by correlation: across 62
+  board logs, Pearson r between `worst_gap` and `worst_frame` is **0.043**.
+  (Those logs span firmware generations, so the comparison is confounded — but a
+  real relationship would not be that flat.)
+
+**What is left, named rather than claimed.** Four frames in 1,808 exceed 50 ms.
+Every run before D-A2 sat between 2,772 and 29,583 us, and the remaining
+structural difference is that the slabs are in PSRAM at 64 KiB — a 28 KB linear
+scan through cache-backed external memory while the RX task may be writing
+another PSRAM slab. Plausible for a rare, large, bursty stall; **untested**. The
+cheap experiment is one run with the slabs forced back to internal SRAM at a
+smaller capacity, accepting the oversize drops for its duration.
+
+**For D-C:** `slow(>25ms)` is the number to watch, not the maximum. Its edge is
+derived — four consecutive frames at 25 ms consume one ~99.2 ms arrival interval,
+so the pipe stops gaining ground — and the derivation is a `static_assert` in
+`frame_pipe.hpp`, the only place both it and `kFrameSlots` are visible.
