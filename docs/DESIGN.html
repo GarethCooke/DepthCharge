@@ -3590,6 +3590,32 @@ classDiagram
       because an unpinned committed trace is a failure and not a skip whatever it is for.
     </p>
     <p>
+      <b>AND SINCE 2026-08-29 THE FIXTURE HAS A BOARD, which is what D-B needs and the file
+      cannot give it.</b> <code>[env:depthcharge-binance-silent]</code> builds the image that
+      produces the capture: <code>DC_BINANCE_SILENT_STREAM=1</code> selects the misspelled path
+      through an <code>#ifndef</code> default, so a bare compile is still the shipping
+      configuration and <code>depthcharge-binance</code> cannot become this by accident. The
+      replay answers <em>what the adapter does</em>; only the board answers <b>what the panel
+      looks like</b>, which is the whole of D-B question 1 and is not a question a host test can
+      be asked.
+      <br><br>
+      <b>The suffix <code>static_assert</code> is INVERTED on this arm rather than switched
+      off</b>, and the distinction is the card's own discipline applied to itself: that assertion
+      exists to stop the path drifting by one character, so disabling it for the defect build
+      would remove the only thing separating <em>the defect we meant</em> from <em>some other
+      typo</em> &mdash; which might not be silent at all. Both builds stay pinned, to different
+      pins, and a mutation to a different misspelling is rejected at compile time.
+      <b>And the image announces itself on every SOAK line</b> &mdash;
+      <code>DC_SOAK_SILENT_TAG</code>, the same preprocessor-chosen literal as
+      <code>DC_SOAK_TEST_TAG</code> and for the reason that comment already gives: captures are
+      attached <em>without</em> resetting the board, so a boot-only banner is invisible to exactly
+      the captures that matter. It bites harder here than it does there, because a muted-liveness
+      capture still looks like a working board and a silent-stream capture looks like a <b>fault</b>.
+      The string is absent from the other seven binaries rather than merely unprinted, verified with
+      <code>strings</code>; a boot <code>ESP_LOGW</code> is carried as well, for the person watching
+      the flash.
+    </p>
+    <p>
       <b>THE EXPIRY, and it is the same shape as the untracked-evidence clause on the
       2026-08-25 audit-stream ruling.</b> <code>test_binance_adapter.cpp</code>'s
       silent-stream case asserts TODAY'S BROKEN BEHAVIOUR — <code>status == Live</code>, no

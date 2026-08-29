@@ -28,8 +28,26 @@ Binance book, `live=1 rows=54/54`, `bracket ok=4 FAIL=0`, `oversize=0`, and on t
 ### 1 · What a silent feed renders
 
 The stageable half of §2's parity case. A misspelled stream returns HTTP 101, answers pings and
-delivers nothing for ever — committed as `binance_btcusdt_DEFECT_silent_stream_20260826.ndjson` and
-reproducible on the board by flashing with the stream name one character wrong.
+delivers nothing for ever — committed as `binance_btcusdt_DEFECT_silent_stream_20260826.ndjson`.
+
+**The board that produces it is built and ready to flash: `-e depthcharge-binance-silent`**, or the
+VS Code task *DepthCharge: Flash + Monitor (Binance SILENT-STREAM defect, USB)*. Three things about
+it are worth knowing before it goes on:
+
+- **It is one character**, and deliberately the committed capture's exact spelling. The suffix
+  `static_assert` in `binance_endpoint.hpp` is **inverted on this arm rather than switched off**, so
+  the defect build cannot silently become a *different* typo — which might not be silent at all.
+- **It says so on every SOAK line**, not just at boot — `DC_SOAK_SILENT_TAG`, the same mechanism
+  as `DC_SOAK_TEST_TAG` and for the reason that comment gives: captures are attached without
+  resetting the board, so a boot-only banner is invisible to exactly the captures that matter. This
+  image is indistinguishable from a broken board by design, and a photograph of it is
+  indistinguishable from a fault report.
+- **Flash it last.** It leaves a board that never goes live, so questions 2–4 want the working
+  image and this one wants the end of the sitting.
+
+M4 had to invent `DC_TEST_MUTE_LIVENESS` for the equivalent case because both network-side methods
+deauthenticated. Nothing like that is needed here: the venue stages the defect for us, and no
+test-only code enters the shipping image.
 
 Remedy (a) already prevents the forbidden output: no `Snapshot` is published, so the ladder cannot
 go live over a feed that has never spoken. **The question is what it should LOOK like**, and
@@ -75,8 +93,9 @@ the struct and +24 in the mailbox the price-axis window needs, priced at ROADMAP
 
 ## What the bench needs, and what it must not do
 
-- **Flash `-e depthcharge-binance`** (see `hardware/BRINGUP.md` — `upload_speed=921600` fails
-  mid-write on this desk; use 115200).
+- **Flash `-e depthcharge-binance`** for questions 2–4, then `-e depthcharge-binance-silent`
+  **last** for question 1 (see `hardware/BRINGUP.md` — `upload_speed=921600` fails mid-write on this
+  desk; use 115200). Re-flash the working image before anything else is judged.
 - **Photograph each decision.** M4's precedent: the ramp failure was legible only at an oblique
   angle, so a decision taken from memory of the panel is a decision taken from the wrong evidence.
 - **Do not tune the transport.** If the ladder misbehaves in a way that is not a rendering question,
@@ -93,7 +112,7 @@ being looked at.
 
 ## Definition of done
 
-- ☐ Question 1 decided, with the defect build flashed and photographed.
+- ☐ Question 1 decided, with `-e depthcharge-binance-silent` flashed and photographed.
 - ☐ Question 2 decided, and stated in a form D-A3 can implement without re-deciding.
 - ☐ Question 3 decided by eye at desk distance, photographed.
 - ☐ Question 4 decided; if cheap, the sentence is written down where a reader will meet it.
@@ -115,3 +134,37 @@ untested residue (four frames in 1,808 over 50 ms) and belongs to **D-C**, which
 
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
+
+### 2026-08-29 · Opus 5 · the defect image, built but not flashed
+
+**Done.** Question 1's board exists: `[env:depthcharge-binance-silent]` builds the misspelled-stream
+image, with a VS Code task beside the other seven. **The working Binance image is still on the
+board** — that was the instruction, and the defect image is for the end of the sitting because it
+leaves a board that never goes live. All eight environments build; host suite 50/50.
+
+**Decisions, with why.**
+
+1. **The suffix `static_assert` is INVERTED on the defect arm rather than skipped.** That assertion
+   exists to stop the path drifting by one character; switching it off for the one build whose path
+   *is* a deliberate typo would remove the only thing separating the defect we meant from some other
+   typo — which might not be silent at all. Both builds stay pinned, to different pins.
+   **Mutation-verified:** changing the arm to `@depth@1000ms` is rejected at compile time.
+2. **The arm `extends` the Binance env rather than copying it.** It is not a fourth venue beside the
+   other three — it is the Binance build *plus one flag*, and a copied `build_src_filter` would
+   silently stop matching the moment the parent gained anything, while still compiling. Verified
+   against the resolved configuration: every option identical, `build_flags` differing by exactly
+   `-D DC_BINANCE_SILENT_STREAM=1`.
+3. **The image marks itself on every SOAK line, not only at boot** (`DC_SOAK_SILENT_TAG`). The boot
+   banner was written first and was the weaker half: `DC_SOAK_TEST_TAG`'s own comment already
+   records why, from the run of 2026-08-20 — captures are attached *without* resetting the board, so
+   a boot-only marker is invisible to exactly the captures that matter. It bites harder here than it
+   does for the mute tag, because a muted-liveness capture still looks like a working board and a
+   **silent-stream capture looks like a fault**. Verified with `strings`: the marker is in the
+   defect binary and absent from the other seven, not merely unprinted.
+
+**Not done, deliberately.** Nothing was flashed and none of the four questions was decided — all
+four are judged by eye and are the owner's.
+
+**Exact next step.** The sitting itself: flash `-e depthcharge-binance` for questions 2–4, then
+`-e depthcharge-binance-silent` **last** for question 1, and re-flash the working image afterwards.
+
