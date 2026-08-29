@@ -94,6 +94,24 @@ public:
         std::uint64_t worst_gap_us = 0;     // largest observed inter-frame silence
         std::uint32_t worst_parse_us = 0;   // slowest frame -> publish, whole chain
 
+        // THE SAME QUANTITY AS A DISTRIBUTION, WHICH IS WHAT IT SHOULD ALWAYS
+        // HAVE BEEN.
+        //
+        // `worst_parse_us` above is a sample of size one taken from the worst
+        // possible place, and it cost two evenings: 4,297 us at D-A1 against
+        // 109,798 at D-A2 is equally consistent with "the path got 23x slower"
+        // and with "the path is unchanged and one frame in a couple of thousand
+        // is an outlier". It is the second, and proving that took a second
+        // instrument and a second capture — because a maximum cannot say how
+        // often, and how often is the whole question.
+        //
+        // The maximum is KEPT rather than replaced: it is the number that says
+        // how bad the worst case actually was, and `Histogram` carries its own
+        // so the two cannot disagree. What is added is p99 and a count of
+        // frames past the point where slowness starts costing pipe slots
+        // (`FrameScale::kFirstLong`, derived at its definition).
+        Histogram<FrameScale> frame_times{};
+
         // WORST_PARSE_US IS WALL-CLOCK, AND THAT IS WHY THESE TWO EXIST.
         //
         // It is `esp_timer_get_time()` differenced across `on_frame`, so it

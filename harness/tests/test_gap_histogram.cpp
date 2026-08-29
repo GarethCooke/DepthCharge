@@ -237,3 +237,81 @@ TEST_CASE("an out-of-range bucket index reads zero rather than off the end") {
     CHECK(h.count(GapHistogram::kBuckets) == 0);
     CHECK(h.count(999) == 0);
 }
+
+// ---------------------------------------------------------------------------
+// percentile_bucket — the distribution that replaced a bare maximum
+// ---------------------------------------------------------------------------
+//
+// M5, after `worst_parse_us` read 4,297 us at D-A1 and 109,798 at D-A2 and
+// could not distinguish "the path got 23x slower" from "the path is unchanged
+// and one frame in a couple of thousand is an outlier". It was the second. A
+// maximum is a sample of size one taken from the worst possible place.
+//
+// What is pinned here is the ROUNDING, because "which bucket is p99" is exactly
+// the kind of boundary two readers assume differently — the same reason this
+// file already pins the bucketing convention.
+TEST_CASE("percentile_bucket reports the bucket the percentile falls in") {
+    using depthcharge::fw::FrameScale;
+    using depthcharge::fw::Histogram;
+
+    Histogram<FrameScale> h;
+
+    SUBCASE("an empty distribution reports nothing rather than a confident zero") {
+        CHECK(h.percentile_bucket(99) == Histogram<FrameScale>::kBuckets);
+        CHECK(std::string(h.label(h.percentile_bucket(99))) == "-");
+    }
+
+    SUBCASE("99 fast frames and one slow one put p99 in the FAST bucket") {
+        // The 99th of 100 samples is still fast; only the 100th is not. This is
+        // the case the whole instrument exists for: a maximum would report
+        // 60,000 us and say nothing about the other ninety-nine.
+        for (int i = 0; i < 99; ++i) { h.add(100); }     // <0.5ms
+        h.add(60'000);                                    // >50ms
+        CHECK(std::string(h.label(h.percentile_bucket(99))) == "<0.5ms");
+        CHECK(h.worst_us() == 60'000);
+        CHECK(h.count_from(FrameScale::kFirstLong) == 1);
+        CHECK(h.total() == 100);
+    }
+
+    SUBCASE("two slow frames in a hundred push p99 into the slow bucket") {
+        for (int i = 0; i < 98; ++i) { h.add(100); }
+        h.add(60'000);
+        h.add(60'000);
+        CHECK(std::string(h.label(h.percentile_bucket(99))) == ">50ms");
+    }
+
+    SUBCASE("p99 rounds UP, so it is never the 98th sample's bucket") {
+        // ceil(100 * 99 / 100) = 99, so the answer is the 99th sample's bucket.
+        for (int i = 0; i < 98; ++i) { h.add(100); }
+        h.add(30'000);      // sample 99 -> 25-50
+        h.add(60'000);      // sample 100 -> >50ms
+        CHECK(std::string(h.label(h.percentile_bucket(99))) == "25-50");
+    }
+
+    SUBCASE("p50 and p100 bracket the distribution") {
+        for (int i = 0; i < 50; ++i) { h.add(100); }
+        for (int i = 0; i < 50; ++i) { h.add(60'000); }
+        CHECK(std::string(h.label(h.percentile_bucket(50))) == "<0.5ms");
+        CHECK(std::string(h.label(h.percentile_bucket(100))) == ">50ms");
+    }
+
+    SUBCASE("a nonsense percentile reports nothing rather than guessing") {
+        h.add(100);
+        CHECK(h.percentile_bucket(101) == Histogram<FrameScale>::kBuckets);
+    }
+}
+
+// THE SLOW THRESHOLD IS DERIVED, NOT CHOSEN. The derivation — four consecutive
+// frames at this edge consume one ~99.2 ms arrival interval, so the pipe stops
+// gaining ground — is asserted in `frame_pipe.hpp`, which is the only place
+// that can see `kFrameSlots` as well; this header cannot, because that one
+// reaches FreeRTOS and the host suite could not compile it.
+//
+// What is pinned HERE is the value and the label, so that a change to either
+// has to be deliberate in two places rather than silently re-scaling what
+// `slow=` on the bench line counts.
+TEST_CASE("FrameScale's slow edge and its label are pinned") {
+    using depthcharge::fw::FrameScale;
+    CHECK(FrameScale::kEdgeUs[FrameScale::kFirstLong - 1] == 25'000);
+    CHECK(std::string(FrameScale::kLabel[FrameScale::kFirstLong]) == "25-50");
+}

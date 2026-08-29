@@ -164,6 +164,21 @@ inline constexpr std::size_t kFrameCapacity = 64 * 1024;
 // it works (190 multi-chunk messages, zero parse errors).
 inline constexpr std::size_t kFrameSlots = 4;
 
+// THE SLOW-FRAME EDGE IS DERIVED FROM THIS, and the compiler owns the
+// derivation because this is the only place both numbers are visible —
+// `FrameScale` cannot see `kFrameSlots` (that would drag FreeRTOS into a header
+// the host suite compiles) and the host test cannot see it either.
+//
+// `FrameScale::kFirstLong` opens at 25 ms: four consecutive frames at that cost
+// consume a whole ~99.2 ms arrival interval, which is the point where the pipe
+// stops gaining ground and a run of slow frames starts costing slots. If either
+// number moves, this fails here rather than quietly reporting `slow=` against a
+// threshold that no longer means anything.
+static_assert(FrameScale::kEdgeUs[FrameScale::kFirstLong - 1] * kFrameSlots >= 99'000u &&
+                  FrameScale::kEdgeUs[FrameScale::kFirstLong - 1] * kFrameSlots <= 110'000u,
+              "FrameScale's slow edge x kFrameSlots must be about one arrival interval; "
+              "re-derive it if either moved");
+
 // How deep the ready queue is: one entry per slot, plus two.
 //
 // The two are headroom for status events. A Connected/Disconnected that failed

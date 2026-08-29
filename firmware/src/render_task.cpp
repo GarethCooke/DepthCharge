@@ -300,21 +300,41 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned long long>(b.trades_applied),
              static_cast<unsigned long long>(b.gaps),
              static_cast<unsigned long long>(b.publishes));
-    // `worst_frame` is WALL-CLOCK across `on_frame`, so it absorbs any
-    // preemption of the feed task — and the Wi-Fi and lwIP tasks run far above
-    // its priority 5. `quiet`/`fetch` split the same high-water mark by whether
-    // a seed fetch was in flight, which is what tells "the feed path got
-    // slower" apart from "something else was hammering the network stack".
-    // `nfetch` is the denominator: a quiet figure over three frames is noise.
-    ESP_LOGI(kTag, "-- feed   : frames=%u wd_gaps=%u sock_gaps=%u connects=%u worst_gap=%u ms"
-                   " worst_frame=%u us (quiet=%u fetch=%u over %u frames)",
+    ESP_LOGI(kTag, "-- feed   : frames=%u wd_gaps=%u sock_gaps=%u connects=%u worst_gap=%u ms",
              static_cast<unsigned>(f.frames_in), static_cast<unsigned>(f.watchdog_gaps),
              static_cast<unsigned>(f.socket_gaps), static_cast<unsigned>(f.connects),
-             static_cast<unsigned>(f.worst_gap_us / 1000),
-             static_cast<unsigned>(f.worst_parse_us),
-             static_cast<unsigned>(f.worst_parse_quiet_us),
-             static_cast<unsigned>(f.worst_parse_fetch_us),
-             static_cast<unsigned>(f.frames_during_fetch));
+             static_cast<unsigned>(f.worst_gap_us / 1000));
+
+    // FRAME TIME AS A DISTRIBUTION, because the maximum alone could not
+    // distinguish "23x slower" from "unchanged with a rare outlier" and cost two
+    // evenings proving it was the second.
+    //
+    // p99 is reported as the BUCKET it falls in, never interpolated inside one:
+    // these are fixed-bucket counts and a two-decimal p99 would carry more
+    // digits than information. `slow` counts frames at or past 25 ms, the point
+    // at which four consecutive ones consume a whole arrival interval and the
+    // pipe stops gaining ground — see FrameScale.
+    //
+    // `worst` is WALL-CLOCK across `on_frame`, so it absorbs any preemption of
+    // the feed task, and Wi-Fi and lwIP run far above its priority 5.
+    // `quiet`/`fetch` split it by whether a seed fetch was in flight, which is
+    // what told "the feed path got slower" apart from "something else was
+    // hammering the network stack" — measured: the peaks are quiet.
+    {
+        const std::size_t p99 = f.frame_times.percentile_bucket(99);
+        ESP_LOGI(kTag, "-- frame  : p99=%s worst=%u us slow(>25ms)=%u of %u"
+                       " | quiet=%u fetch=%u over %u frames",
+                 f.frame_times.label(p99),
+                 static_cast<unsigned>(f.worst_parse_us),
+                 static_cast<unsigned>(f.frame_times.count_from(FrameScale::kFirstLong)),
+                 static_cast<unsigned>(f.frame_times.total()),
+                 static_cast<unsigned>(f.worst_parse_quiet_us),
+                 static_cast<unsigned>(f.worst_parse_fetch_us),
+                 static_cast<unsigned>(f.frames_during_fetch));
+        char buf[160];
+        f.frame_times.render(buf, sizeof(buf));
+        ESP_LOGI(kTag, "-- frames : %s", buf);
+    }
     print_soak(f, a);
     print_distributions(f, p);
     print_stall(f);

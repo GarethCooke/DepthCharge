@@ -470,6 +470,9 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
 
     const std::uint32_t elapsed = static_cast<std::uint32_t>(done - now);
     if (elapsed > stats_.worst_parse_us) { stats_.worst_parse_us = elapsed; }
+    // Every frame, not just the worst one. See the Stats member for why a bare
+    // maximum was the wrong instrument.
+    stats_.frame_times.add(elapsed);
     // The same measurement, attributed. See the Stats fields for why: this is
     // wall-clock, so a fetch on another task shows up here as though the feed
     // had done more work.
