@@ -44,11 +44,37 @@ target_compile_features(dc_engine INTERFACE cxx_std_20)
 file(GLOB_RECURSE DC_ENGINE_HEADERS CONFIGURE_DEPENDS
   RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/engine/include
   ${CMAKE_CURRENT_SOURCE_DIR}/engine/include/*.hpp)
+#
+# WRITE-IF-DIFFERENT, AND IT IS NOT AN OPTIMISATION. `file(WRITE)` runs at
+# CONFIGURE time and truncates its target unconditionally, so writing these on
+# every configure did two things — one wasteful, one a real defect:
+#
+#   * every configure updated all ~20 mtimes, so every one of these objects
+#     rebuilt whether or not anything had changed; and
+#   * a configure overlapping a build TRUNCATES A FILE THE COMPILER IS OPENING.
+#     Observed twice on 2026-08-28/29: `mingw32-make` Error 1 on
+#     `depthcharge_age_estimator_hpp.cpp.obj` — the ALPHABETICALLY FIRST
+#     generated TU, and therefore the one a parallel make reaches first — with
+#     no compiler diagnostic at all, because the failure is in OPENING the
+#     source rather than in compiling it. Both times it passed on retry, and
+#     that is the part that matters: **a build that reports red for no reason is
+#     worse than a slow one**, because the next red gets retried instead of
+#     read. This project already has a §9 row about instruments that lie.
+#
+# Writing only when the content actually differs removes both. The generated
+# text is one line per header, so the comparison costs nothing.
 set(DC_HEADER_CHECK_TUS "")
 foreach(hdr ${DC_ENGINE_HEADERS})
   string(REGEX REPLACE "[/.]" "_" tu_name "${hdr}")
   set(tu "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${tu_name}.cpp")
-  file(WRITE "${tu}" "#include <${hdr}>\n")
+  set(_dc_tu_want "#include <${hdr}>\n")
+  set(_dc_tu_have "")
+  if(EXISTS "${tu}")
+    file(READ "${tu}" _dc_tu_have)
+  endif()
+  if(NOT _dc_tu_have STREQUAL _dc_tu_want)
+    file(WRITE "${tu}" "${_dc_tu_want}")
+  endif()
   list(APPEND DC_HEADER_CHECK_TUS "${tu}")
 endforeach()
 add_library(dc_engine_header_check OBJECT ${DC_HEADER_CHECK_TUS})
