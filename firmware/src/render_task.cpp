@@ -322,12 +322,18 @@ void RenderTask::print_stats() noexcept {
     // hammering the network stack" — measured: the peaks are quiet.
     {
         const std::size_t p99 = f.frame_times.percentile_bucket(99);
-        ESP_LOGI(kTag, "-- frame  : p99=%s worst=%u us slow(>25ms)=%u of %u"
+        ESP_LOGI(kTag, "-- frame  : p99=%s worst=%u us slow(>25ms)=%u of %u max_run=%u of %u slots"
                        " | quiet=%u fetch=%u over %u frames",
                  f.frame_times.label(p99),
                  static_cast<unsigned>(f.worst_parse_us),
                  static_cast<unsigned>(f.frame_times.count_from(FrameScale::kFirstLong)),
                  static_cast<unsigned>(f.frame_times.total()),
+                 // The run length is what turns "slow" into "dropped": the pipe
+                 // absorbs isolated slow frames and stops gaining ground once a
+                 // run reaches kFrameSlots. Printed against that denominator so
+                 // the reading needs no arithmetic at the bench.
+                 static_cast<unsigned>(f.slow_run.worst()),
+                 static_cast<unsigned>(kFrameSlots),
                  static_cast<unsigned>(f.worst_parse_quiet_us),
                  static_cast<unsigned>(f.worst_parse_fetch_us),
                  static_cast<unsigned>(f.frames_during_fetch));

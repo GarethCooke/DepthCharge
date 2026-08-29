@@ -473,6 +473,11 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // Every frame, not just the worst one. See the Stats member for why a bare
     // maximum was the wrong instrument.
     stats_.frame_times.add(elapsed);
+    // ...and whether this one continued a run of slow ones. Note it on EVERY
+    // frame, not only the slow ones: a fast frame is what ends a run, and a
+    // tracker that only heard about the slow ones would report one unbroken run
+    // for the life of the board.
+    stats_.slow_run.note(elapsed >= FrameScale::kSlowUs);
     // The same measurement, attributed. See the Stats fields for why: this is
     // wall-clock, so a fetch on another task shows up here as though the feed
     // had done more work.

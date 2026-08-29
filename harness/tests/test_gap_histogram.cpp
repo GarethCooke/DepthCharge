@@ -315,3 +315,68 @@ TEST_CASE("FrameScale's slow edge and its label are pinned") {
     CHECK(FrameScale::kEdgeUs[FrameScale::kFirstLong - 1] == 25'000);
     CHECK(std::string(FrameScale::kLabel[FrameScale::kFirstLong]) == "25-50");
 }
+
+// ---------------------------------------------------------------------------
+// ConsecutiveRun — what turns "slow" into "dropped"
+// ---------------------------------------------------------------------------
+//
+// `slow(>25ms)=10 of 1,808` is two different boards depending on the
+// arrangement. Ten slow frames spread out cost nothing: the pipe's four slots
+// absorb one long frame and drain again. Four in a row consume a whole ~99.2 ms
+// arrival interval — which is how the 25 ms edge was derived — so the pipe stops
+// gaining ground, and beyond that it drops messages. At a diff venue a dropped
+// message is not a skipped refresh; it costs the book and a 50-weight re-seed.
+TEST_CASE("ConsecutiveRun reports the longest run, not the count") {
+    using depthcharge::fw::ConsecutiveRun;
+
+    SUBCASE("nothing seen reports nothing") {
+        ConsecutiveRun r;
+        CHECK(r.current() == 0);
+        CHECK(r.worst() == 0);
+    }
+
+    // THE CASE THE COUNTER EXISTS FOR. Same number of slow frames, opposite
+    // verdicts — and `slow=` alone cannot tell them apart.
+    SUBCASE("the same count of slow frames gives opposite answers") {
+        ConsecutiveRun spread;
+        for (int i = 0; i < 4; ++i) {
+            spread.note(true);
+            spread.note(false);
+            spread.note(false);
+        }
+        CHECK(spread.worst() == 1);      // absorbed; the pipe never falls behind
+
+        ConsecutiveRun burst;
+        for (int i = 0; i < 8; ++i) { burst.note(false); }
+        for (int i = 0; i < 4; ++i) { burst.note(true); }
+        CHECK(burst.worst() == 4);       // four slots' worth, back to back
+    }
+
+    SUBCASE("a fast frame ends the run") {
+        ConsecutiveRun r;
+        r.note(true);
+        r.note(true);
+        r.note(true);
+        CHECK(r.current() == 3);
+        r.note(false);
+        CHECK(r.current() == 0);
+        CHECK(r.worst() == 3);           // the maximum survives the reset
+    }
+
+    SUBCASE("a later shorter run does not lower the maximum") {
+        ConsecutiveRun r;
+        for (int i = 0; i < 5; ++i) { r.note(true); }
+        r.note(false);
+        r.note(true);
+        r.note(true);
+        CHECK(r.current() == 2);
+        CHECK(r.worst() == 5);
+    }
+
+    SUBCASE("an unbroken run is counted whole") {
+        ConsecutiveRun r;
+        for (int i = 0; i < 100; ++i) { r.note(true); }
+        CHECK(r.current() == 100);
+        CHECK(r.worst() == 100);
+    }
+}

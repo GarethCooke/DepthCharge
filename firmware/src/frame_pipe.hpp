@@ -174,8 +174,8 @@ inline constexpr std::size_t kFrameSlots = 4;
 // stops gaining ground and a run of slow frames starts costing slots. If either
 // number moves, this fails here rather than quietly reporting `slow=` against a
 // threshold that no longer means anything.
-static_assert(FrameScale::kEdgeUs[FrameScale::kFirstLong - 1] * kFrameSlots >= 99'000u &&
-                  FrameScale::kEdgeUs[FrameScale::kFirstLong - 1] * kFrameSlots <= 110'000u,
+static_assert(FrameScale::kSlowUs * kFrameSlots >= 99'000u &&
+                  FrameScale::kSlowUs * kFrameSlots <= 110'000u,
               "FrameScale's slow edge x kFrameSlots must be about one arrival interval; "
               "re-derive it if either moved");
 

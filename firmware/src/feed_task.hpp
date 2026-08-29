@@ -112,6 +112,14 @@ public:
         // (`FrameScale::kFirstLong`, derived at its definition).
         Histogram<FrameScale> frame_times{};
 
+        // AND HOW MANY OF THE SLOW ONES CAME IN A ROW. `slow(>25ms)=10 of 1,808`
+        // is two different boards depending on the arrangement: ten spread out
+        // cost nothing, because the pipe's four slots absorb one long frame and
+        // drain again; four IN A ROW consume a whole arrival interval and the
+        // pipe stops gaining ground. The run length is what turns "slow" into
+        // "dropped", and at a diff venue a dropped message costs the book.
+        ConsecutiveRun slow_run{};
+
         // WORST_PARSE_US IS WALL-CLOCK, AND THAT IS WHY THESE TWO EXIST.
         //
         // It is `esp_timer_get_time()` differenced across `on_frame`, so it

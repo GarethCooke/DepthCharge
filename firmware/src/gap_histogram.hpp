@@ -121,6 +121,51 @@ struct FrameScale {
         "<0.5ms", "0.5-1", "1-2.5", "2.5-5", "5-10", "10-25", "25-50", ">50ms",
     };
     static constexpr std::size_t kFirstLong = 6;
+    // The slow edge itself, named so callers stop repeating the index
+    // arithmetic — and so that "what counts as slow" has one spelling.
+    static constexpr std::uint32_t kSlowUs = kEdgeUs[kFirstLong - 1];
+};
+
+// HOW MANY OF THOSE SLOW FRAMES CAME IN A ROW, WHICH IS THE PART THAT DECIDES
+// WHETHER THEY COST ANYTHING.
+//
+// `slow(>25ms)=10 of 1,808` is two completely different boards depending on the
+// arrangement, and the count alone cannot tell them apart:
+//
+//   * ten slow frames SPREAD OUT cost nothing. `kFrameSlots` = 4, so the pipe
+//     absorbs one long frame and drains again before the next.
+//   * four slow frames IN A ROW consume a whole ~99.2 ms arrival interval —
+//     which is exactly how the 25 ms edge was derived — so the pipe stops
+//     gaining ground, and beyond that run length it starts dropping messages.
+//     At a diff venue a dropped message is not a skipped refresh: it fails the
+//     next `U == last_u + 1`, drops the book and costs a 50-weight re-seed.
+//
+// So the run length is what turns "slow" into "dropped", and the maximum run is
+// the number a soak should be judged on. It is deliberately a MAXIMUM here
+// rather than a distribution: unlike frame time, where the tail was hiding
+// behind a single figure, the question this answers is a threshold one — did a
+// run ever reach `kFrameSlots` — and one number answers it.
+//
+// Kept in this header rather than in the feed task because it is arithmetic,
+// and arithmetic belongs somewhere ctest can reach. `frame_pipe.hpp` cannot
+// compile on the desk.
+class ConsecutiveRun {
+public:
+    void note(bool hit) noexcept {
+        if (!hit) {
+            current_ = 0;
+            return;
+        }
+        ++current_;
+        if (current_ > worst_) { worst_ = current_; }
+    }
+
+    std::uint32_t current() const noexcept { return current_; }
+    std::uint32_t worst() const noexcept { return worst_; }
+
+private:
+    std::uint32_t current_ = 0;
+    std::uint32_t worst_ = 0;
 };
 
 // Saturating narrow to 32 bits, for the high-water marks that sit beside these
