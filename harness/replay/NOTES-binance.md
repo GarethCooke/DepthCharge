@@ -2015,6 +2015,39 @@ working as designed rather than an absence of evidence.
 consequence. `slow(>25ms)` and `max_run` remain useful for attributing pressure
 to the parse rather than to reassembly, but they are not the leading indicator.
 
+### 9 · …and the chain closes: max slots held at once
+
+Residency says how long ONE slot was held. What decides a drop is how many were
+held **at the same time**, so that is now counted directly and printed on the
+`-- pipe` line, bounded by `kFrameSlots` by construction.
+
+    -- frame : p99=25-50 worst=99768 us slow(>25ms)=27 of 1901 max_run=2 of 4
+    -- slot  : p99=50-100 worst=449514 us held(>100ms)=12 of 1901
+    -- pipe  : published=1902 oversize=0 no_slot=8 max_held=4 of 4 qfull=0
+
+**Frame runs never reached the slot count — `max_run=2 of 4` — and the pipe
+still filled and still dropped eight messages.** `max_held=4` explains
+`no_slot=8` where `max_run=2` cannot.
+
+Three runs on record, and the frame figures do not track drops while occupancy
+does:
+
+| `slow` | `max_run` | `held(>100ms)` | `max_held` | `no_slot` |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 of 1,795 | 3 of 4 | — | — | **9** |
+| 30 of 1,802 | 3 of 4 | 3 of 1,802 | — | **0** |
+| 27 of 1,901 | 2 of 4 | 12 of 1,901 | **4 of 4** | **8** |
+
+Four times the slow frames between rows one and two and no drops; a *lower*
+`max_run` in row three with drops. **Occupancy is the mechanism; frame time is
+one contributor to it.**
+
+**The reading order for D-C is therefore:** `max_held` against `kFrameSlots`
+first — it is the leading indicator and it fires before anything is lost —
+then `held(>100ms)` for how the pressure built, then `no_slot` for what it cost.
+`slow(>25ms)` and `max_run` attribute the pressure to the parse rather than to
+reassembly, and are the last thing to look at rather than the first.
+
 *(One bench note: this run took three attempts. The first two never associated —
 `AUTH_EXPIRE` at −39 dBm, five retries each — and a reflash cleared it. Same
 family as the 2026-08-13 drop-storm diagnosis; not caused by any change here.)*
