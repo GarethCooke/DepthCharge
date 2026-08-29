@@ -1975,3 +1975,46 @@ The 25 ms edge and its `static_assert` stand — they are the right order and th
 derivation is written down — but **`max_run` at 3 is not a safe margin**, and
 D-C should read `max_run`, `slow(>25ms)` and `no_slot` together rather than any
 one of them.
+
+### 8 · Slot residency, measured rather than inferred
+
+§7 said frame time is only the last term of a slot's occupancy. That is now
+measured directly — stamped at `acquire`, differenced at `release` **or**
+`recycle`, both endings, because a slot's occupancy is occupancy whether the
+message was published or thrown away.
+
+    -- frame : p99=25-50 worst=118757 us slow(>25ms)=30 of 1802 max_run=3 of 4
+    -- slot  : p99=25-50 worst=209468 us held(>100ms)=3 of 1802
+    -- slots : <1ms:220 1-5:1412 5-10:82 10-25:47 25-50:25 50-100:13 100-250:3 >250ms:0
+    -- pipe  : published=1803 oversize=0 no_slot=0 qfull=0
+
+**The gap is now a number.** The worst slot lived **209,468 µs** against a worst
+frame of **118,757** — so at the extreme frame time is 57% of occupancy and the
+missing 90,711 µs is reassembly plus queue wait. The modal slot lives 1–5 ms
+against a modal frame of 1–2.5 ms, so roughly the same ratio holds when healthy.
+
+**And frame-time counts do not predict drops**, which is the clearest argument
+for the instrument. Two consecutive runs on the same build:
+
+| | `slow(>25ms)` | `max_run` | `no_slot` |
+| --- | ---: | ---: | ---: |
+| run A | 8 of 1,795 | 3 of 4 | **9** |
+| run B | 30 of 1,802 | 3 of 4 | **0** |
+
+Four times the slow frames and no drops. `no_slot` is about **concurrent**
+occupancy — how many slots were held at once and for how long — which residency
+measures and a per-frame count cannot see.
+
+`held(>100ms)` is one arrival interval: a slot held longer than the gap between
+messages was not free when the next one needed it. Three crossed it here and the
+pipe still did not drop, because the other three slots were free — the pipe
+working as designed rather than an absence of evidence.
+
+**For D-C, this supersedes §7's instruction.** Read `-- slot` first:
+`held(>100ms)` against `kFrameSlots` is the pressure, and `no_slot` is the
+consequence. `slow(>25ms)` and `max_run` remain useful for attributing pressure
+to the parse rather than to reassembly, but they are not the leading indicator.
+
+*(One bench note: this run took three attempts. The first two never associated —
+`AUTH_EXPIRE` at −39 dBm, five retries each — and a reflash cleared it. Same
+family as the 2026-08-13 drop-storm diagnosis; not caused by any change here.)*
