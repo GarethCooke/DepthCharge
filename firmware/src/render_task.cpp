@@ -341,6 +341,25 @@ void RenderTask::print_stats() noexcept {
         f.frame_times.render(buf, sizeof(buf));
         ESP_LOGI(kTag, "-- frames : %s", buf);
     }
+
+    // SLOT RESIDENCY — acquire to release/recycle, which is the quantity the
+    // two above only approximate. Frame time is the LAST term of a slot's
+    // occupancy; a slot is held through reassembly and the ready queue before
+    // the parse begins, which is why the board could drop (`no_slot`) with a
+    // worst frame-run of 3 against 4 slots. `held(>100ms)` is one arrival
+    // interval: a slot held longer than the gap between messages was not free
+    // when the next one needed it.
+    {
+        const std::size_t rp99 = p.residency.percentile_bucket(99);
+        ESP_LOGI(kTag, "-- slot   : p99=%s worst=%u us held(>100ms)=%u of %u",
+                 p.residency.label(rp99),
+                 static_cast<unsigned>(p.residency.worst_us()),
+                 static_cast<unsigned>(p.residency.count_from(ResidencyScale::kFirstLong)),
+                 static_cast<unsigned>(p.residency.total()));
+        char buf[160];
+        p.residency.render(buf, sizeof(buf));
+        ESP_LOGI(kTag, "-- slots  : %s", buf);
+    }
     print_soak(f, a);
     print_distributions(f, p);
     print_stall(f);

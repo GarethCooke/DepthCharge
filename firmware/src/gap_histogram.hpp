@@ -126,6 +126,42 @@ struct FrameScale {
     static constexpr std::uint32_t kSlowUs = kEdgeUs[kFirstLong - 1];
 };
 
+// HOW LONG A PIPE SLOT WAS HELD, WHICH IS THE QUANTITY THE OTHER TWO ONLY
+// APPROXIMATE.
+//
+// `slow(>25ms)` and `max_run` are both about FRAME TIME, and the first board run
+// with `max_run` fitted showed why that is not enough: the worst run reached 3
+// of 4 slots and the pipe dropped anyway (`no_slot=9`, `oversize=0`). Frame time
+// is only the LAST term of a slot's occupancy. A slot is held from the moment
+// the RX task acquires it, through however many reads it takes to reassemble the
+// message, through however long it then waits in the ready queue, and only then
+// through the parse. A 28 KB message spans several RX reads before the feed task
+// has seen a byte of it.
+//
+// So this measures the thing directly: stamped at `acquire`, differenced at
+// `release` or `recycle`, whichever ends the slot's life. No modelling, no
+// inference from the last term.
+//
+// `kFirstLong` opens at 100 ms = ONE ARRIVAL INTERVAL at this venue's ~10
+// messages/second, and that is the threshold that matters: a slot held longer
+// than the gap between messages is a slot that was not free when the next
+// message needed it. Below that the pipe recovers; at or above it the pipe is
+// losing a slot per message on average, whatever the frame time was.
+struct ResidencyScale {
+    static constexpr std::size_t kEdges = 7;
+    static constexpr std::uint32_t kEdgeUs[kEdges] = {
+        1000, 5000, 10000, 25000, 50000, 100000, 250000,
+    };
+    static constexpr const char* kLabel[kEdges + 1] = {
+        "<1ms", "1-5", "5-10", "10-25", "25-50", "50-100", "100-250", ">250ms",
+    };
+    static constexpr std::size_t kFirstLong = 6;
+    // One arrival interval. See `frame_pipe.hpp` for the assertion that ties
+    // this to `FrameScale::kSlowUs x kFrameSlots` — the two instruments are
+    // calibrated to the same physical quantity and must not drift apart.
+    static constexpr std::uint32_t kHeldUs = kEdgeUs[kFirstLong - 1];
+};
+
 // HOW MANY OF THOSE SLOW FRAMES CAME IN A ROW, WHICH IS THE PART THAT DECIDES
 // WHETHER THEY COST ANYTHING.
 //

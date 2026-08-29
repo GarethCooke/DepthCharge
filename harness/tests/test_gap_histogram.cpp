@@ -380,3 +380,39 @@ TEST_CASE("ConsecutiveRun reports the longest run, not the count") {
         CHECK(r.worst() == 100);
     }
 }
+
+// ---------------------------------------------------------------------------
+// ResidencyScale — the quantity frame time only approximates
+// ---------------------------------------------------------------------------
+//
+// The board showed the gap: a worst frame-run of 3 against 4 slots, and the pipe
+// dropped anyway (`no_slot=9`, `oversize=0`). Frame time is the LAST term of a
+// slot's occupancy — a slot is held from acquire, through however many RX reads
+// reassemble the message, through the ready queue, and only then through the
+// parse. So residency is measured directly rather than inferred.
+TEST_CASE("ResidencyScale's held edge is one arrival interval, and is pinned") {
+    using depthcharge::fw::ResidencyScale;
+    CHECK(ResidencyScale::kHeldUs == 100'000);
+    CHECK(std::string(ResidencyScale::kLabel[ResidencyScale::kFirstLong]) == "100-250");
+
+    // The two instruments are anchored to the SAME physical number, reached from
+    // opposite sides: one slot's whole life against one frame's parse times the
+    // slot count. `frame_pipe.hpp` asserts it where `kFrameSlots` is visible;
+    // this pins the residency half so a change has to be deliberate in both.
+    CHECK(ResidencyScale::kHeldUs == depthcharge::fw::FrameScale::kSlowUs * 4);
+}
+
+TEST_CASE("residency buckets separate a parse from a whole slot life") {
+    using depthcharge::fw::Histogram;
+    using depthcharge::fw::ResidencyScale;
+
+    Histogram<ResidencyScale> h;
+    // A healthy slot: reassembled and parsed well inside one arrival interval.
+    for (int i = 0; i < 99; ++i) { h.add(3'000); }
+    // One slot held across a stall.
+    h.add(180'000);
+
+    CHECK(std::string(h.label(h.percentile_bucket(99))) == "1-5");
+    CHECK(h.count_from(ResidencyScale::kFirstLong) == 1);
+    CHECK(h.worst_us() == 180'000);
+}

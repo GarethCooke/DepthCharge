@@ -179,6 +179,19 @@ static_assert(FrameScale::kSlowUs * kFrameSlots >= 99'000u &&
               "FrameScale's slow edge x kFrameSlots must be about one arrival interval; "
               "re-derive it if either moved");
 
+// AND THE TWO INSTRUMENTS MUST BE CALIBRATED TO THE SAME QUANTITY.
+//
+// `ResidencyScale::kHeldUs` is one arrival interval — a slot held longer than
+// the gap between messages was not free when the next one needed it.
+// `FrameScale::kSlowUs x kFrameSlots` is the same interval reached from the
+// other side. They measure different things (one slot's whole life against one
+// frame's parse) but they are anchored to the same physical number, and if that
+// number ever moves both must move together or the bench is reading two
+// thresholds that no longer mean the same thing.
+static_assert(ResidencyScale::kHeldUs == FrameScale::kSlowUs * kFrameSlots,
+              "the residency 'held' edge and the frame slow edge must derive from one "
+              "arrival interval; move both or neither");
+
 // How deep the ready queue is: one entry per slot, plus two.
 //
 // The two are headroom for status events. A Connected/Disconnected that failed
@@ -260,6 +273,14 @@ struct FramePipeStats {
     // want of a slot, so it is deliberately >= frames_published.
     std::uint32_t messages_arrived = 0;
     GapHistogram arrival_gaps{};
+
+    // HOW LONG EACH SLOT WAS HELD — acquire to release/recycle, whichever ended
+    // it. This is the quantity `slow(>25ms)` and `max_run` only approximate:
+    // both are frame time, and frame time is the LAST term of a slot's
+    // occupancy. The board proved the gap — worst run 3 of 4 slots and the pipe
+    // dropped anyway (`no_slot=9`, `oversize=0`) — because a slot is held
+    // through reassembly and the ready queue before the parse ever starts.
+    Histogram<ResidencyScale> residency{};
 };
 
 class FramePipe {
@@ -315,6 +336,14 @@ public:
 
     // Return a parsed slot to the free list.
     void recycle(std::uint8_t slot) noexcept;
+
+private:
+    // Ends a slot's life and files how long it was held. Called by BOTH
+    // release() and recycle() - see the .cpp for why measuring only one would
+    // report a pipe that looks healthiest when it is dropping most.
+    void note_residency(std::uint8_t slot) noexcept;
+
+public:
 
     // How many complete messages are queued for the feed task right now.
     //
@@ -380,6 +409,17 @@ private:
     // `begin()` already returns a failure the caller handles, so a board with no
     // PSRAM reports it and runs without a pipe rather than dereferencing null.
     std::unique_ptr<char[]> slots_;
+
+    // WHEN EACH SLOT WAS ACQUIRED. One `std::int64_t` per slot, and it needs no
+    // synchronisation for the same reason the slot's bytes do not: a slot is
+    // owned by exactly one side at a time and the queues are the transfer. The
+    // RX task writes this in `acquire()` before the slot is handed over, and
+    // whoever ends the slot's life reads it after receiving it. There is no
+    // instant at which both sides touch it.
+    //
+    // `.bss` rather than PSRAM deliberately: 4 x 8 bytes, and it is read on the
+    // per-message path.
+    std::int64_t acquired_us_[kFrameSlots] = {};
 
     // Written only by the network task except `recycle`, which does not touch
     // it; the counters are diagnostics and a torn read of one costs a wrong log

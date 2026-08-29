@@ -1,6 +1,8 @@
 // firmware/src/frame_pipe.cpp — see frame_pipe.hpp for why this exists.
 #include "frame_pipe.hpp"
 
+#include "esp_timer.h"
+
 namespace depthcharge::fw {
 
 bool FramePipe::begin() noexcept {
@@ -30,6 +32,9 @@ bool FramePipe::acquire(std::uint8_t& slot) noexcept {
         ++stats_.no_slot;
         return false;
     }
+    // The slot's life starts here. Written before the slot is handed to anyone,
+    // so no synchronisation is needed — see the member.
+    acquired_us_[slot] = esp_timer_get_time();
     return true;
 }
 
@@ -61,7 +66,23 @@ bool FramePipe::publish(std::uint8_t slot, std::uint32_t len, std::int64_t arriv
     return true;
 }
 
+// BOTH ENDINGS, because a slot's occupancy is occupancy whether the message was
+// published or thrown away. `release` is the abandoned/oversize path and
+// `recycle` the parsed one; measuring only the second would report a pipe that
+// looks healthiest exactly when it is dropping most.
+void FramePipe::note_residency(std::uint8_t slot) noexcept {
+    if (slot >= kFrameSlots) { return; }
+    const std::int64_t started = acquired_us_[slot];
+    if (started == 0) { return; }          // never acquired; nothing to measure
+    const std::int64_t now = esp_timer_get_time();
+    if (now > started) {
+        stats_.residency.add(static_cast<std::uint64_t>(now - started));
+    }
+    acquired_us_[slot] = 0;
+}
+
 void FramePipe::release(std::uint8_t slot) noexcept {
+    note_residency(slot);
     (void)xQueueSend(free_q_, &slot, 0);
 }
 
@@ -80,6 +101,7 @@ bool FramePipe::receive(FeedMessage& out, TickType_t ticks) noexcept {
 }
 
 void FramePipe::recycle(std::uint8_t slot) noexcept {
+    note_residency(slot);
     (void)xQueueSend(free_q_, &slot, 0);
 }
 
