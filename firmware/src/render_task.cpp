@@ -300,11 +300,21 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned long long>(b.trades_applied),
              static_cast<unsigned long long>(b.gaps),
              static_cast<unsigned long long>(b.publishes));
-    ESP_LOGI(kTag, "-- feed   : frames=%u wd_gaps=%u sock_gaps=%u connects=%u worst_gap=%u ms worst_frame=%u us",
+    // `worst_frame` is WALL-CLOCK across `on_frame`, so it absorbs any
+    // preemption of the feed task — and the Wi-Fi and lwIP tasks run far above
+    // its priority 5. `quiet`/`fetch` split the same high-water mark by whether
+    // a seed fetch was in flight, which is what tells "the feed path got
+    // slower" apart from "something else was hammering the network stack".
+    // `nfetch` is the denominator: a quiet figure over three frames is noise.
+    ESP_LOGI(kTag, "-- feed   : frames=%u wd_gaps=%u sock_gaps=%u connects=%u worst_gap=%u ms"
+                   " worst_frame=%u us (quiet=%u fetch=%u over %u frames)",
              static_cast<unsigned>(f.frames_in), static_cast<unsigned>(f.watchdog_gaps),
              static_cast<unsigned>(f.socket_gaps), static_cast<unsigned>(f.connects),
              static_cast<unsigned>(f.worst_gap_us / 1000),
-             static_cast<unsigned>(f.worst_parse_us));
+             static_cast<unsigned>(f.worst_parse_us),
+             static_cast<unsigned>(f.worst_parse_quiet_us),
+             static_cast<unsigned>(f.worst_parse_fetch_us),
+             static_cast<unsigned>(f.frames_during_fetch));
     print_soak(f, a);
     print_distributions(f, p);
     print_stall(f);

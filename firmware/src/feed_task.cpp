@@ -262,6 +262,17 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     const std::int64_t now = esp_timer_get_time();
     ++stats_.frames_in;
 
+    // Sampled at ENTRY, before any work, because the question this answers is
+    // "was the network stack busy on another task's behalf while this frame was
+    // being handled" — and a fetch that finishes midway still spent most of
+    // this frame's wall-clock competing with it.
+#if DC_VENUE == DC_VENUE_BINANCE
+    const bool fetch_in_flight = seed_.busy();
+#else
+    constexpr bool fetch_in_flight = false;
+#endif
+    if (fetch_in_flight) { ++stats_.frames_during_fetch; }
+
     // The per-core idle counters as of THIS instant, taken before any work so
     // the window they will be differenced over is the same window `event_gaps`
     // measures: previous event's `now` to this one's. Two 32-bit loads.
@@ -459,6 +470,14 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
 
     const std::uint32_t elapsed = static_cast<std::uint32_t>(done - now);
     if (elapsed > stats_.worst_parse_us) { stats_.worst_parse_us = elapsed; }
+    // The same measurement, attributed. See the Stats fields for why: this is
+    // wall-clock, so a fetch on another task shows up here as though the feed
+    // had done more work.
+    if (fetch_in_flight) {
+        if (elapsed > stats_.worst_parse_fetch_us) { stats_.worst_parse_fetch_us = elapsed; }
+    } else {
+        if (elapsed > stats_.worst_parse_quiet_us) { stats_.worst_parse_quiet_us = elapsed; }
+    }
 }
 
 // A QUIET MARKET MUST NOT LOOK LIKE A DEAD RENDERER, and until review it did.

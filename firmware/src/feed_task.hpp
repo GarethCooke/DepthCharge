@@ -94,6 +94,27 @@ public:
         std::uint64_t worst_gap_us = 0;     // largest observed inter-frame silence
         std::uint32_t worst_parse_us = 0;   // slowest frame -> publish, whole chain
 
+        // WORST_PARSE_US IS WALL-CLOCK, AND THAT IS WHY THESE TWO EXIST.
+        //
+        // It is `esp_timer_get_time()` differenced across `on_frame`, so it
+        // measures ELAPSED time and not CPU time: every preemption of the feed
+        // task lands inside it. This task runs at priority 5; the Wi-Fi and
+        // lwIP tasks run far above that, so anything which drives the network
+        // stack hard inflates this number without the feed doing more work.
+        //
+        // A seed fetch is exactly such a thing — a TLS handshake and ~64 KB
+        // pulled down on another task — and `worst_parse_us` rose 23x
+        // (4,297 -> ~99,000 us) in the stage that introduced one. Splitting the
+        // high-water mark by whether a fetch was in flight is what tells the
+        // two apart: if the QUIET figure stays near D-A1's, the feed path did
+        // not get slower and the number is measuring the fetch's shadow.
+        //
+        // `frames_during_fetch` is the denominator — a quiet-only figure taken
+        // over three frames would mean nothing.
+        std::uint32_t worst_parse_quiet_us = 0;   // ...with no fetch in flight
+        std::uint32_t worst_parse_fetch_us = 0;   // ...with one in flight
+        std::uint32_t frames_during_fetch = 0;
+
         // THE EVENT HALF OF THE ARRIVAL-VS-EVENT SPLIT (strain 12).
         //
         // `event_gaps` is the distribution behind `worst_gap_us`: the same
