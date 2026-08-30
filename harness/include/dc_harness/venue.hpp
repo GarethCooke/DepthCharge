@@ -34,6 +34,7 @@
 // For `LivenessPolicy`. The clamp the grey threshold is computed with is a
 // venue fact for the same reason `validated_depth` is (M5 stage C).
 #include <depthcharge/liveness_clock.hpp>
+#include <depthcharge/venue_liveness.hpp>
 
 namespace dc::harness {
 
@@ -226,7 +227,7 @@ inline constexpr VenueTraits kVenueTable[] = {
      "started, 241 byte-identical frames in 120 s with seq advancing",
      // 4.0 x a 500.0 ms median = 2,000 ms, which is also the floor. The 30,000 ms
      // ceiling is 60x the median and binds only on a feed that has decayed 15x.
-     /*liveness=*/{},
+     /*liveness=*/depthcharge::venue_liveness::kAnvil,
      /*legacy_book_threshold_ms=*/1000.0,
      "WITHDRAWN 2026-08-17. Was the book-silence threshold, derived from Anvil's "
      "391 ms worst healthy gap at 2.6x margin (ARCHITECTURE §9, 2026-08-09)",
@@ -243,7 +244,7 @@ inline constexpr VenueTraits kVenueTable[] = {
      "median 1000.3 ms, worst 1,119.0 ms (1.12x). Held 936-1,042 ms cadence right "
      "through the 25,843 ms book hole that proved book silence unusable",
      // 4.0 x a 1000.3 ms median = 4,001 ms. Ceiling 30x the median, never binds.
-     /*liveness=*/{},
+     /*liveness=*/depthcharge::venue_liveness::kKraken,
      /*legacy_book_threshold_ms=*/15000.0,
      "WITHDRAWN 2026-08-17, and it is the constant the ruling was written to "
      "retire: a second quiet-pair window measured a healthy 25,843 ms book "
@@ -295,7 +296,7 @@ inline constexpr VenueTraits kVenueTable[] = {
      "strain 26). The ceiling is 60,000 ms: it has to clear 39,928 or the clamp "
      "is the threshold again, and it admits a cadence 50% slower than measured "
      "before it binds",
-     /*liveness=*/{.multiple = 2.0, .ceiling_ms = 60000.0},
+     /*liveness=*/depthcharge::venue_liveness::kBinance,
      /*legacy_book_threshold_ms=*/-1.0,
      "NONE, and -1 is a sentinel rather than a number. This venue was added "
      "2026-08-25, after the ruling that withdrew Anvil's 1,000 ms and Kraken's "
