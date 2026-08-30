@@ -406,6 +406,24 @@ target_link_libraries(dc_tests_noping PRIVATE dc_vendor dc_warnings)
 # of the four ctest binaries. `test_venue_build.cpp` includes it now and asserts
 # the tally on both arms. A comment that claims coverage the link line does not
 # provide is the thing this project keeps writing rules about.
+# AND THE THIRD VENUE, ADDED AT M5 STAGE D-A3 BECAUSE ITS ARM WAS NEVER
+# HOST-COMPILED AT ALL. `venue_build.hpp`'s Binance branch — its `liveness_count`,
+# its `kLivenessSignal`, its `kLivenessPolicy` and its endpoint pins — was
+# reachable only through a `pio` build until this target existed, so a change to
+# it went green on all four ctest binaries by not being compiled by any of them.
+# That is the same defect the paragraph above records for `reject_log.hpp`,
+# arriving one venue later, and it is why D-A3's wire is tested here rather than
+# only on the bench.
+add_executable(dc_tests_binance
+  harness/tests/doctest_main.cpp
+  harness/tests/test_venue_build.cpp)
+target_compile_definitions(dc_tests_binance PRIVATE
+  DC_VENUE=3
+  DC_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness/replay")
+target_include_directories(dc_tests_binance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/src)
+target_link_libraries(dc_tests_binance PRIVATE
+  dc_engine dc_engine_binance dc_vendor dc_warnings)
+
 add_executable(dc_tests_kraken
   harness/tests/doctest_main.cpp
   harness/tests/test_venue_build.cpp)
@@ -442,6 +460,7 @@ add_test(NAME dc_tests COMMAND dc_tests)
 add_test(NAME dc_tests_streaming COMMAND dc_tests_streaming)
 add_test(NAME dc_tests_noping COMMAND dc_tests_noping)
 add_test(NAME dc_tests_kraken COMMAND dc_tests_kraken)
+add_test(NAME dc_tests_binance COMMAND dc_tests_binance)
 add_test(NAME dc_replay_baseline
   COMMAND dc_replay ${CMAKE_CURRENT_SOURCE_DIR}/harness/replay/anvil_101_baseline.ndjson)
 add_test(NAME dc_replay_reconnect
@@ -817,6 +836,18 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tracefile.py --selfcheck)
   set_tests_properties(tracefile_selfcheck PROPERTIES TIMEOUT 120)
+
+  # THE SOAK READER, TESTED FOR THE FIRST TIME AT M5 STAGE D-A3 -- and it needed
+  # it: every one of its grammars had drifted from the firmware and it matched
+  # ZERO lines of a current capture, printing "the grammar has drifted" and
+  # exiting 1. Three independent breakages, one of which (the `-- pipe` group
+  # shift) printed a plausible wrong number under the right label rather than
+  # failing. This runs its grammars against a synthetic capture carrying one line
+  # of every shape it claims to read.
+  add_test(NAME soak_report_selfcheck
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/soak_report.py --selfcheck)
+  set_tests_properties(soak_report_selfcheck PROPERTIES TIMEOUT 120)
 
   # The tool that WRITES ground truth, tested for the first time. It drives the
   # real capture loop against tools/ws_loopback.py -- no network, no venue -- and

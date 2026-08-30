@@ -72,12 +72,19 @@
 // re-connected to with this PEM as the ONLY trust anchor and with
 // `-verify_return_error` set, so a failure could not be reported as success:
 //
-//     openssl s_client -connect data-stream.binance.vision:443 \
-//         -servername data-stream.binance.vision \
-//         -CAfile AmazonRootCA1.pem -verify_return_error
-//     ...  Verify return code: 0 (ok)
-//
-//     (and identically for data-api.binance.vision)
+// A BLOCK COMMENT FOR THE COMMAND, and not a stylistic choice: a trailing
+// backslash on a `//` line is a line-continuation, so the lines below were ONE
+// comment and -Wcomment says so. It went unseen until M5 stage D-A3 added
+// `dc_tests_binance`: this header had never been compiled by the host suite at
+// all, which is the gap that target exists to close.
+/*
+   openssl s_client -connect data-stream.binance.vision:443 \
+   -servername data-stream.binance.vision \
+   -CAfile AmazonRootCA1.pem -verify_return_error
+   ...  Verify return code: 0 (ok)
+
+   (and identically for data-api.binance.vision)
+*/
 //
 // THE LEAF IS NOT PINNED, and that is deliberate rather than an omission. It
 // expires 2027-03-03 and Binance rotates it; pinning a leaf would turn a
