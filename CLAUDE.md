@@ -52,7 +52,11 @@ from 2026-08-18:
 > the split first, with the review done and nothing committed. Once approved: create the commits,
 > verify each one in a detached worktree with `CMAKE_HOME_DIRECTORY` **confirmed to point at the
 > worktree** before believing a pass, and amend the split if any commit is red. **Nothing is pushed
-> until every commit has been shown green in isolation.**
+> until every commit has been shown green in isolation — and *green* means green for what the commit
+> TOUCHES.** The host suite proves `engine/`, `harness/` and `tools/`; **it never compiles
+> `firmware/src/`** (`CMakeLists.txt:5` says so outright), so a commit touching `firmware/` is
+> unverified until `pio run -e <arm>` has built it **in that worktree**. Running one track against a
+> commit in the other is not a weak check — it is a **wave-through**, and it reports green.
 
 **AND THE MECHANISM, because that last sentence is prose and prose has no reach.** At M5 stage B2
 it was breached from OUTSIDE the session that held it — seven commits reached `origin/master`
@@ -84,7 +88,12 @@ removes it again, so nothing leaks. **The second half is the one that bites quie
 `cmake --workflow --preset host-mingw` never compiles `firmware/src/`, so 50/50 green says *nothing*
 about a commit that touches it — a firmware commit is verified by `pio run -e <arm>` **in the
 worktree** as well, and it is worth confirming the artefact afterwards (`strings`, or the marker the
-arm exists to carry). Tooling rather than architecture, so no §9 row (2026-08-30).
+arm exists to carry).
+
+The `secrets.h` half is tooling and needs no §9 row. **The coverage half is not tooling and has
+one — `ARCHITECTURE.md` §9, 2026-08-30** — because it is about what a verification is entitled to
+claim, which is the same family as the mutation-verification rule this section already cites, and
+because it had been silently false for twelve days rather than being a fresh discovery.
 
 **A sentinel-token check cannot live in a file that quotes its sentinel — and the scope must be POSITIVE, not a list of exclusions.** A guard like `grep -rn SHA-PENDING` returning nothing is impossible while the instruction that *names* the token is in the tree, and the danger is not the spurious match: it is the **wave-through**, which is indistinguishable from waving through a real leftover.
 
