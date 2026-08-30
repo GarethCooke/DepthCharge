@@ -74,6 +74,18 @@ main tree is one of the three failures behind the mutation-verification rule in 
 §9 (2026-08-18) — it passed, and it was measuring the wrong tree. Delete stale worktrees when done:
 a stale one is precisely where a green build comes from the wrong source.
 
+**A worktree cannot build `firmware/` until `secrets.h` is copied into it — and a green ctest does
+not cover firmware at all.** `/firmware/include/secrets.h` is gitignored (`.gitignore:22`); only
+`secrets.h.example` is committed. So a detached worktree dies at `src/main.cpp:36: fatal error:
+secrets.h: No such file or directory`, which reads as a red commit and is an artefact of the tree —
+the exact confusion the ladder exists to prevent, arriving from the other direction. Copy the real
+file from the main tree into `<worktree>/firmware/include/` before `pio run`; removing the worktree
+removes it again, so nothing leaks. **The second half is the one that bites quietly:**
+`cmake --workflow --preset host-mingw` never compiles `firmware/src/`, so 50/50 green says *nothing*
+about a commit that touches it — a firmware commit is verified by `pio run -e <arm>` **in the
+worktree** as well, and it is worth confirming the artefact afterwards (`strings`, or the marker the
+arm exists to carry). Tooling rather than architecture, so no §9 row (2026-08-30).
+
 **A sentinel-token check cannot live in a file that quotes its sentinel — and the scope must be POSITIVE, not a list of exclusions.** A guard like `grep -rn SHA-PENDING` returning nothing is impossible while the instruction that *names* the token is in the tree, and the danger is not the spurious match: it is the **wave-through**, which is indistinguishable from waving through a real leftover.
 
 Scope it to **the file the substitution targets**:
