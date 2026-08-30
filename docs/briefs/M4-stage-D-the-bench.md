@@ -807,6 +807,17 @@ image from a shipping one. The `liveness_muted_at_s` counter meant to cover that
 incremented and **never printed**: write-only state, which is the same defect wearing a
 different hat.
 
+> **Footnote added 2026-08-30 (M5 stage D-B). `capture_noreset.py` does not exist and never
+> has** — never committed, never on disk — and this brief was one of five places that cited it.
+> **The finding above is unaffected**: captures really are attached without resetting, and
+> `firmware/logs/` holds several that open mid-uptime rather than at `ESP-ROM:`. Only the
+> mechanism was fiction. What actually does it is a bare `pio device monitor` (the *DepthCharge:
+> Monitor* task), which does not reset the board, while the `-t upload -t monitor` form does —
+> because the *upload* does; and the file is written by `monitor_filters =
+> esp32_exception_decoder, time, log2file` in `[env]` at `firmware/platformio.ini:215`. The four
+> live citations were corrected in place; this one is footnoted rather than edited, because a
+> past brief is a record of what a session believed. See `ARCHITECTURE.md` §9, 2026-08-29 row.
+
 Replaced with `DC_SOAK_TEST_TAG`, a preprocessor-chosen string literal appended to the SOAK
 line, so **any ten-second window of output identifies the image** and the shipping build does
 not contain the string at all rather than merely declining to print it. Verified two ways:
