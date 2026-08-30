@@ -74,20 +74,21 @@ one.
 
 ## 3 · Deliverables
 
-1. **A ping-interval instrument.** A **maximum** beside the existing median and sample count — the
-   falsifier is a statement about the maximum, and `-- ping`'s `worst`/`run` are **round-trip
-   times**, a different quantity. Prefer a coarse histogram on `gap_histogram.hpp`'s existing shape;
-   at a 20 s cadence a 24 h run holds ~4,300 intervals.
-2. **A reconnect-time largest-block reading.** Sample it where the socket comes up, beside
-   `ws_transport.cpp:637`'s existing line. **Do not** reuse the fetch reading — §5 explains why.
-3. **`tools/soak_report.py` repaired and extended**: tolerate the timestamp prefix, fix `RE_PIPE`,
-   and make the bare `if pipe:` guard **loud** rather than silent. Add grammars for `-- age`,
-   `-- ping`, `-- frame`, `-- slot`/`-- slots`. **Proved against a short bench capture before the
-   long run starts** — a reader that has never parsed a real line is not a reader.
-4. **The run: > 24 hours**, one board, `log2file` as always, flashed from a known commit with the
-   SHA recorded in the log by hand (the shipping image carries no build tag — see §6).
-5. **The six checks read and recorded**, each with its number.
-6. **`hardware/bench-2026-08-<dd>-m5-soak.md`** plus the capture gzipped beside it, following
+**The four gaps in §2 are NOT this stage's work — they are D-A3's**, per D-A2's *Out of scope*
+(*"the liveness ping wire, and the soak instrumentation — D-A3"*) and now
+`M5-stage-D-A3-the-wire-the-mechanism-and-the-instruments.md`, which carries all four as its
+deliverables 1-4. **This stage starts when they land**, and its own deliverables are the run and
+the reading:
+
+1. **Confirm the four gaps are closed before flashing for the run.** `-- age` shows a non-zero
+   median and a threshold near **39,927.94 ms**; a ping-interval maximum prints; a largest-block
+   reading is taken at reconnect; `tools/soak_report.py` parses a current short capture with
+   non-zero counts on every regex it owns. **A soak begun against an unproven reader is a day
+   spent producing a fiction**, and this list is the whole of the pre-flight.
+2. **The run: > 24 hours**, one board, `log2file` as always, flashed from a known commit with the
+   SHA recorded in the log by hand (the shipping image carries no build tag - see §6).
+3. **The six checks read and recorded**, each with its number.
+4. **`hardware/bench-2026-08-<dd>-m5-soak.md`** plus the capture gzipped beside it, following
    `bench-2026-08-30-D-B-silent-stream-*.log.gz`.
 
 ## 4 · The checks, in order of what they can invalidate
@@ -222,11 +223,10 @@ over 25.39 h. The event is a mid-run dip.
 
 ## 8 · Definition of done
 
-- ☐ Deliverables 1 and 2 shipped; the falsifier and the reconnect reading both computable.
-- ☐ `tools/soak_report.py` parses a **current** capture — non-zero on every regex it owns — and the
-      silent `if pipe:` guard made loud.
-- ☐ D-A3 landed, with **both** the ping wire and the policy routing confirmed on the board
-      (`-- age` shows a non-zero median and a threshold near 39,927.94 ms).
+- ☐ **D-A3 landed and confirmed on the board**: the ping wire and the policy routing both
+      (`-- age` shows a non-zero median and a threshold near 39,927.94 ms), a ping-interval maximum
+      printing, a largest-block reading at reconnect, and `tools/soak_report.py` parsing a current
+      capture with non-zero counts on every regex it owns.
 - ☐ A single run **exceeding 24 hours**, captured and gzipped into `hardware/`.
 - ☐ All six checks read and recorded with their numbers.
 - ☐ `kReserveInternalBytes` confirmed or moved on the evidence, with the **current** steady-state
