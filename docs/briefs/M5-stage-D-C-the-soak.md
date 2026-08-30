@@ -76,8 +76,8 @@ one.
 
 **The four gaps in §2 are NOT this stage's work — they are D-A3's**, per D-A2's *Out of scope*
 (*"the liveness ping wire, and the soak instrumentation — D-A3"*) and now
-`M5-stage-D-A3-the-wire-the-mechanism-and-the-instruments.md`, which carries all four as its
-deliverables 1-4. **This stage starts when they land**, and its own deliverables are the run and
+`M5-stage-D-A3-the-wire-and-the-instruments.md`, which carries all four as its deliverables 1-4
+(the re-seed mechanism and the marker split off to **D-A4**, which does not block this stage). **This stage starts when they land**, and its own deliverables are the run and
 the reading:
 
 1. **Confirm the four gaps are closed before flashing for the run.** `-- age` shows a non-zero
