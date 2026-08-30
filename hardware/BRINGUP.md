@@ -43,11 +43,27 @@ mode as the dead address line below — a hardware-side cause wearing a firmware
 **The remedy, and it is reliable:** re-flash at 115200. Both images went up clean at that speed
 on the same cable, same port, same session, `Hash of data verified`, ~20 s each.
 
+> **CORRECTED 2026-08-30 (M5 stage D-A3): THE ENV-VAR REMEDY BELOW DOES NOT WORK, and
+> following it reproduced the very failure it exists to avoid.**
+> `PLATFORMIO_UPLOAD_SPEED` is **silently ignored** by this PlatformIO: the upload announced
+> *"Changing baud rate to 921600"* and died mid-write, leaving the board partly erased exactly
+> as described above. `pio run` in this version also has no `-O` / `--project-option`, so there
+> is no command-line override either.
+>
+> **What actually works:** edit `upload_speed` in `firmware/platformio.ini` to 115200, flash,
+> and **revert it immediately**, checking with `git diff firmware/platformio.ini` that nothing
+> is left behind. Verified 2026-08-30: `Hash of data verified` on all four regions, ~91 s.
+>
+> The reasoning below for NOT lowering the committed constant is unchanged and still correct
+> -- the failure has not been root-caused, and a future desk with a better cable should not
+> inherit a slow flash. What changed is only that the mechanism named for keeping it
+> un-lowered does not exist.
+
 ```powershell
 cd C:\Development\Projects\DepthCharge\firmware
-$env:PLATFORMIO_UPLOAD_SPEED = "115200"
+# Set upload_speed = 115200 in platformio.ini first, and revert it after.
 & "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -e depthcharge-binance -t upload
-Remove-Item Env:\PLATFORMIO_UPLOAD_SPEED
+git -C .. diff --stat firmware/platformio.ini     # must be empty afterwards
 ```
 
 The env-var override is deliberate rather than editing `platformio.ini`: **the failure has not

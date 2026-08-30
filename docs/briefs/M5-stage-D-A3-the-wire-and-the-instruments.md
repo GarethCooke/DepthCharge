@@ -1,6 +1,6 @@
 # M5 Stage D-A3 — the wire and the instruments
 
-**Track:** Agentic [desk] · **Status:** Not started · **Size:** one desk evening, and the ping wire
+**Track:** Agentic [desk] · **Status:** DONE 2026-08-30 — ctest 52/52, six arms build, and all three lines confirmed on the board · **Size:** one desk evening, and the ping wire
 is most of it
 **Written:** 2026-08-30 by the desk seat. **Split 2026-08-30** — deliverables 5–7 (the re-seed
 mechanism, `InFlight`, the header marker) moved to **D-A4**; see § *Why this stage is only four
@@ -155,15 +155,15 @@ rather than an empty one. Grey either way; decision 2 says coloured.
 
 ## 5 · Definition of done
 
-- ☐ The ping is wired; `-- age` shows a **non-zero median and a real sample count** on the board.
-- ☐ The policy is routed; the board's threshold reads near **39,927.94 ms** once calibrated, and
-      **Anvil's and Kraken's are shown unchanged** rather than assumed.
-- ☐ A ping-interval maximum (or histogram) prints, and D-C's falsifier is computable from a capture.
-- ☐ A largest-free-block reading is taken **at reconnect** and prints.
-- ☐ `tools/soak_report.py` parses a **current** capture — non-zero on every regex it owns — with the
+- ☑ The ping is wired; `-- age` shows a **non-zero median and a real sample count** on the board.
+- ☑ The policy is routed; the board reads **39,887 ms** once calibrated (2.0 × its own 19,944 ms
+      median), and **Anvil's and Kraken's are shown unchanged** by assertion and by test.
+- ☑ A ping-interval maximum (or histogram) prints, and D-C's falsifier is computable from a capture.
+- ☑ A largest-free-block reading is taken **at reconnect** and prints.
+- ☑ `tools/soak_report.py` parses a **current** capture — non-zero on every regex it owns — with the
       silent `if pipe:` guard made loud, proved on a real file.
-- ☐ Whether `armed_` gained a second setter is recorded.
-- ☐ Any decision with architectural weight to `ARCHITECTURE.md` §9.
+- ☑ Whether `armed_` gained a second setter is recorded. **It did not** — card 30 unmoved.
+- ☑ Any decision with architectural weight to `ARCHITECTURE.md` §9.
 - ☐ ctest green **and** `pio run -e depthcharge-binance` green in a worktree for every firmware
       commit; session log · ROADMAP; split proposed; nothing committed until approved.
 
@@ -180,3 +180,146 @@ correction — the **M5 close-out**.
 
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
+
+### 2026-08-30 · Opus 5 · all four gaps closed at the desk; the board reading is owed
+
+**Done.** All four deliverables implemented and proven on the host. Six firmware arms build; ctest is
+**52/52**, up from 50 — two of the new ones are this stage's. **Nothing has been flashed**, so every
+DoD clause phrased *"on the board"* is desk-complete and bench-pending.
+
+**Deliverable 1 — the ping is wired, and the wire is the pipe.** `WsTransport::on_ping` increments
+`FramePipeStats::server_pings` on the RX task; `feed_task.cpp` differences it. **The count therefore
+crosses the RX→feed boundary through `FramePipe`, which is already that boundary** — so invariant
+#8's single-writer rule is satisfied by the mechanism that existed rather than by a new one, and the
+brief's warning that this "crosses a task boundary invariant #8 governs" cost a field rather than a
+design. `liveness_count` now takes `(const Adapter&, std::uint32_t server_pings)` at all three
+venues, as D-A1 predicted it would have to.
+
+> **AND THE DEFECT THAT WOULD HAVE SURVIVED THE FLASH.** The old code differenced a local captured
+> around `adapter_.on_frame`, so the check ran **only when a message had been dequeued**. At Anvil
+> and Kraken that is harmless — their clock *is* a message. At Binance it would have been useless in
+> exactly the case the watchdog exists for: the ping arrives while no depth frame does, so a stream
+> going quiet would never have been checked and the watchdog would never have armed. The loop's own
+> comment predicted it before the wire existed. `service_liveness()` is now called on **both** loop
+> paths, and differences a member rather than a local so calling it twice per iteration is a no-op.
+
+**Deliverable 2 — the policy is routed, and it needed a new home.** The Binance policy lived only in
+`harness/include/dc_harness/venue.hpp`, which `firmware/` cannot include. Copying it would have been
+one edit from silent disagreement, so all three policies moved to a new engine header
+`depthcharge/venue_liveness.hpp` that both sides include. `LivenessWatchdog` gained a policy
+constructor; `FeedTask` constructs with `venue::kLivenessPolicy`. **Anvil's and Kraken's are shown
+unchanged rather than assumed** — `static_assert`s hold the constants equal to the shipping defaults,
+and a test holds the *behaviour* equal across four cadences at every step from uncalibrated to
+calibrated. Stage C could say "by construction"; this stage cannot, and that was the DoD clause.
+
+**Deliverable 3 — the maximum already existed and could not be printed.** `worst_gap_ns_` is exactly
+max(liveness inter-arrival) and was never printed. It also **could not** be: it is 64-bit, and this
+file's own rule is that only 32-bit mirrors cross to the render core. And it is **reconnect-
+contaminated by design** — `on_socket_change` deliberately does not reset `last_ns_`, so the first
+arrival after an outage measures the whole hole, which a test pins. So the instrument is a new
+`Histogram<PingScale>` **gated on `armed_`**, admitting only intervals whose two ends are inside one
+healthy connection. Ungated, the first reconnect of any run would have parked a ~300 s interval in
+the falsifier's bucket and D-C would have read a permanently-tripped falsifier as a finding.
+**`PingScale::kFirstLong` is the 40 s bucket**, so `count_from(kFirstLong)` is literally *"how many
+intervals reached 2 × median"* — the falsifier as one printed field, not an arithmetic exercise at
+the bench. Printed on a new `-- signal` line, named so it cannot be confused with `-- ping`'s
+round-trip or `-- feed`'s frame silence: **three quantities, two of which were called `worst_gap`.**
+
+**Deliverable 4 — the reconnect reading, and a tool that read nothing.** The largest-free-internal
+sample is taken in `WsTransport::open_socket()` immediately before `esp_tls_init()` — once per
+attempt by construction, since that function has one caller gated on an `exchange()`. **It is also
+printed on the ENOMEM path**, because the one reconnect where the heap actually ran out never reaches
+the `socket up` line. Appended to that line rather than inserted, so the existing grammar's groups
+keep their indices. `kTlsBlockBytes` moved to `heap_probe.hpp` rather than being copied.
+
+> **`tools/soak_report.py` matched ZERO lines of a current capture, and there were three
+> independent breakages, not one.** The `time` filter's prefix broke every `^` anchor; `max_held=%u
+> of %u` had been inserted into `-- pipe` between `no_slot` and `qfull`, so the positional read
+> printed **max_held under the label `qfull`** — plausibly and wrongly; and `^\[(\d+)\]` could not
+> match `[  9316]` because the core pads millis to width 8, so those two grammars worked **only on
+> captures past ~2.8 h of uptime**, which is why they looked fine on the 25 h soak. All fixed, with
+> named groups so the next insertion cannot re-label anything, a **loud** regex census replacing six
+> silent `if x:` guards, and a `--selfcheck` now in ctest. It parses the current capture and
+> immediately reported `pipe max_held: peak 4 of 4 *** REACHED kFrameSlots ***` on a 200 s run.
+
+**Decisions, with why.**
+
+1. **The policy went to `engine/`, not into `firmware/` as a copy.** Two homes for one constant is
+   how the board and the harness came to disagree in the first place; the disagreement is silent,
+   because the board greys on a threshold nobody reads and the harness asserts one nobody runs.
+2. **The histogram is gated on `armed_` and `worst_gap_ns_` is not.** They answer different
+   questions — *how big was the outage* and *what is this venue's healthy cadence* — and a test pins
+   both, in opposite directions, on the same event.
+3. **`dc_tests_binance` was added.** `venue_build.hpp`'s Binance arm was compiled by **nothing**: no
+   host target selected `DC_VENUE=3`, so every change to it went green on all four ctest binaries by
+   not being compiled by any of them. Its first run found a `-Werror=comment` line-continuation in
+   `binance_root_ca.hpp` that had been in the tree unseen since the venue was added.
+4. **`#else` became `#elif DC_VENUE == DC_VENUE_ANVIL` in `test_venue_build.cpp`.** `#else` meant
+   "not Kraken", which was Anvil while there were two arms and became "Anvil or Binance" the moment
+   a third target existed — so every Anvil fact was asserted against a Binance build. **A two-branch
+   conditional that names only one of its branches is a trap that springs on whoever adds the
+   third.**
+
+**A known unknown, answered: `armed_` did NOT gain a second setter.** It is still assigned in
+`on_liveness` alone; what changed is where the counter it differences comes from. So **M4's card 30
+is unmoved and strain 26's remedy (b) does not reopen** — the trade stays closed for the reason
+stage C gave.
+
+**And a correction to this session's own §9 row, made by doing the work it demanded.** The
+2026-08-30 row claimed the host suite *"does not compile `firmware/src/` at all"*. It was asserted
+from `CMakeLists.txt:5`'s prose rather than from the link lines: `CMakeLists.txt:341` puts
+`firmware/src` on the test targets' include path and host tests reach **sixteen** ESP-IDF-free
+headers. The rule and the 26-commit measurement stand; the claim about what was invisible narrows,
+and the corrected test is mechanical — *does a host test include this file?* Recorded as a
+correction inside the row rather than by editing its sentence, because a row that quietly repaired
+its own overstatement would be a third instance of the thing the row is about.
+
+**Exact next step.** **Flash `-e depthcharge-binance` and read three lines**: `-- age` for a non-zero
+median and a real sample count, `-- signal` for `n` climbing and `>=2x med` at 0, and `socket up:`
+for the `largest internal before=` figure. Then run `tools/soak_report.py` over that capture — the
+`-- signal` grammar has never seen a real board line, only the synthetic one in its selfcheck, and
+that is the last gap between this stage and D-C's first named check.
+
+**BENCH CONFIRMATION, 2026-08-30 17:57–18:01** — `firmware/logs/device-monitor-260830-175742.log`,
+`-e depthcharge-binance`, one boot, 147 KB. All three owed lines read, and the middle one is the
+whole stage:
+
+```
+-- signal : server-ping n=8 max=22354 ms >=2x med=0 | median 19944 ms threshold 39887 ms CALIBRATED
+-- signals: <10s:0 10-15:0 15-18:1 18-20:4 20-22:2 22-25:1 25-40:0 >=40s:0
+-- age    : ... | server-ping median 19944 ms, grey at 39887 ms after 8 sample(s) | ...
+socket up: dns 78 ms, connect+upgrade 1970 ms, fd 48, rssi -41 dBm
+          | largest internal before=102388 after=53236 (a session needs 2 x 16717 B)
+```
+
+- **The clock is armed and calibrated on Binance for the first time.** `n=8`, and the signal names
+  itself `server-ping` rather than `server-ping (NOT WIRED)`.
+- **The policy is on the board.** Before any arrival the threshold read **60,000 ms** — this venue's
+  ceiling, not the 30,000 ms global — and after calibration **39,887 ms**, which is 2.0 × the
+  board's own median. A default-constructed clock would have shown 4.0 × 19,944 = 79,776 clamped to
+  30,000. The multiple is 2.0 on the board, which is deliverable 2's entire claim.
+- **The board's median is 19,944 ms against stage C's corpus figure of 19,963.97** — 20 ms apart,
+  which is an independent confirmation of the number the whole derivation rests on.
+- **The falsifier reads 0** and the distribution is tight: 8 intervals across `15-18`, `18-20`,
+  `20-22`, `22-25`, nothing at or beyond 40 s.
+- **The reconnect reading works**, and its figure is not the one the D-C check was written against:
+  **102,388 B before** the TLS context, where D-A1 measured 17,396 B and sized a 679 B margin. D-A2
+  moved FramePipe's slabs to PSRAM and raised the reserve, so the margin is now enormous. **D-C
+  should re-derive the margin from this rather than quote D-A1's** — the 16,717 B threshold is
+  unaffected, the headroom above it is not.
+- **`tools/soak_report.py` parses this capture**, `-- signal` included: 7 matches on the partial run
+  and a clean regex census. D-C's first named check is computable from a real board log, which was
+  the last gap between this stage and that one.
+
+**One number to hand D-C rather than resolve here.** Worst/median on this connection is
+22,354 / 19,944 = **1.12**, where stage C's corpus gave **1.005** over ten intervals. Both are far
+below the 2.0 the multiplier clears, so nothing moves — but eight intervals is not a distribution
+either, and the soak is what turns this into one. It is exactly the reading D-C's first check exists
+to take.
+
+**And a defect in `hardware/BRINGUP.md`, found by following it.** Its flashing remedy — set
+`PLATFORMIO_UPLOAD_SPEED=115200` — **does not work on this PlatformIO**: the variable is ignored,
+the upload ran at 921600 and failed mid-write in exactly the documented way, leaving the board
+partly erased. `pio run` in this version has no `-O`/`--project-option` either. What worked was a
+temporary edit of `upload_speed` in `platformio.ini`, reverted immediately and verified against
+`HEAD`. BRINGUP is corrected to say so, with the reason the env var was chosen preserved.

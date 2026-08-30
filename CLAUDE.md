@@ -53,10 +53,13 @@ from 2026-08-18:
 > verify each one in a detached worktree with `CMAKE_HOME_DIRECTORY` **confirmed to point at the
 > worktree** before believing a pass, and amend the split if any commit is red. **Nothing is pushed
 > until every commit has been shown green in isolation — and *green* means green for what the commit
-> TOUCHES.** The host suite proves `engine/`, `harness/` and `tools/`; **it never compiles
-> `firmware/src/`** (`CMakeLists.txt:5` says so outright), so a commit touching `firmware/` is
-> unverified until `pio run -e <arm>` has built it **in that worktree**. Running one track against a
-> commit in the other is not a weak check — it is a **wave-through**, and it reports green.
+> TOUCHES.** The host suite proves `engine/`, `harness/`, `tools/`, and **a `firmware/src` header if
+> and only if some host test includes it** (`CMakeLists.txt:341` puts `firmware/src` on the test
+> targets' include path; sixteen headers are reached that way). It compiles **no `firmware/src/*.cpp`
+> and no `platformio.ini`, ever**. So the test is mechanical: *does a host test include this file?*
+> If not, the commit is unverified until `pio run -e <arm>` has built it **in that worktree**.
+> Running one track against a commit in the other is not a weak check — it is a **wave-through**, and
+> it reports green.
 
 **AND THE MECHANISM, because that last sentence is prose and prose has no reach.** At M5 stage B2
 it was breached from OUTSIDE the session that held it — seven commits reached `origin/master`
@@ -85,10 +88,13 @@ secrets.h: No such file or directory`, which reads as a red commit and is an art
 the exact confusion the ladder exists to prevent, arriving from the other direction. Copy the real
 file from the main tree into `<worktree>/firmware/include/` before `pio run`; removing the worktree
 removes it again, so nothing leaks. **The second half is the one that bites quietly:**
-`cmake --workflow --preset host-mingw` never compiles `firmware/src/`, so 50/50 green says *nothing*
-about a commit that touches it — a firmware commit is verified by `pio run -e <arm>` **in the
-worktree** as well, and it is worth confirming the artefact afterwards (`strings`, or the marker the
-arm exists to carry).
+`cmake --workflow --preset host-mingw` compiles no `firmware/src/*.cpp` and only those headers a host
+test includes, so a green suite says *nothing* about the rest — a firmware commit is verified by
+`pio run -e <arm>` **in the worktree** as well, and it is worth confirming the artefact afterwards
+(`strings`, or the marker the arm exists to carry). **And where a firmware header has no host test
+reaching it, the cheapest fix is usually to add one rather than to lean on `pio`:** M5 stage D-A3
+found `venue_build.hpp`'s Binance arm compiled by nothing at all and closed it with a fourth test
+target, which found a `-Werror` defect on its first run.
 
 The `secrets.h` half is tooling and needs no §9 row. **The coverage half is not tooling and has
 one — `ARCHITECTURE.md` §9, 2026-08-30** — because it is about what a verification is entitled to
