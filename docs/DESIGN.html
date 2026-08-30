@@ -3338,7 +3338,23 @@ classDiagram
       IS stage C&rsquo;s finding rendered on hardware rather than a disappointment. Anvil&rsquo;s
       <code>validated_depth</code> of <b>0 is a statement, not an unset field</b>, so the line
       says <em>&ldquo;anvil publishes no checksum, so NO rendered row on this build was ever
-      externally confirmed&rdquo;</em> in words rather than printing a percentage of nothing.</p>
+      externally confirmed&rdquo;</em> in words rather than printing a percentage of nothing.
+      <br><br>
+      <b>DECIDED 2026-08-30 (M5 stage D-B), the cheap way — and the sentence is written HERE
+      because this is where a reader meets it.</b> <em>The panel shows unvalidated levels, and
+      that is fine.</em> <b>The tripwire is crossed for the first time</b>: Binance's
+      <code>validated_depth</code> is <b>0</b> as Anvil's is, the seed is <code>limit=1000</code>
+      and the emitted window is 256, so the 25 rendered rows a side are drawn from a book far
+      deeper than anything a checksum ever confirmed — because on this venue nothing ever is.
+      The card is no longer dormant, and the answer is that it does not need to be: a level
+      nobody checked is <em>unconfirmed</em>, not suspect, and that is now said out loud once
+      rather than assumed. <b>The per-row marker is DEFERRED, not rejected.</b> It is the same
+      +8 bytes on the struct and +24 in the mailbox the price-axis window needs, so buying it
+      here would buy it twice or buy it for the smaller of the two claimants; it stays priced
+      at ROADMAP <b>D6</b> and rides along if D6 buys those bytes for the price axis.
+      <code>sizeof(DisplaySnapshot)</code> stays <b>1,168</b>. The firmware already says the
+      sentence at runtime on every <code>SOAK</code> line in the venue's own words; this
+      paragraph is where it is said to a person.</p>
 
   </div>
 
@@ -3694,7 +3710,33 @@ classDiagram
       trade between (a) and (b) reopens. Carried into <em>Owed by stage D</em> so the next
       stage does not re-derive the rejection from scratch. Note the pattern: <b>both
       collisions were created by a stage B1 opening a card, a milestone apart, and nothing
-      checks.</b></p>
+      checks.</b>
+      <br><br>
+      <b>JUDGED 2026-08-30 (M5 stage D-B): remedy (a)'s grey READS RIGHT.</b> D-A1 recorded the
+      grey as an observation and was explicitly forbidden to judge it; the sitting judged it, by
+      eye, at desk distance, at 224 brightness, with the header carrying the stale reason. The
+      ~20 s boot grey reads as <em>not trusted yet</em> and not as <em>broken</em>. It stands
+      unchanged, and the open question of whether it wanted a distinct <em>seeding</em>
+      appearance closes <b>no</b>. <b>And a silent feed renders IDENTICALLY to an ordinary
+      pre-seed grey — chosen, not defaulted.</b> A client cannot tell a silent stream from a
+      slow one, so a panel that distinguished them would be claiming knowledge the firmware does
+      not have; recording it as a decision is what stops a later session &ldquo;improving&rdquo;
+      it, which would be a reversal rather than a gap being filled. <b>The two answers
+      interlock and must be reopened together</b>: <em>identical</em> is only acceptable because
+      the grey reads as withholding, and had the judgement gone the other way it would have
+      meant a panel that looks broken on every ordinary boot as well — the same pixels, a
+      different verdict.
+      <br><br>
+      <b>The evidence is the captures, not the photographs.</b>
+      <code>hardware/bench-2026-08-30-D-B-silent-stream-{054547,055239}.log.gz</code> hold the
+      defect image grey for the full 480 s of the second run at <code>rows=0/54 unknown=54
+      frames=0</code>, never reaching <code>live=1</code> — <b>the first time the forbidden
+      output has been prevented on hardware rather than in a test</b>, against B1's measurement
+      of this same misspelled stream producing a populated 100-level ladder rendered LIVE. The
+      photographs beside them corroborate what the grey looks like and are deliberately NOT
+      attributed to a build, for which see
+      <code>hardware/bench-2026-08-30-D-B-panel-photographs.md</code> and ARCHITECTURE §9,
+      2026-08-30.</p>
   </div>
 
   <div class="strain">
@@ -3799,7 +3841,37 @@ classDiagram
       of one card's need is how a venue fact becomes a universal rule.
       B2 supplied the trigger, the margin, the
       deadline it is sized against, and the adoptability measurement &mdash; and built no
-      mechanism. ARCHITECTURE §9, 2026-08-26.</p>
+      mechanism. ARCHITECTURE §9, 2026-08-26.
+      <br><br>
+      <b>DECIDED 2026-08-30 (M5 stage D-B): what <code>InFlight</code> DRAWS, and the slot is
+      pinned.</b> <b>The header changes and the ladder does not.</b> On
+      <code>ReseedState::InFlight</code> the live palette stays selected and every ladder
+      <code>Ink</code> is unchanged — the only difference from <code>None</code> is inside
+      <code>draw_header</code>. Grey is not used. <b>Why:</b> a re-seed fires on a book that has
+      <em>not</em> gone wrong (the trigger is coverage falling below
+      <code>kBinanceReseedCoverLevels</code>, not a fault), so greying it would have the panel
+      lie in the safe direction for the <b>3.1&ndash;5.6 s</b> a fetch measures on this board —
+      and B2's own adoptability figure, <b>0 of 7 adoptable at <code>limit=1000</code></b>, says
+      that is not a rare event. Header-only beats colour-plus-marker because <b>the header is
+      already where this renderer states trust</b> (<code>reason_text</code> in the value slot),
+      so the marker joins a vocabulary that exists rather than opening a second one on the
+      ladder, where colour already means side and rank.
+      <br><br>
+      <b>The slot is the SYMBOL's</b>, under the standing priority <b>VALUE &gt; AGE &gt;
+      SYMBOL</b>: the value slot holds the last price, which a live book during a re-seed still
+      has; the age is the one number a person watching the ladder cannot infer from the ladder
+      (M4 stage D, A4); and the symbol is the claimant that already yields to both, for the
+      reason <code>draw_header</code>'s own comment gives — <em>&ldquo;a header that overlaps is
+      worse than one missing an id nobody is reading.&rdquo;</em> This object shows exactly one
+      instrument, so its id is the least informative eight characters on the panel.
+      <b>Carried to D-A3 as constraints rather than preferences:</b> the marker is at most
+      <b>eight characters</b> and is asserted against the real header width in
+      <code>test_ladder_render.cpp</code>, as every <code>reason_text</code> string already is;
+      it yields exactly as the symbol yields today, so a header too narrow drops the marker
+      rather than overlapping the price or the age; and it is drawn in <code>Ink::Symbol</code>
+      rather than a new <code>Ink</code>, which would cost a stale-palette entry and a
+      <code>static_assert</code> for a marker that never appears on a grey panel.
+      <b>This card's D-half is now the mechanism and the memory alone.</b></p>
   </div>
 
   <div class="strain">
