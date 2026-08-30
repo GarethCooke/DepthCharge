@@ -1,6 +1,8 @@
 // firmware/src/ws_transport.cpp — see ws_transport.hpp.
 #include "ws_transport.hpp"
 
+#include "heap_probe.hpp"   // kTlsBlockBytes, and the D-C reconnect check
+
 #include <WiFi.h>
 
 #include <cerrno>
@@ -581,8 +583,27 @@ bool WsTransport::open_socket() noexcept {
     cfg.cacert_bytes = venue::kRootCaPemBytes;    // PEM: the NUL is part of it
     cfg.timeout_ms = static_cast<int>(kConnectTimeoutMs);
 
+    // THE D-C RECONNECT READING, TAKEN HERE AND NOWHERE ELSE (M5 stage D-A3,
+    // deliverable 4). This is the instant the check is about: a fresh TLS
+    // context is about to be allocated, and it needs two contiguous
+    // `kTlsBlockBytes` blocks out of internal heap. `warm_dns()` has already run
+    // above, so DNS's own transients are inside this figure rather than after it.
+    //
+    // ONCE PER ATTEMPT BY CONSTRUCTION: `open_socket()` has exactly one caller
+    // and it is gated on an `exchange()` of the connect request, so nothing
+    // periodic reaches this line and no sampling rate has to be argued.
+    const std::uint32_t largest_before = sample_heap().largest_block_internal;
+
     tls_ = esp_tls_init();
     if (tls_ == nullptr) {
+        // THE FAILURE PATH IS THE INTERESTING ONE AND IT NEVER REACHES THE
+        // "socket up" LINE BELOW -- so the reading is printed here too, or the
+        // one reconnect where the heap actually ran out is the one with no heap
+        // figure in the log. Same shape as `rest_fetch.cpp`'s arm.
+        ESP_LOGW(kTag, "esp_tls_init failed - no internal heap for this session?"
+                       " largest=%u, a session needs 2 x %u B",
+                 static_cast<unsigned>(largest_before),
+                 static_cast<unsigned>(kTlsBlockBytes));
         autopsy("tls-init", -1, ENOMEM);
         return false;
     }
@@ -634,10 +655,24 @@ bool WsTransport::open_socket() noexcept {
     // unbaselined, and the feed task republishes it on the next frame anyway.
     (void)signal_.take_refused();
     (void)pipe_.post_status(FeedMessage::Kind::Connected);
-    ESP_LOGI(kTag, "socket up: dns %d ms, connect+upgrade %d ms, fd %d, rssi %d dBm",
+    // APPENDED RATHER THAN INSERTED. `tools/soak_report.py`'s socket-up grammar
+    // has no end anchor, so text added after ` dBm` still parses and its five
+    // groups keep their indices; a field inserted before it would silently
+    // renumber them.
+    //
+    // `largest_before` is the D-C reading -- the hole the fresh TLS context had
+    // to come out of. `after` is printed beside it so a reader can see what the
+    // session actually took without differencing two log lines.
+    const std::uint32_t largest_after = sample_heap().largest_block_internal;
+    ESP_LOGI(kTag, "socket up: dns %d ms, connect+upgrade %d ms, fd %d, rssi %d dBm"
+                   " | largest internal before=%u after=%u (a session needs 2 x %u B)%s",
              static_cast<int>(dns_us / 1000),
              static_cast<int>((esp_timer_get_time() - t0) / 1000), fd_,
-             static_cast<int>(WiFi.RSSI()));
+             static_cast<int>(WiFi.RSSI()),
+             static_cast<unsigned>(largest_before),
+             static_cast<unsigned>(largest_after),
+             static_cast<unsigned>(kTlsBlockBytes),
+             largest_before < kTlsBlockBytes ? "  *** BELOW THE D-C THRESHOLD ***" : "");
     return true;
 }
 
@@ -943,6 +978,10 @@ void WsTransport::on_pong() noexcept {
 
 void WsTransport::on_ping(const std::uint8_t* payload, std::uint32_t len) noexcept {
     pipe_.count_control();
+    // AND SEPARATELY AS A LIVENESS SIGNAL, because `control` counts our own pong
+    // too and so cannot mean "the venue spoke" (M5 stage D-A3, deliverable 1).
+    // At Binance this is the only liveness signal the venue emits.
+    pipe_.count_server_ping();
     // The pong is written from inside the parser's callback, which is safe for
     // one reason worth stating: this is the RX task, and the read that produced
     // these bytes has already returned — there is no mbedtls call on the stack

@@ -57,6 +57,8 @@
 #include <depthcharge/age_estimator.hpp>
 #include <depthcharge/liveness_clock.hpp>
 
+#include "gap_histogram.hpp"
+
 namespace depthcharge::fw {
 
 // The one conversion, spelled once. See the header comment.
@@ -140,6 +142,27 @@ constexpr bool test_liveness_muted(std::int64_t uptime_us) noexcept {
 // single `on_liveness` makes that unforgettable rather than conventional.
 class LivenessWatchdog {
 public:
+    // THE SHIPPING OBJECT, UNCHANGED -- and the same object told what this venue
+    // warrants. `explicit` for the reason `LivenessClock`'s policy constructor is
+    // explicit: a policy must never be passed where a watchdog was meant.
+    //
+    // M5 STAGE D-A3, DELIVERABLE 2, AND THE SENTENCE IT FALSIFIES. Until this
+    // constructor existed, `liveness_clock.hpp` could say *"`firmware/`
+    // constructs `LivenessClock` with no argument and is untouched"*, and stage C
+    // could claim Anvil and Kraken do not move *by construction*. Both were true
+    // and both cost the same thing: the board ran the SHIPPING defaults (multiple
+    // 4.0, ceiling 30,000 ms) while every document quoted Binance's derived
+    // 39,927.94 ms. The construction is now gone, so "unchanged" is checked
+    // instead of assumed -- by the static_asserts in `venue_liveness.hpp`.
+    //
+    // `threshold_ms_` is seeded from the POLICY's uncalibrated value rather than
+    // from the global constant, or the very first serial line of every boot would
+    // report a threshold this build does not run: 30,000 ms where Binance's
+    // pre-calibration threshold is 60,000.
+    LivenessWatchdog() noexcept = default;
+    explicit LivenessWatchdog(LivenessPolicy policy) noexcept
+        : clock_(policy), threshold_ms_(to_ms(policy.uncalibrated_ms())) {}
+
     // A liveness signal arrived. This is the ONLY thing that arms the watchdog:
     // a book event does not, a byte does not, and a control frame does not.
     // The gap is recorded against `last_ns_` and NOT gated on `armed_`, which
@@ -171,6 +194,28 @@ public:
         if (last_ns_ != 0) {
             const std::uint64_t gap = static_cast<std::uint64_t>(at_ns - last_ns_);
             if (gap > worst_gap_ns_) { worst_gap_ns_ = gap; }
+
+            // AND THE DISTRIBUTION, GATED ON `armed_` -- which is the whole
+            // difference between this and `worst_gap_ns_` above (M5 stage D-A3,
+            // deliverable 3).
+            //
+            // `on_socket_change` deliberately does NOT reset `last_ns_`, so the
+            // first arrival after an outage differences against the last arrival
+            // BEFORE the drop and measures the whole hole. That is exactly what
+            // `worst_gap_ns_` is for and a test pins it. It is exactly wrong for
+            // this histogram: D-C's falsifier asks whether an interval reached
+            // 2 x median **on a healthy socket**, and an outage-spanning
+            // interval is not a sample of the venue's cadence at all. Ungated,
+            // the first reconnect of any run would park a ~300 s interval in the
+            // `>=40s` bucket and the falsifier would read as permanently
+            // tripped -- looking like a finding rather than an instrument
+            // counting the outage.
+            //
+            // `armed_` is false from `on_socket_change` until the first arrival
+            // of the new connection, and false after a firing until the venue
+            // speaks again, so gating on it admits only intervals whose two ends
+            // are both inside one healthy connection.
+            if (armed_) { intervals_.add(gap / 1000); }
         }
         clock_.on_liveness(at_ns);
         age_.on_liveness(at_ns);
@@ -281,6 +326,12 @@ public:
     std::uint32_t firings() const noexcept { return firings_; }
     std::uint32_t non_monotone() const noexcept { return non_monotone_; }
     std::uint64_t worst_gap_ns() const noexcept { return worst_gap_ns_; }
+
+    // The liveness-signal inter-arrival distribution, healthy intervals only.
+    // Safe to read from the render task for the reason every other histogram is:
+    // its counts and its worst are 32-bit and nothing branches on them. This is
+    // the one instrument D-C's first named check reads.
+    const Histogram<PingScale>& intervals() const noexcept { return intervals_; }
     std::int64_t last_liveness_ns() const noexcept { return last_ns_; }
 
     // The exact doubles, for the FEED side and for host tests. Never called
@@ -321,6 +372,7 @@ private:
     std::uint32_t firings_ = 0;
     std::uint32_t non_monotone_ = 0;
     std::uint64_t worst_gap_ns_ = 0;
+    Histogram<PingScale> intervals_{};
 
     // The 32-bit mirror the console reads. Initialised to what an uncalibrated
     // clock reports, so the first line printed before any arrival is honest.

@@ -239,6 +239,30 @@ struct FramePipeStats {
     std::uint32_t continuation = 0;       // WS continuation frames seen (see .cpp)
     std::uint32_t control = 0;            // ping/pong/close opcodes
 
+    // SERVER PINGS ALONE, AND IT IS A LIVENESS SIGNAL RATHER THAN A DIAGNOSTIC
+    // (M5 stage D-A3, deliverable 1).
+    //
+    // `control` above counts ping AND pong AND the reassembler's own control
+    // path, so it cannot be differenced to mean "the venue spoke": our own
+    // client pong moves it, and a socket answering nothing but our pings would
+    // look alive. This counts only frames the SERVER sent us, which at Binance
+    // is the only liveness signal there is -- the venue publishes no heartbeat
+    // on the market-data streams and its 20 s ping is emitted by the WebSocket
+    // layer, below the subscription.
+    //
+    // WHY IT LIVES HERE AND NOT ON THE TRANSPORT. The count is written by the RX
+    // task and read by the feed task, so it is a cross-task datum and invariant
+    // #8 governs it: exactly one writer. `FramePipe` is already THE hand-off
+    // between those two tasks and every field beside this one crosses it the
+    // same way, so putting it here adds a field to an existing boundary rather
+    // than opening a second one -- which is the whole reason the transport is
+    // not simply handed to the feed task.
+    //
+    // Monotonic for the life of the boot, deliberately: the feed task
+    // DIFFERENCES it, and a counter reset on reconnect would read as "no ping
+    // arrived" at the exact moment one did.
+    std::uint32_t server_pings = 0;
+
     // THE MOST SLOTS EVER HELD AT ONCE, and it is the LEADING indicator that
     // `no_slot` is the trailing one of.
     //
@@ -345,6 +369,8 @@ public:
     void count_abandoned() noexcept { ++stats_.abandoned; }
     void count_continuation() noexcept { ++stats_.continuation; }
     void count_control() noexcept { ++stats_.control; }
+    // Written on the RX task only -- see FramePipeStats::server_pings.
+    void count_server_ping() noexcept { ++stats_.server_pings; }
     void count_chunk() noexcept { ++stats_.chunks; }
 
     // --- feed side ----------------------------------------------------------

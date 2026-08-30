@@ -172,7 +172,7 @@ TEST_CASE("the spliced-second-frame scan looks for THIS venue's frame opening") 
     // Anvil's opening must NOT be what this build looks for.
     const std::string anvil = R"({"type":"book","ticker":101})";
     CHECK(scan(book + anvil) == 0);
-#else
+#elif DC_VENUE == DC_VENUE_ANVIL
     const std::string book = R"({"type":"book","ticker":101,"seq":1})";
     const std::string summary = R"({"type":"summary","ticker":101})";
 
@@ -182,6 +182,21 @@ TEST_CASE("the spliced-second-frame scan looks for THIS venue's frame opening") 
     // Kraken's opening must NOT be what this build looks for.
     const std::string kraken = R"({"channel":"heartbeat"})";
     CHECK(scan(book + kraken) == 0);
+#else
+    // Binance, added with `dc_tests_binance` at M5 stage D-A3. Its prefixes are
+    // `{"e":` for a raw stream frame and `{"stream":` for a combined one, and
+    // neither of the other two venues' openings may match.
+    const std::string diff = R"({"e":"depthUpdate","E":1,"s":"BTCUSDT","U":1,"u":2})";
+    const std::string combined = R"({"stream":"btcusdt@depth@100ms","data":{}})";
+
+    CHECK(scan(diff) == 0);
+    CHECK(scan(diff + diff) == diff.size());
+    CHECK(scan(diff + combined) == diff.size());
+
+    const std::string anvil = R"({"type":"book","ticker":101})";
+    const std::string kraken = R"({"channel":"heartbeat"})";
+    CHECK(scan(diff + anvil) == 0);
+    CHECK(scan(diff + kraken) == 0);
 #endif
 }
 
@@ -206,14 +221,19 @@ TEST_CASE("kraken arm: the liveness counter is the heartbeat and nothing else") 
     // book messages the panel would grey through MINA/GBP's healthy silences,
     // which is the failure the whole 2026-08-17 ruling exists to prevent.
     venue::Adapter a = venue::make_adapter();
-    CHECK(venue::liveness_count(a) == 0);
+    CHECK(venue::liveness_count(a, 0) == 0);
 
     auto sink = [](const depthcharge::FeedEvent&) {};
     a.on_frame(R"({"channel":"heartbeat"})", sink);
-    CHECK(venue::liveness_count(a) == 1);
+    CHECK(venue::liveness_count(a, 0) == 1);
 
     a.on_frame(R"({"channel":"status","type":"update","data":[{"system":"online"}]})", sink);
-    CHECK(venue::liveness_count(a) == 1);       // a status frame is not a clock
+    CHECK(venue::liveness_count(a, 0) == 1);       // a status frame is not a clock
+
+    // And the server-ping argument is inert here too (M5 stage D-A3): this
+    // venue's clock is an application frame, so a socket-level ping must not
+    // move it.
+    CHECK(venue::liveness_count(a, 1'000'000) == 1);
 }
 
 TEST_CASE("kraken arm: the adapter is built at the depth the subscribe asks for") {
@@ -222,7 +242,14 @@ TEST_CASE("kraken arm: the adapter is built at the depth the subscribe asks for"
     CHECK(a.wire_symbol() == depthcharge::fw::kKrakenWireSymbol);
 }
 
-#else
+#elif DC_VENUE == DC_VENUE_ANVIL
+
+// ANVIL BY NAME RATHER THAN BY `#else`, since M5 stage D-A3 added a third
+// venue target. `#else` meant "not Kraken", which was Anvil while there were
+// two arms and became "Anvil or Binance" the moment `dc_tests_binance` existed --
+// so every Anvil fact below was asserted against a Binance build and failed. A
+// two-branch conditional that names only one of its branches is a trap that
+// springs on whoever adds the third.
 
 TEST_CASE("anvil arm: the venue is Anvil, and NO rendered row is externally confirmed") {
     CHECK(venue::kName == "anvil");
@@ -239,11 +266,72 @@ TEST_CASE("anvil arm: the venue is Anvil, and NO rendered row is externally conf
 
 TEST_CASE("anvil arm: the liveness counter is the 2 Hz summary and nothing else") {
     venue::Adapter a = venue::make_adapter();
-    CHECK(venue::liveness_count(a) == 0);
+    CHECK(venue::liveness_count(a, 0) == 0);
 
     auto sink = [](const depthcharge::FeedEvent&) {};
     a.on_frame(R"({"type":"summary","ticker":101,"seq":1})", sink);
-    CHECK(venue::liveness_count(a) == 1);
+    CHECK(venue::liveness_count(a, 0) == 1);
+}
+
+TEST_CASE("anvil arm: the server-ping argument is INERT here, and that is the signature's whole point") {
+    // M5 stage D-A3 gave `liveness_count` one signature across three venues so
+    // that `feed_task.cpp` need not know which venue it was compiled for. The
+    // cost of that is a parameter two of the three venues ignore, and the risk
+    // is that somebody later "tidies" it into a venue that should not read it:
+    // at Anvil a WebSocket ping is a control frame from the SOCKET, not the
+    // publisher, and counting it as liveness would be a market-event-dressed-
+    // as-a-clock of exactly the kind this file's comments forbid.
+    venue::Adapter a = venue::make_adapter();
+    CHECK(venue::liveness_count(a, 0) == 0);
+    CHECK(venue::liveness_count(a, 1'000'000) == 0);   // pings do not move it here
+
+    auto sink = [](const depthcharge::FeedEvent&) {};
+    a.on_frame(R"({"type":"summary","ticker":101,"seq":1})", sink);
+    CHECK(venue::liveness_count(a, 0) == 1);
+    CHECK(venue::liveness_count(a, 1'000'000) == 1);   // still only the summary
+}
+
+#endif
+
+#if DC_VENUE == DC_VENUE_BINANCE
+
+// =====================================================================
+// M5 STAGE D-A3, DELIVERABLE 1 — THE PING IS THE CLOCK
+// =====================================================================
+
+TEST_CASE("binance arm: the liveness counter IS the server ping, and nothing on the adapter") {
+    // This venue emits neither a `summary` nor a `heartbeat`. Its clock is a
+    // WebSocket PING every ~20 s, answered on the RX task, which never becomes a
+    // message and so never reaches the adapter. Until D-A3 this function
+    // returned a constant 0 and the watchdog was never armed at all.
+    venue::Adapter a = venue::make_adapter();
+
+    CHECK(venue::liveness_count(a, 0) == 0);
+    CHECK(venue::liveness_count(a, 1) == 1);
+    CHECK(venue::liveness_count(a, 17) == 17);
+
+    // It is the ping and ONLY the ping: no amount of market data moves it. This
+    // is the assertion that stops a later edit reaching for `frames_in` or
+    // `diff_frames`, either of which would compile, would stamp the watchdog,
+    // and would be a market event dressed as a clock.
+    auto sink = [](const depthcharge::FeedEvent&) {};
+    a.on_frame(R"({"e":"depthUpdate","E":1,"s":"BTCUSDT","U":1,"u":2,"b":[],"a":[]})", sink);
+    CHECK(venue::liveness_count(a, 0) == 0);
+    CHECK(venue::liveness_count(a, 5) == 5);
+}
+
+TEST_CASE("binance arm: the venue says its signal is the ping, and carries stage C's policy") {
+    // The label reaches the `-- age` serial line, so a stale one misdescribes
+    // every soak log. It said "server-ping (NOT WIRED — see venue_build.hpp)"
+    // until the wire existed.
+    CHECK(venue::kLivenessSignal == "server-ping");
+    CHECK(venue::kLivenessSignal.find("NOT WIRED") == std::string_view::npos);
+
+    // And deliverable 2: the board carries the derived policy rather than the
+    // shipping defaults it default-constructed until this stage.
+    CHECK(venue::kLivenessPolicy.multiple == doctest::Approx(2.0));
+    CHECK(venue::kLivenessPolicy.ceiling_ms == doctest::Approx(60'000.0));
+    CHECK(venue::kLivenessPolicy.uncalibrated_ms() == doctest::Approx(60'000.0));
 }
 
 #endif

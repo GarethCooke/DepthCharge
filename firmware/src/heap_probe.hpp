@@ -67,6 +67,26 @@
 
 namespace depthcharge::fw {
 
+// WHAT ONE TLS SESSION COSTS ON THIS BUILD, AND IT IS THE SOAK'S TRIPWIRE.
+//
+// `CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN` is 16,384 and the overhead is 333, twice
+// per session, pinned internal by `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC 1`. So a
+// session needs TWO CONTIGUOUS blocks of this size out of internal heap, and the
+// number that matters is the LARGEST FREE BLOCK rather than the free total.
+//
+// Lifted here from `rest_fetch.cpp` at M5 stage D-A3, deliverable 4, because the
+// reconnect path needs it too and a second copy of a threshold is how the two
+// readings would eventually disagree about what they were testing. Both call
+// sites are heap checks, which is why this file is the home.
+//
+// **THE D-C CHECK, AND WHERE IT IS SAMPLED.** D-A1 bought Binance's second
+// buffer out of the network heap and owes the soak a reading: if the largest
+// free internal block at a RECONNECT ever falls below this, the reserve cut is
+// wrong at the second socket. The sampling point is the reconnect and not the
+// fetch -- a seed fetch takes the largest block to a few KB by design, so
+// "below 16,717" is the normal state there and means nothing.
+inline constexpr std::uint32_t kTlsBlockBytes = 16'717;
+
 struct HeapSample {
     std::uint32_t free_internal = 0;
     std::uint32_t low_water_internal = 0;

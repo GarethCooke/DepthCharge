@@ -43,6 +43,46 @@ void FeedTask::trampoline(void* self) noexcept {
     static_cast<FeedTask*>(self)->run();
 }
 
+// THE VENUE'S CLOCK, DIFFERENCED — and it is called from BOTH loop paths, which
+// is the whole of M5 stage D-A3's deliverable 1 (the rest is plumbing).
+//
+// Which counter carries the clock is the only venue knowledge in this file, and
+// it is one line in `venue_build.hpp`: Anvil's 2 Hz `summary`, Kraken's 1 Hz
+// `heartbeat`, Binance's ~20 s server PING. The first two are application frames
+// and reach the adapter as parsed messages; the third is a control frame counted
+// on the RX task and carried across by `FramePipe`, which is already this
+// firmware's RX -> feed boundary.
+//
+// **CALLED ON EVERY ITERATION, NOT ONLY AFTER A MESSAGE, AND THAT IS THE BUG
+// THIS FUNCTION EXISTS TO NOT HAVE.** The old code differenced a local captured
+// around `adapter_.on_frame`, so the check ran only when a message had been
+// dequeued. At the other two venues that is harmless — their clock IS a message.
+// At Binance it would have been useless in exactly the case the watchdog is for:
+// the ping arrives while no depth frame does, so a stream that goes quiet would
+// never have been checked and the watchdog would never have armed. The loop's
+// own comment predicted it before the wire existed.
+//
+// Differencing a MEMBER rather than a local is what makes calling it twice per
+// iteration harmless: the second call sees no change and does nothing.
+void FeedTask::service_liveness(std::int64_t now_us) noexcept {
+    const std::uint64_t n = venue::liveness_count(adapter_, pipe_.stats().server_pings);
+    if (n == liveness_seen_) { return; }
+    liveness_seen_ = n;
+
+    // The mute is the bench's only way to stage a stopped heartbeat over a live
+    // socket; it is compiled out of every shipping build. See
+    // liveness_watchdog.hpp. Nothing is counted on the muted branch:
+    // `DC_SOAK_TEST_TAG` names the mute uptime on every SOAK line and `up=` says
+    // whether it has passed, so a counter would be a second way to say it and
+    // one of the two would eventually be the one nobody printed.
+    //
+    // `liveness_seen_` advances either way, so a muted build does not re-stamp
+    // the same arrival on the next pass.
+    if (!test_liveness_muted(now_us)) {
+        watchdog_.on_liveness(ns_from_us(now_us));
+    }
+}
+
 void FeedTask::run() noexcept {
     // One frame before anything arrives, so the consumer has the honest
     // Stale{Resync} the book already holds. Without it consume() never returns
@@ -74,6 +114,10 @@ void FeedTask::run() noexcept {
             // watchdog makes this a no-op, which is exactly the Binance case:
             // that build's liveness signal is the server ping, which never
             // reaches this task, so the watchdog is never armed at all.
+            // BEFORE `on_watchdog()`, because a ping that arrived during this
+            // wait must refresh the deadline rather than be judged by it. At
+            // Binance nothing else on this path can arm the watchdog at all.
+            service_liveness(esp_timer_get_time());
             on_watchdog();
 #if DC_VENUE == DC_VENUE_BINANCE
             service_seed(esp_timer_get_time());
@@ -309,15 +353,6 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // signal — but it is still the age's, the stall probe's and the gap
     // histogram's: bytes arriving is not the same as the ladder advancing.
     const std::uint64_t events_before = adapter_.stats().events_out;
-    // And whether it was the venue's LIVENESS SIGNAL — Anvil's 2 Hz `summary`,
-    // Kraken's 1 Hz `heartbeat` — which is the one frame kind on either wire
-    // that carries a CLOCK rather than a market event. Which counter that is, is
-    // the only venue knowledge in this function, and it is one line in
-    // `venue_build.hpp`. Taken by differencing the adapter's own counter rather
-    // than by adding a firmware instrument to the adapter: `engine/` is shared
-    // with the host replay and is not modified from here (invariant #1).
-    const std::uint64_t liveness_before = venue::liveness_count(adapter_);
-
     const std::string_view text(pipe_.buffer(msg.slot), msg.len);
     adapter_.on_frame(text, [this](const FeedEvent& ev) { apply_and_publish(ev); });
 
@@ -375,18 +410,7 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // A liveness frame that FAILED to parse never increments the counter and so
     // counts as missing, inflating the lag — cross-check `-- errors parse=`,
     // which is why both lines are in the same block.
-    if (venue::liveness_count(adapter_) != liveness_before) {
-        // The mute is the bench's only way to stage a stopped heartbeat over a
-        // live socket; it is compiled out of every shipping build. See
-        // liveness_watchdog.hpp.
-        if (!test_liveness_muted(now)) {
-            watchdog_.on_liveness(ns_from_us(now));
-        }
-        // Nothing is counted on the muted branch: `DC_SOAK_TEST_TAG` names the
-        // mute uptime on every SOAK line, and `up=` on that same line says
-        // whether it has passed. A counter would be a second way to say it, and
-        // one of the two would eventually be the one nobody printed.
-    }
+    service_liveness(now);
 
     // AND THE HEALING PATH (A2), PUBLISHED AS A LEVEL RATHER THAN AN EDGE.
     //

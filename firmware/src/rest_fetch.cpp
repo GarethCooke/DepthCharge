@@ -2,6 +2,8 @@
 // this is written against, all of it read out of the precompiled archive.
 #include "rest_fetch.hpp"
 
+#include "heap_probe.hpp"
+
 // ONE VENUE PER BUILD, and this file is Binance's. `build_src_filter` is
 // `+<*>`, so every `firmware/src` TU is compiled into every image — the parser
 // TUs are swapped, but these are not. Without this guard an Anvil or Kraken
@@ -55,10 +57,8 @@ std::uint32_t free_total() noexcept {
     return static_cast<std::uint32_t>(esp_get_free_heap_size());
 }
 
-// What a TLS session costs on this build, from the bench note and the Kconfig:
-// `CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN` 16,384 + 333 overhead, twice, pinned
-// internal by `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC 1`. The D-C threshold.
-constexpr std::uint32_t kTlsBlockBytes = 16'717;
+// `kTlsBlockBytes` moved to heap_probe.hpp at M5 stage D-A3 -- the reconnect
+// path needs the same threshold and two copies would drift.
 
 // "no data yet" vs "this session is dead". Contract clause 8: WANT_READ and
 // WANT_WRITE come back verbatim, and a 0 is never "not yet".

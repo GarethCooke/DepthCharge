@@ -67,6 +67,39 @@ struct GapScale {
     static constexpr std::size_t kFirstLong = 4;
 };
 
+// Edges for the venue's LIVENESS-SIGNAL inter-arrival, and it needed its own
+// scale because no existing one can hold a 20 s cadence: `GapScale` tops out at
+// 2.5 s, `LatencyScale` at 1 s, `FrameScale` at 50 ms. Binance's server ping has
+// a measured median of 19,964.0 ms, so on any of those every healthy sample
+// lands in the top bucket and the distribution is a single column.
+//
+// **`kFirstLong` IS THE FALSIFIER, WHICH IS WHY THE TOP EDGE IS 40 s.** M5 stage
+// C derived this venue's threshold multiple as 2.0 and left the soak a falsifier
+// in one sentence: *any interval reaching 2 x median on a healthy socket raises
+// k*. Two times the measured median is 39,928 ms, which is also the derived
+// threshold itself, so an edge at 40 s makes `count_from(kFirstLong)` literally
+// "how many intervals reached 2 x median" -- one printed field, no arithmetic at
+// the bench, and no second reading of what the falsifier meant. Same trick
+// `GapScale::kFirstLong` plays with the watchdog threshold.
+//
+// The buckets below it are tight around 20 s rather than evenly spread, because
+// the quantity this instrument argues about is JITTER: the derivation rests on a
+// worst/median of 1.005, so the interesting question is whether the mass sits in
+// 18-22 s or spreads, and a decade-spaced scale could not see the difference.
+struct PingScale {
+    static constexpr std::size_t kEdges = 7;
+    static constexpr std::uint32_t kEdgeUs[kEdges] = {
+        10000000, 15000000, 18000000, 20000000, 22000000, 25000000, 40000000,
+    };
+    static constexpr const char* kLabel[kEdges + 1] = {
+        "<10s", "10-15", "15-18", "18-20", "20-22", "22-25", "25-40", ">=40s",
+    };
+    // The bucket at 2 x the measured median. Everything here and above is an
+    // interval the multiplier's derivation says should not happen on a healthy
+    // socket, so a non-zero count is the falsifier firing.
+    static constexpr std::size_t kFirstLong = 7;
+};
+
 // Edges for arrival -> event latency: how long a message that was already off
 // the socket took to reach the book.
 //

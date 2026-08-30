@@ -34,6 +34,8 @@
 #include <random>
 #include <vector>
 
+#include <depthcharge/venue_liveness.hpp>
+
 #include "liveness_watchdog.hpp"
 
 using depthcharge::AgeReading;
@@ -58,6 +60,11 @@ constexpr std::int64_t ms_ns(double v) { return static_cast<std::int64_t>(v * 1e
 struct Signal {
     LivenessWatchdog wd;
     std::int64_t now = 0;
+
+    // Default-constructed is the shipping object every case below M5 stage D-A3
+    // was written against; the policy overload is what the board runs now.
+    Signal() = default;
+    explicit Signal(depthcharge::LivenessPolicy p) noexcept : wd(p) {}
 
     void tick(double interval_ms, int n) {
         for (int i = 0; i < n; ++i) {
@@ -540,4 +547,169 @@ TEST_CASE("liveness clock: the cached threshold equals the recomputed one at eve
         }
         REQUIRE(clock.threshold_ms() == doctest::Approx(expected));
     }
+}
+
+// =====================================================================
+// M5 STAGE D-A3, DELIVERABLE 2 — THE POLICY REACHES THE CLOCK
+// =====================================================================
+//
+// Stage C derived a per-venue policy and put it in the HARNESS venue table.
+// `firmware/` cannot include `dc_harness/`, so the board never received it and
+// ran the shipping defaults while every document quoted the derived number.
+// These cases are the difference, asserted rather than described.
+
+TEST_CASE("D-A3: the venue's policy reaches the clock, and the derived threshold replaces the clamp") {
+    // The Binance server-ping median, measured at stage B2 over the committed
+    // 221 s calibration capture and the number every derived figure rests on.
+    constexpr double kBinanceMedianMs = 19'963.97;
+
+    // WHAT THE BOARD ACTUALLY RAN UNTIL THIS STAGE, and it is the defect rather
+    // than a baseline: a default-constructed clock takes Anvil's 4.0, so
+    // 4.0 x 19,963.97 = 79,855.88 ms is clamped to the 30,000 ms ceiling — the
+    // identical number `kUncalibratedThresholdMs` already held. The
+    // self-calibration was a constant wearing a calibration's clothes.
+    Signal defaulted;
+    defaulted.tick(kBinanceMedianMs, static_cast<int>(kMinSamples) + 1);
+    CHECK(defaulted.wd.calibrated());
+    CHECK(defaulted.wd.threshold_ms_exact() == doctest::Approx(kThresholdCeilingMs));
+
+    // WHAT IT RUNS NOW: 2.0 x the same median, under a ceiling that clears it.
+    Signal binance{depthcharge::venue_liveness::kBinance};
+    binance.tick(kBinanceMedianMs, static_cast<int>(kMinSamples) + 1);
+    CHECK(binance.wd.calibrated());
+    CHECK(binance.wd.threshold_ms_exact() == doctest::Approx(39'927.94));
+
+    // And the 32-bit mirror the console reads, because that is the number a
+    // soak is read from and it rounds rather than truncates.
+    CHECK(binance.wd.threshold_ms() == 39'928u);
+
+    // The two are not merely different — the clamp was BELOW the derived
+    // threshold, which is what made it a threshold rather than a ceiling.
+    CHECK(defaulted.wd.threshold_ms_exact() < binance.wd.threshold_ms_exact());
+}
+
+TEST_CASE("D-A3: the pre-calibration threshold is the VENUE's ceiling, from the first line of the boot") {
+    // `uncalibrated_ms()` IS the ceiling, so a policy-constructed watchdog must
+    // report 60,000 ms before it has heard anything — not the 30,000 ms global.
+    // This is the first line of every boot and the first 159.7 s of every
+    // connection at a 20 s cadence, so getting it from the global constant would
+    // put a threshold this build does not run on the log D-C reads.
+    Signal binance{depthcharge::venue_liveness::kBinance};
+    CHECK_FALSE(binance.wd.calibrated());
+    CHECK(binance.wd.threshold_ms() == 60'000u);
+
+    Signal shipping;
+    CHECK_FALSE(shipping.wd.calibrated());
+    CHECK(shipping.wd.threshold_ms() == static_cast<std::uint32_t>(kUncalibratedThresholdMs));
+}
+
+TEST_CASE("D-A3: routing a policy moves NOTHING at Anvil and Kraken — checked, because it is no longer structural") {
+    // Stage C could say Anvil and Kraken *"do not move at all, by construction"*
+    // because `firmware/` passed nothing. Deliverable 2 makes it pass something
+    // at EVERY venue, so the construction is gone and "unchanged" becomes a
+    // claim that has to be tested. `venue_liveness.hpp`'s static_asserts hold the
+    // constants equal to the defaults; this holds the BEHAVIOUR equal, which is
+    // the part a reader of a soak log cares about.
+    for (const double cadence_ms : {500.0, 1'000.0, 4'006.0, 19'963.97}) {
+        Signal shipping;
+        Signal anvil{depthcharge::venue_liveness::kAnvil};
+        Signal kraken{depthcharge::venue_liveness::kKraken};
+
+        // Before calibration, during, and after.
+        for (int n = 1; n <= static_cast<int>(kMinSamples) + 3; ++n) {
+            shipping.tick(cadence_ms, 1);
+            anvil.tick(cadence_ms, 1);
+            kraken.tick(cadence_ms, 1);
+
+            CHECK(anvil.wd.threshold_ms_exact() == doctest::Approx(shipping.wd.threshold_ms_exact()));
+            CHECK(kraken.wd.threshold_ms_exact() == doctest::Approx(shipping.wd.threshold_ms_exact()));
+            CHECK(anvil.wd.calibrated() == shipping.wd.calibrated());
+            CHECK(kraken.wd.calibrated() == shipping.wd.calibrated());
+            CHECK(anvil.wd.deadline_ns() == shipping.wd.deadline_ns());
+            CHECK(kraken.wd.deadline_ns() == shipping.wd.deadline_ns());
+        }
+    }
+}
+
+// =====================================================================
+// M5 STAGE D-A3, DELIVERABLE 3 — THE INTERVAL DISTRIBUTION D-C READS
+// =====================================================================
+
+TEST_CASE("D-A3: healthy intervals are counted, and the falsifier's bucket stays empty") {
+    using depthcharge::fw::PingScale;
+    Signal s{depthcharge::venue_liveness::kBinance};
+
+    // A metronome at the measured cadence. The first arrival cannot produce an
+    // interval, so n is one fewer than the arrivals.
+    s.tick(19'964.0, 20);
+    const auto& iv = s.wd.intervals();
+    CHECK(iv.total() == 19);
+    CHECK(iv.count_from(PingScale::kFirstLong) == 0);   // the falsifier has not fired
+    CHECK(iv.worst_us() / 1000u == 19'964u);
+}
+
+TEST_CASE("D-A3: an interval reaching 2x the median lands in the falsifier's bucket") {
+    using depthcharge::fw::PingScale;
+    Signal s{depthcharge::venue_liveness::kBinance};
+
+    s.tick(19'964.0, 10);
+    CHECK(s.wd.intervals().count_from(PingScale::kFirstLong) == 0);
+
+    // One interval at 2x median = 39,928 ms. The bucket edge is 40 s, so this
+    // sits just below it -- deliberately checked, because "reaching 2x median"
+    // and "landing in the >=40s bucket" are the same claim only if the edge is
+    // where the derivation put it.
+    s.tick(39'928.0, 1);
+    CHECK(s.wd.intervals().count_from(PingScale::kFirstLong) == 0);
+
+    // And one clearly past it.
+    s.tick(45'000.0, 1);
+    CHECK(s.wd.intervals().count_from(PingScale::kFirstLong) == 1);
+    CHECK(s.wd.intervals().worst_us() / 1000u == 45'000u);
+}
+
+TEST_CASE("D-A3: an outage-spanning interval is NOT a sample of the venue's cadence") {
+    // THE ONE THAT WOULD HAVE MADE THE INSTRUMENT LIE. `on_socket_change` does
+    // not reset `last_ns_` -- deliberately, so the next arrival measures the
+    // whole hole for `worst_gap_ns_`. Ungated, that same hole would be a ~300 s
+    // interval in the falsifier's bucket on the first reconnect of any run, and
+    // D-C would read a permanently tripped falsifier as a finding.
+    using depthcharge::fw::PingScale;
+    Signal s{depthcharge::venue_liveness::kBinance};
+
+    s.tick(19'964.0, 5);
+    const std::uint32_t healthy = s.wd.intervals().total();
+    CHECK(healthy == 4);
+
+    // The socket dies, five minutes pass, and it comes back.
+    s.wd.on_socket_change(s.now);
+    s.silence(300'000.0);
+    s.tick(19'964.0, 1);   // the first arrival of the new connection
+
+    // The whole-hole measurement still happens, because a test above pins it...
+    CHECK(s.wd.worst_gap_ns() > static_cast<std::uint64_t>(300'000) * 1'000'000);
+    // ...and the distribution did NOT take it.
+    CHECK(s.wd.intervals().total() == healthy);
+    CHECK(s.wd.intervals().count_from(PingScale::kFirstLong) == 0);
+    CHECK(s.wd.intervals().worst_us() / 1000u == 19'964u);
+
+    // The next arrival IS within the new connection and is counted normally.
+    s.tick(19'964.0, 1);
+    CHECK(s.wd.intervals().total() == healthy + 1);
+}
+
+TEST_CASE("D-A3: a firing also breaks the chain, for the same reason a disconnect does") {
+    // `note_fired` clears `armed_` without moving `last_ns_`, so the arrival that
+    // ends a stall measures the stall. That is the right answer for the worst-gap
+    // instrument and the wrong one for a cadence sample.
+    using depthcharge::fw::PingScale;
+    Signal s{depthcharge::venue_liveness::kBinance};
+    s.tick(19'964.0, 5);
+    const std::uint32_t healthy = s.wd.intervals().total();
+
+    s.silence(80'000.0);
+    s.wd.note_fired(s.now);
+    s.tick(19'964.0, 1);
+    CHECK(s.wd.intervals().total() == healthy);          // the stall is not a sample
+    CHECK(s.wd.intervals().count_from(PingScale::kFirstLong) == 0);
 }

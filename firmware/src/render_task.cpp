@@ -847,6 +847,41 @@ void RenderTask::print_rates(const FramePipeStats& p, const FeedTask::Stats& f,
         char ping[128];
         ping_.render(now, ping, sizeof ping);
         ESP_LOGI(kTag, "-- ping   : %s", ping);
+
+        // THE LIVENESS SIGNAL'S OWN INTER-ARRIVAL, and it is a DIFFERENT
+        // QUANTITY from the two lines above it (M5 stage D-A3, deliverable 3).
+        //
+        //   `-- ping`'s worst/run   our client ping out, server pong back
+        //   `-- feed`'s worst_gap   silence between BOOK EVENTS
+        //   this line               silence between LIVENESS SIGNALS
+        //
+        // Three quantities, and until this stage two of them were called
+        // `worst_gap` and the third was never printed at all. Named `-- signal`
+        // rather than a fourth `worst` so a bench reader cannot mistake it for a
+        // round-trip.
+        //
+        // `>=2x med` IS D-C'S FIRST NAMED CHECK, printed as a count rather than
+        // left to arithmetic: stage C derived this venue's multiplier as 2.0 and
+        // its falsifier is *any interval reaching 2 x median on a healthy
+        // socket*. `PingScale::kFirstLong` is the 40 s bucket, so this number is
+        // the falsifier's own count and a non-zero value on a healthy socket
+        // raises k. Healthy intervals only -- see LivenessWatchdog::on_liveness
+        // for why an outage-spanning gap is excluded.
+        const auto& iv = lw.intervals();
+        char sig[160];
+        iv.render(sig, sizeof sig);
+        ESP_LOGI(kTag,
+                 "-- signal : %.*s n=%u max=%u ms >=2x med=%u | median %u ms"
+                 " threshold %u ms %s",
+                 static_cast<int>(venue::kLivenessSignal.size()),
+                 venue::kLivenessSignal.data(),
+                 static_cast<unsigned>(iv.total()),
+                 static_cast<unsigned>(iv.worst_us() / 1000u),
+                 static_cast<unsigned>(iv.count_from(PingScale::kFirstLong)),
+                 static_cast<unsigned>(lw.median_ms()),
+                 static_cast<unsigned>(lw.threshold_ms()),
+                 lw.calibrated() ? "CALIBRATED" : "UNCALIBRATED");
+        ESP_LOGI(kTag, "-- signals: %s", sig);
     }
 
     prev_ = cur;

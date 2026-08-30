@@ -98,6 +98,7 @@
 #include <string_view>
 
 #include <depthcharge/symbol.hpp>
+#include <depthcharge/venue_liveness.hpp>
 
 #if DC_VENUE == DC_VENUE_KRAKEN
 #include <depthcharge/kraken/kraken_adapter.hpp>
@@ -167,8 +168,16 @@ inline constexpr std::uint32_t kValidatedDepth = kraken::kChecksumLevels;
 // else on this wire is event-driven and therefore says nothing about elapsed
 // time. Differenced across a parse rather than instrumented inside the adapter,
 // because `engine/` is shared with the host replay and is not modified from here.
-inline std::uint64_t liveness_count(const Adapter& a) noexcept { return a.stats().heartbeats; }
+// The second parameter is Binance's liveness signal and is unused here: this
+// venue publishes a `heartbeat` APPLICATION frame, so its clock reaches the
+// adapter as a parsed message. One signature across three venues, because the
+// caller must not know which venue it is compiled for.
+inline std::uint64_t liveness_count(const Adapter& a, std::uint32_t) noexcept {
+    return a.stats().heartbeats;
+}
 inline constexpr std::string_view kLivenessSignal = "heartbeat";
+// The shipping default, named rather than defaulted -- see venue_liveness.hpp.
+inline constexpr LivenessPolicy kLivenessPolicy = venue_liveness::kKraken;
 
 // WHETHER THE VENUE'S WIRE CARRIES A SEQ WORTH JOINING ON. ARCHITECTURE §4:
 // "Kraken has no seq — its adapter synthesises one." A synthesised counter looks
@@ -291,39 +300,45 @@ inline constexpr std::uint32_t kValidatedDepth = 0;
 // message, so it never passes through `handle_message` and this function is
 // never called for it.
 //
-// So this returns a CONSTANT, and the consequence is stated rather than left to
-// be discovered on the bench:
+// So this venue's clock cannot come from the adapter, and until M5 stage D-A3 it
+// came from nowhere: this function returned a constant, so
+// `LivenessWatchdog::on_liveness` was never stamped, `armed_` was never set, and
+// `expired()` was permanently false. The panel was grey for other reasons —
+// remedy (a) withholding the Snapshot, and the transport's own silence recycle —
+// none of which routes through the watchdog.
 //
-//   * `venue::liveness_count(adapter_) != liveness_before` is never true, so
-//     `LivenessWatchdog::on_liveness` is never stamped on this build, so
-//     `armed_` is never set and `expired()` is permanently false.
-//   * The panel is therefore NOT greyed by the liveness watchdog here. It is
-//     grey because remedy (a) withholds the Snapshot until a diff brackets the
-//     seed, and — once a socket dies — because the transport's own silence
-//     recycle and `Gap{Disconnect}` grey it, neither of which routes through
-//     the watchdog.
-//   * `age_ms` reads nothing, which is the already-recorded behaviour for the
-//     first ~11 minutes of every connection at this cadence anyway (the age
-//     baseline latches on the 32nd interval = 639 s).
+// **IT IS WIRED NOW, AND THE WIRE IS THE PIPE.** `WsTransport::on_ping` runs on
+// the RX task and increments `FramePipeStats::server_pings`; `feed_task.cpp`
+// differences that counter on every loop iteration, exactly as it differences
+// the other two venues' adapter counters. The count therefore crosses the RX ->
+// feed boundary through `FramePipe`, which is already that boundary and already
+// carries eight other counters across it — so invariant #8's single-writer rule
+// is satisfied by the mechanism that existed rather than by a new one. See
+// `FramePipeStats::server_pings` for why it is separate from `control`.
 //
-// A CONSTANT RATHER THAN A PLAUSIBLE COUNTER, deliberately. `frames_in` or
-// `diff_frames` would compile, would stamp the watchdog, and would be a market
-// event dressed as a clock — the exact dishonesty the other two venues' comment
-// exists to prevent ("the one frame kind on either wire that carries a CLOCK
-// rather than a market event"). A quantity this build cannot measure is
-// reported as absent, not approximated.
+// STILL A CONSTANT WOULD HAVE BEEN A LIE, AND SO WOULD `frames_in`. Either
+// `frames_in` or `diff_frames` would compile, would stamp the watchdog, and
+// would be a market event dressed as a clock — the exact dishonesty the other
+// two venues' comment exists to prevent ("the one frame kind on either wire that
+// carries a CLOCK rather than a market event"). The ping is a clock; a depth
+// frame is not, however reassuring its arrival.
 //
-// **WHAT IS OWED, AND BY WHOM.** Wiring the ping to the watchdog is what stage
-// C's *Owed by stage D* item 5 requires before its reduced parity claim — *"the
-// panel greys within the calibrated liveness threshold of the socket falling
-// silent — 39.9 s"* — can be TESTED rather than asserted, which is D-C's. It is
-// not free and it is not D-A1's: the count lives in `PingProbe` on the RX task
-// while the watchdog is stamped on the feed task, so it crosses a task boundary
-// that invariant #8 governs, and `liveness_count(const Adapter&)`'s signature
-// would have to change for all three venues. Raised here rather than improvised
-// under a stage whose acceptance does not reach it.
-inline std::uint64_t liveness_count(const Adapter&) noexcept { return 0; }
-inline constexpr std::string_view kLivenessSignal = "server-ping (NOT WIRED — see venue_build.hpp)";
+// **WHAT THIS DOES NOT BUY, because the reduced parity claim still stands.** A
+// green clock here proves THE SOCKET IS UP and proves nothing whatever about the
+// subscription: the ping is emitted by the WebSocket layer, BELOW the
+// subscription, so a server-side subscription drop on a live socket answers
+// pings forever. B1 measured exactly that. What the wire buys is the other half
+// — the panel now greys within the calibrated threshold of the SOCKET falling
+// silent, which is what stage C's *Owed by stage D* item 5 asks D-C to test
+// rather than assert.
+inline std::uint64_t liveness_count(const Adapter&, std::uint32_t server_pings) noexcept {
+    return server_pings;
+}
+inline constexpr std::string_view kLivenessSignal = "server-ping";
+// M5 stage C derived this and the board never received it until D-A3: multiple
+// 2.0 and a 60,000 ms ceiling, so the calibrated threshold is 39,927.94 ms
+// rather than the 30,000 ms clamp a default-constructed clock was running.
+inline constexpr LivenessPolicy kLivenessPolicy = venue_liveness::kBinance;
 
 // Binance's diff stream carries `U`/`u` — a per-symbol update-id range that IS
 // meaningful for ordering, and the adapter brackets on it. But it is not a
@@ -414,8 +429,14 @@ inline constexpr std::int32_t kSubscribeDepth = 27;   // spelled in kAnvilPath's
 // words, rather than printing a percentage of nothing (DESIGN strain 24).
 inline constexpr std::uint32_t kValidatedDepth = 0;
 
-inline std::uint64_t liveness_count(const Adapter& a) noexcept { return a.stats().summary_ignored; }
+// The second parameter is Binance's liveness signal and is unused here -- see
+// the Kraken arm. This venue's clock is the `summary` application frame.
+inline std::uint64_t liveness_count(const Adapter& a, std::uint32_t) noexcept {
+    return a.stats().summary_ignored;
+}
 inline constexpr std::string_view kLivenessSignal = "summary";
+// The shipping default, named rather than defaulted -- see venue_liveness.hpp.
+inline constexpr LivenessPolicy kLivenessPolicy = venue_liveness::kAnvil;
 
 // Anvil's wire `seq` is a global engine counter — useless for ordering, which is
 // exactly what makes it a JOIN KEY: the same broadcast carries the same value on

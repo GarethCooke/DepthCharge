@@ -336,6 +336,8 @@ private:
 
     void on_frame(const FeedMessage& msg) noexcept;
     void on_watchdog() noexcept;
+    // The venue's clock, differenced; called from BOTH loop paths.
+    void service_liveness(std::int64_t now_us) noexcept;
     void on_disconnected() noexcept;
 
     // The single door every event leaves by. Book, then publish, then channel —
@@ -376,7 +378,17 @@ private:
     // rather than of `Stats`, because it is state this task acts on rather than
     // a counter it reports — `Stats` is read across a core boundary and nothing
     // over there may steer what the panel does.
-    LivenessWatchdog watchdog_;
+    // The venue liveness counter as of the last check, differenced by
+    // `service_liveness`. A MEMBER rather than a local because the check now
+    // runs on both loop paths -- see feed_task.cpp.
+    std::uint64_t liveness_seen_ = 0;
+
+    // CONSTRUCTED WITH THIS VENUE'S POLICY, not default-constructed (M5 stage
+    // D-A3, deliverable 2). Anvil's and Kraken's policies ARE the shipping
+    // defaults, asserted as such in venue_liveness.hpp, so this line moves
+    // nothing at two of the three venues and moves Binance from a 30,000 ms
+    // clamp to its derived 39,927.94 ms threshold.
+    LivenessWatchdog watchdog_{venue::kLivenessPolicy};
 
 #if DC_VENUE == DC_VENUE_BINANCE
     // THE SEED, AND IT IS THE FEED TASK'S BECAUSE OF INVARIANT #8. Only this
