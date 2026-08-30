@@ -83,10 +83,10 @@ inline constexpr char kBinancePath[] = "/ws/btcusdt@depth@100ms";
 
 // AND IT GOES ON EVERY SOAK LINE, NOT JUST THE BOOT BANNER, for the reason
 // `DC_SOAK_TEST_TAG` states in `liveness_watchdog.hpp` and the run of
-// 2026-08-20 proved: **every capture this project takes is attached WITHOUT
-// resetting the board** (`capture_noreset.py`), because resetting to attach
-// destroys the uptime the log is about. A marker that prints only at boot is
-// invisible to exactly the captures that matter.
+// 2026-08-20 proved: **captures are routinely attached WITHOUT resetting the
+// board** — a bare `pio device monitor` does not reset it — because resetting to
+// attach destroys the uptime the log is about. A marker that prints only at boot
+// is invisible to exactly the captures that matter.
 //
 // It bites harder here than it does there. A muted-liveness capture still looks
 // like a working board; a silent-stream capture looks like a FAULT, and it is

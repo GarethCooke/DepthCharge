@@ -93,11 +93,16 @@ constexpr std::int64_t ns_from_us(std::int64_t us) noexcept { return us * 1000; 
 // banner at boot so no capture taken from such an image can be mistaken for a
 // capture of the shipping one.
 //
-// A BOOT BANNER IS NOT ENOUGH, and the run of 2026-08-20 proved it: every
-// capture this project takes is attached WITHOUT resetting the board — that is
-// the whole point of `capture_noreset.py`, because resetting to attach destroys
-// the uptime the log is about. A marker that only prints at boot is therefore
-// invisible to exactly the captures that matter. `DC_SOAK_TEST_TAG` puts it on
+// A BOOT BANNER IS NOT ENOUGH, and the run of 2026-08-20 proved it: captures are
+// routinely attached WITHOUT resetting the board, because resetting to attach
+// destroys the uptime the log is about. A bare `pio device monitor` — the
+// `DepthCharge: Monitor` task — does not reset it, and `firmware/logs/` holds
+// captures that open mid-uptime rather than at `ESP-ROM:`; only the
+// `-t upload -t monitor` form resets, and then because the UPLOAD does. A marker
+// that only prints at boot is therefore invisible to exactly the captures that
+// matter. (This sentence named a `capture_noreset.py` until 2026-08-30. No such
+// file has ever existed here; the finding was sound and the mechanism cited for
+// it was not. See ARCHITECTURE §9, 2026-08-29 row.) `DC_SOAK_TEST_TAG` puts it on
 // every SOAK line instead, so any ten-second window of the output identifies the
 // image. It is a string LITERAL chosen by the preprocessor, so the shipping
 // binary does not merely skip printing it — it does not contain it.
