@@ -71,6 +71,28 @@ public:
         std::uint64_t deltas_absent = 0;     // removal for a level not held
         std::uint64_t deltas_overflowed = 0; // a side already at kBookCapacity
         std::uint64_t publishes = 0;
+
+        // THE CROSSED-TOUCH GUARD (M5, 2026-09-01). A published frame whose best
+        // bid sits at or above its best ask is an invariant-grade wrong output:
+        // the panel is claiming a book that cannot exist. Counted rather than
+        // asserted, and counted on the PUBLISHED window rather than the internal
+        // ladder, so window selection is inside the check and not beside it.
+        //
+        // WHY THIS DID NOT EXIST UNTIL A SOAK FOUND IT. M5 stage B1's often-quoted
+        // "0 crossed, 0 touched across all seven captures" was asked of the
+        // VENUE's own published books -- the REST bodies and the @depth20
+        // partials -- and not of the book this class maintains
+        // (NOTES-binance.md, deliverable 6). It is a true statement about the
+        // venue and it never covered our arithmetic. Nothing anywhere asserted
+        // this, so every golden in the suite would have graded a crossed book
+        // green.
+        //
+        // Two integer comparisons on the publish path: no float near book data,
+        // no allocation, no new FeedEvent kind. It does not branch rendering on
+        // rendered state (invariant #5) -- it counts, and the renderer never
+        // reads it.
+        std::uint64_t crossed_publishes = 0;
+        PriceTicks    worst_cross_ticks = 0;   // most negative spread published
     };
 
     // `policy` defaults to the firmware's compile-time choice, so the board and
@@ -172,6 +194,14 @@ public:
         }
         std::fill(out.trades + n, out.trades + ring, TradePrint{});
         out.trade_count = static_cast<std::uint8_t>(n);
+
+        // ...and the one thing nobody was checking. See Stats::crossed_publishes.
+        if (out.bid_count != 0 && out.ask_count != 0 &&
+            out.bids[0].px >= out.asks[0].px) {
+            ++stats_.crossed_publishes;
+            const PriceTicks spread = out.asks[0].px - out.bids[0].px;
+            if (spread < stats_.worst_cross_ticks) { stats_.worst_cross_ticks = spread; }
+        }
     }
 
 private:

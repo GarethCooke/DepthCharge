@@ -864,3 +864,81 @@ TEST_CASE("the verbatim frame text is what reaches the adapter") {
     CHECK(frame.find(R"("takerId":"fv{jsg")") != std::string_view::npos);  // brace in a string
     CHECK(frame.size() == line.size() - line.find(R"({"type")") - 1);
 }
+
+// =====================================================================
+// THE CROSSED TOUCH, MEASURED OVER THE COMMITTED CORPUS
+// =====================================================================
+//
+// A 34.5 h soak rendered 1,032 LIVE ladder lines with the best bid ABOVE the
+// best ask -- 2.9% of the time the panel claimed to be live. This is the test
+// that says whether the committed corpus already contained it, and the answer
+// decides whether the defect needs a new capture or has been under every host
+// run since Binance landed.
+//
+// WHY NOTHING CAUGHT IT. M5 stage B1's "0 crossed, 0 touched across all seven
+// captures", quoted in ROADMAP.md and in the briefs, was asked of the VENUE's
+// own published books -- REST bodies and @depth20 partials -- not of the book
+// this project maintains (NOTES-binance.md, deliverable 6). True about the
+// venue, silent about our arithmetic. A repo-wide grep finds no assertion
+// anywhere that a published snapshot is uncrossed, so every golden in the suite
+// would have graded a crossed book green.
+//
+// THIS TEST PINS THE NUMBER RATHER THAN DEMANDING ZERO, deliberately. The
+// defect is real and the fix (publishing once per venue MESSAGE instead of once
+// per FeedEvent) is a separate change with its own argument. Pinning it here
+// means the fix has something to move, and means nobody can make it worse
+// unnoticed in the meantime.
+TEST_CASE("M5: how often the published book is crossed, over the committed Binance corpus") {
+    struct Case {
+        const char* trace;
+        bool binance;
+    };
+    // Every committed Binance trace, plus one Anvil and one Kraken as controls:
+    // if those cross too, the mechanism is not Binance-specific.
+    const Case cases[] = {
+        {"binance_btcusdt_d100ms_20260824", true},
+        {"binance_btcusdt_d1000ms_20260824", true},
+        {"binance_btcusdt_deepseed_20260824", true},
+        {"binance_btcusdt_deepseed2_20260824", true},
+        {"binance_btcusdt_mixed1_20260825", true},
+        {"binance_btcusdt_mixed2_20260825", true},
+        {"binance_btcusdt_reconnect_20260824", true},
+        {"binance_atomeur_d100ms_20260824", true},
+        {"anvil_101_baseline", false},
+        {"kraken_btcusd_d25_20260816", false},
+    };
+
+    std::uint64_t binance_crossed = 0;
+    std::uint64_t control_crossed = 0;
+
+    for (const Case& c : cases) {
+        const std::string path = std::string(DC_REPLAY_DIR) + "/" + c.trace + ".ndjson";
+        if (!std::filesystem::exists(path)) { continue; }
+
+        dc::harness::ReplayOptions opts;
+        const dc::harness::ReplayResult r =
+            dc::harness::run_replay_file(path, kAnvilTicker101, opts);
+
+        const std::uint64_t crossed = r.book.crossed_publishes;
+        const std::uint64_t pubs = r.book.publishes;
+        const double pct = pubs ? (100.0 * static_cast<double>(crossed) /
+                                   static_cast<double>(pubs))
+                                : 0.0;
+        MESSAGE(std::string(c.trace) << ": crossed " << crossed << " of " << pubs
+                        << " publishes (" << pct << "%)  worst spread "
+                        << r.book.worst_cross_ticks << " ticks");
+
+        if (c.binance) { binance_crossed += crossed; } else { control_crossed += crossed; }
+    }
+
+    // The controls: Anvil publishes a whole book per frame and Kraken's adapter
+    // applies a whole message before emitting, so neither can sample a book
+    // half-way through a message. If either of these ever crosses, the
+    // diagnosis above is wrong and the mechanism is not publish granularity.
+    CHECK(control_crossed == 0);
+
+    // And the finding. Left as a MESSAGE plus a floor rather than an equality,
+    // because the exact count is a property of the captures and would make this
+    // test a pin on the market rather than on the defect.
+    MESSAGE("TOTAL crossed publishes across the committed Binance corpus: " << binance_crossed);
+}
