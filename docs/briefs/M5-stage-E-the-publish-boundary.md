@@ -227,20 +227,21 @@ count and close E on its own acceptance in §6.
 
 ## Definition of done
 
-☐ §2's per-slice frames/events/publishes table recorded in the session log — done 2026-09-03
-☐ Driver commit laddered green in its own fresh detached worktree
+☑ §2's per-slice frames/events/publishes table recorded in the session log — done 2026-09-03
+☑ Driver commit laddered green in its own fresh detached worktree — `d2618d8`, 2026-09-04
 ☐ Firmware commit laddered green; `pio run` clean
-☐ `crossed_publishes` 0 and `worst_cross_ticks` 0 on all eight Binance slices
-☐ The census is a `CHECK`, not a `MESSAGE`
-☐ Anvil unmoved at 6,404 publishes; Kraken recorded at 9,837 → 4,899
-☐ The two Kraken window goldens re-derived, each expected value written down
+☑ `crossed_publishes` 0 and `worst_cross_ticks` 0 on all eight Binance slices — on all
+  eleven, and on the Anvil and Kraken slices too
+☑ The census is a `CHECK`, not a `MESSAGE` — per slice as well as in total
+☑ Anvil unmoved at 6,404 publishes; Kraken recorded at 9,837 → 4,899
+☑ The two Kraken window goldens re-derived, each expected value written down
   before the run that produced it (§7)
-☐ The stale rationale corrected: `test_replay_goldens.cpp:934–937` no longer
+☑ The stale rationale corrected: `test_replay_goldens.cpp:934–937` no longer
   claims Kraken applies a whole message before emitting
 ☐ All five known unknowns answered in the log, including the ones whose answer
   was "unchanged"
 ☐ Soak re-run >24 h continuous; reset count recorded whatever it is
-☐ ARCHITECTURE §9 gets the decision: the publish boundary is the message, not
+☑ ARCHITECTURE §9 gets the decision: the publish boundary is the message, not
   the event, and why
 ☐ ROADMAP status updated
 
@@ -338,3 +339,87 @@ boundary in `harness/src/replay_driver.cpp`, re-derive the two Kraken window
 goldens with each expected value written down before the run (§7), correct the
 stale rationale at `test_replay_goldens.cpp:934–937`, and turn the census into a
 `CHECK`.
+
+### 2026-09-04 · Claude Opus 5 · §5 step 1 — the driver alone
+
+**Done.** `harness/src/replay_driver.cpp` publishes once per message
+(`d2618d8`), host suite green 52/52, and the commit laddered green in a fresh
+detached worktree at `C:/tmp/dc-E1-ladder` with `CMAKE_HOME_DIRECTORY` read back
+from the cache as the worktree and not the main tree. Worktree deleted. **No
+`pio run` for this commit and none is owed:** it touches `harness/src`,
+`harness/include` and `harness/tests` only — no `firmware/src/*.cpp`, no
+`platformio.ini` — so the mechanical test in `CLAUDE.md` says the host suite is
+entitled to claim all of it.
+
+**The numbers.** `crossed_publishes` and `worst_cross_ticks` are **0 on all 22
+committed slices at all three venues**; every slice's publish count landed on
+the figure §2 predicted, to the unit. Anvil unmoved at 6,404. Kraken 9,837 →
+4,899. Binance 123,814 → 2,984.
+
+**Decisions.**
+
+- **The census is a `CHECK` per slice, not only in total**, and it now names all
+  eleven Binance traces rather than the eight it carried while it was a print —
+  §6 asks for zero on *every* Binance slice and a list naming most of them
+  cannot say that. `worst_cross_ticks == 0` is asserted beside
+  `crossed_publishes == 0` because they answer different questions: one counts
+  occurrences, the other measures the worst one, and a counter that failed to
+  increment should not look like a book that never crossed. `CHECK(slices ==
+  std::size(cases))` was added because the loop skips a missing file, and a
+  corpus that lost one would otherwise pass on what remained.
+- **The two Kraken goldens were predicted with a second replayer, not with
+  paper.** §7 allows the uniform ones to be arithmetic and demands a stated
+  expectation for the rest. The uniform ones were done on paper and were right
+  (50/4/20 a publish at d25, 54 at d100). For the rest a standalone replayer was
+  built from `TraceReader` + decoder + `Book` + `note_window`'s arithmetic,
+  **validated by reproducing all ten committed figures in its per-event mode**,
+  and only then read for its per-message column. That is what let
+  `levels_dropped` be predicted exactly rather than bounded, and it caught a
+  third non-uniform figure §7 had not listed: `rows_validated` under
+  `LargestFirst`, which paper arithmetic put at ≈15,876 and the replayer at
+  15,797. The 0.5% between those two is the finding restated — a settled book is
+  not a mid-message book.
+- **`levels_dropped` at d100 fell to exactly 146 × 2,472.** The old 760,185 was
+  109 more than 146 × 5,206; all 109 were levels the book held only part-way
+  through a message. This is the crossed touch measured by a different
+  instrument, and it is the strongest evidence in the stage that the mechanism
+  is publish granularity rather than anything Binance-specific.
+- **`worst_tick_span` fell twice and held twice** (d25 308 → 308, d100 Top 319 →
+  319, LargestFirst 1128 → 1116, ThinnedTail 1060 → 1050). Never rose, which
+  §7 names as the falsifier.
+- **`ReplayStep` is now documented as one publish rather than one event.** The
+  header already said "called after every publish" and "handed to the observer
+  with every published snapshot" — the contract was publish-shaped all along and
+  the code has stopped disagreeing with it. `step.kind` is the message's last
+  event; nothing reads `event_index`. The only behavioural consequence is
+  `dc_ladder --follow`, which now paces one rendered frame per message, which is
+  what a panel does.
+- **The age meter is not collateral (§4).** `stamp_age` calls
+  `read_and_bank(current_rx_ns_)`, and within one message that argument does not
+  move while `bank` is a max — so dropping the duplicate calls is provably
+  identical, not merely green. `publish_current`'s "the once-per-publish caller"
+  reads better against one publish per message than against one per level.
+
+**Known unknown 2, answered by measurement.** The whole `DisplaySnapshot` was
+FNV-hashed against a build of the pre-change driver: `first_stale_snapshot` is
+**byte-identical on `anvil_101_reconnect` and `kraken_minagbp_d25_resync`,
+version stamp included**; on `binance_btcusdt_reconnect` every byte matches
+except `version` (16094 → 430), which must differ because the publish count did.
+So no first-stale object moved in content anywhere.
+
+**One thing found and deliberately not fixed.** The driver's terminal
+`published_version() == 0` publish calls `book_.publish` and the stamps but not
+`note_window()`, so a zero-event trace reports `book.publishes == 1` with an
+empty window report — `check_row_arithmetic` would fail on
+`kraken_minagbp_d25_20260817` if it were ever applied to it. Pre-existing, not
+touched by this change, and out of a stage whose whole point is that its diff
+moves nothing it did not have to.
+
+**Not done, and next.** §5 step 2 — `firmware/src/feed_task.cpp` mirroring this
+at its three sites, then `pio run`, then flash. `docs/DESIGN.html` is
+deliberately **not** updated yet: its two sequence diagrams already draw
+`publish` after the adapter call returns, so they are accurate for the first time
+rather than wrong, but the firmware half still publishes per event and a doc
+updated now would describe a world that is half true. Update it when step 2
+lands. Known unknowns 3 and 5 need the bench. ROADMAP untouched until the
+milestone moves.
