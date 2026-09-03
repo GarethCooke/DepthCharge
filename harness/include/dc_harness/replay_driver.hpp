@@ -173,11 +173,18 @@ struct StaleEpisode {
 };
 
 // Context handed to the observer with every published snapshot.
+//
+// ONE STEP IS ONE PUBLISH, AND SINCE M5 STAGE E ONE PUBLISH IS ONE MESSAGE.
+// The driver used to publish after every FeedEvent, so a step and an event were
+// the same thing and nothing here had to say which it was. They are no longer
+// the same: a Binance `depthUpdate` can carry hundreds of Deltas and produces
+// exactly one step, because publishing part-way through a message is how the
+// panel came to draw books whose bid was above their ask.
 struct ReplayStep {
     std::size_t frame_index = 0;   // 0 for a synthesised Gap (no frame arrived)
-    std::size_t event_index = 0;   // 1-based count of FeedEvents emitted
+    std::size_t event_index = 0;   // 1-based count of FeedEvents emitted SO FAR
     std::int64_t rx_ns = 0;        // frame arrival, or watchdog expiry for a Gap
-    depthcharge::FeedEvent::Kind kind{};
+    depthcharge::FeedEvent::Kind kind{};  // the LAST event of this message
 };
 
 struct ReplayResult {

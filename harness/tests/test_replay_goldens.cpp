@@ -883,18 +883,20 @@ TEST_CASE("the verbatim frame text is what reaches the adapter") {
 // anywhere that a published snapshot is uncrossed, so every golden in the suite
 // would have graded a crossed book green.
 //
-// THIS TEST PINS THE NUMBER RATHER THAN DEMANDING ZERO, deliberately. The
-// defect is real and the fix (publishing once per venue MESSAGE instead of once
-// per FeedEvent) is a separate change with its own argument. Pinning it here
-// means the fix has something to move, and means nobody can make it worse
-// unnoticed in the meantime.
-TEST_CASE("M5: how often the published book is crossed, over the committed Binance corpus") {
+// IT PINNED THE NUMBER UNTIL M5 STAGE E, AND NOW IT DEMANDS ZERO. `eff1ee9`
+// landed the count while the fix was still a separate change with its own
+// argument; the fix is that change, and 11,062 is now 0 on every committed
+// slice at all three venues. Left as a MESSAGE after the fix landed, this would
+// be an instrument that reports nothing.
+TEST_CASE("M5: the published book is never crossed, over the whole committed corpus") {
     struct Case {
         const char* trace;
         bool binance;
     };
-    // Every committed Binance trace, plus one Anvil and one Kraken as controls:
-    // if those cross too, the mechanism is not Binance-specific.
+    // EVERY committed Binance trace — all eleven, not the eight this list held
+    // while the census was a print. Stage E's acceptance is "zero on every
+    // Binance slice", and a list that names most of them cannot say that.
+    // Anvil and Kraken follow as controls.
     const Case cases[] = {
         {"binance_btcusdt_d100ms_20260824", true},
         {"binance_btcusdt_d1000ms_20260824", true},
@@ -903,42 +905,65 @@ TEST_CASE("M5: how often the published book is crossed, over the committed Binan
         {"binance_btcusdt_mixed1_20260825", true},
         {"binance_btcusdt_mixed2_20260825", true},
         {"binance_btcusdt_reconnect_20260824", true},
+        {"binance_btcusdt_DEFECT_silent_stream_20260826", true},
         {"binance_atomeur_d100ms_20260824", true},
+        {"binance_atomeur_d100ms_liveness_20260826", true},
+        {"binance_atomeur_deepseed_20260824", true},
         {"anvil_101_baseline", false},
+        {"anvil_101_reconnect", false},
         {"kraken_btcusd_d25_20260816", false},
+        {"kraken_btcusd_d100_20260816", false},
+        {"kraken_minagbp_d25_resync_20260818", false},
     };
 
     std::uint64_t binance_crossed = 0;
     std::uint64_t control_crossed = 0;
+    std::uint64_t total_publishes = 0;
+    std::size_t slices = 0;
 
     for (const Case& c : cases) {
         const std::string path = std::string(DC_REPLAY_DIR) + "/" + c.trace + ".ndjson";
         if (!std::filesystem::exists(path)) { continue; }
+        ++slices;
+        CAPTURE(c.trace);
 
         dc::harness::ReplayOptions opts;
         const dc::harness::ReplayResult r =
             dc::harness::run_replay_file(path, kAnvilTicker101, opts);
 
-        const std::uint64_t crossed = r.book.crossed_publishes;
-        const std::uint64_t pubs = r.book.publishes;
-        const double pct = pubs ? (100.0 * static_cast<double>(crossed) /
-                                   static_cast<double>(pubs))
-                                : 0.0;
-        MESSAGE(std::string(c.trace) << ": crossed " << crossed << " of " << pubs
-                        << " publishes (" << pct << "%)  worst spread "
-                        << r.book.worst_cross_ticks << " ticks");
+        // PER SLICE, not only in the totals. A sum that has to be zero says
+        // nothing about WHICH capture broke it, and this list is long enough
+        // that the difference is an afternoon.
+        CHECK(r.book.crossed_publishes == 0);
+        // The spread is a second question, not a restatement: `crossed_publishes`
+        // counts occurrences and this is the depth of the worst one, so a
+        // regression that crossed once by $40 and a counter that failed to
+        // increment do not look alike.
+        CHECK(r.book.worst_cross_ticks == 0);
 
-        if (c.binance) { binance_crossed += crossed; } else { control_crossed += crossed; }
+        total_publishes += r.book.publishes;
+        if (c.binance) { binance_crossed += r.book.crossed_publishes; }
+        else { control_crossed += r.book.crossed_publishes; }
     }
 
-    // The controls: Anvil publishes a whole book per frame and Kraken's adapter
-    // applies a whole message before emitting, so neither can sample a book
-    // half-way through a message. If either of these ever crosses, the
-    // diagnosis above is wrong and the mechanism is not publish granularity.
-    CHECK(control_crossed == 0);
+    // The list is named rather than globbed, so a corpus that lost a file would
+    // pass on the ones that remain. This is what notices.
+    CHECK(slices == std::size(cases));
 
-    // And the finding. Left as a MESSAGE plus a floor rather than an equality,
-    // because the exact count is a property of the captures and would make this
-    // test a pin on the market rather than on the defect.
-    MESSAGE("TOTAL crossed publishes across the committed Binance corpus: " << binance_crossed);
+    // ANVIL IS THE STRUCTURAL CONTROL AND KRAKEN IS NOT, which is the correction
+    // stage E's §2 measured. Anvil emits one whole-book Snapshot per frame and
+    // could never sample a book half-way through a message. Kraken emits one
+    // Delta per LEVEL exactly as Binance does (`kraken_adapter.hpp`,
+    // `emit_delta`) — it had the same exposure all along, and its zero before
+    // this fix was a property of six captures that never straddled the touch,
+    // not of the adapter. `eff1ee9`'s commit message and this file both said
+    // otherwise; the commit message is pushed and stands, so the correction
+    // lives here and in ARCHITECTURE §9.
+    CHECK(control_crossed == 0);
+    CHECK(binance_crossed == 0);
+
+    // The corpus this ran over, so a future reader can tell a green run from a
+    // green run over three files.
+    MESSAGE("uncrossed across " << slices << " committed slices, "
+                                << total_publishes << " publishes");
 }

@@ -478,15 +478,32 @@ TEST_CASE("the shipped Kraken depth makes the policy choice a no-op, and the pin
 }
 
 TEST_CASE("row counts pinned per policy on the committed traces") {
-    // Goldens ADD ROWS; none of the existing ones move, and none did -- the
-    // default policy is `TopOfBook`, which is exactly what `publish` did before
-    // this stage, so every figure pinned since M1 is untouched.
+    // At M4 stage C these goldens only ADDED rows: the default policy is
+    // `TopOfBook`, which is exactly what `publish` did before that stage, so
+    // every figure pinned since M1 was untouched by it. That is no longer true
+    // of the two Kraken subcases, and the next paragraph says why.
+
+    // KRAKEN'S TWO SUBCASES WERE RE-DERIVED AT M5 STAGE E, and the reason is
+    // the publish count rather than the window: the publish moved from once per
+    // FeedEvent to once per venue MESSAGE, and every total here is summed over
+    // publishes. 2,994 -> 1,537 on the d25 slice and 5,206 -> 2,472 on d100.
+    //
+    // EACH NEW VALUE WAS WRITTEN DOWN BEFORE THE RUN THAT PRINTED IT (stage E
+    // §7), from an independently built replayer that reproduced every figure
+    // below in its per-event mode first. The uniform ones are arithmetic — 50
+    // filled + 4 unknown + 20 validated a publish here, 54 filled a publish at
+    // d100 — and the two that are not are called out where they sit.
     SUBCASE("Kraken BTC/USD depth 25 — 25 levels into 27 rows") {
         const auto r = replay_with("kraken_btcusd_d25_20260816", Policy::TopOfBook);
-        CHECK(r.window.rows_filled == 149694);
-        CHECK(r.window.rows_unknown == 11982);      // the two spare rows a side
+        CHECK(r.window.rows_filled == 76850);       // 50 a publish x 1537
+        CHECK(r.window.rows_unknown == 6148);       // the two spare rows a side
         CHECK(r.window.levels_dropped == 0);
-        CHECK(r.window.rows_validated == 59880);    // 20 a publish: 10 a side
+        CHECK(r.window.rows_validated == 30740);    // 20 a publish: 10 a side
+        // UNCHANGED, and that is the interesting half: the widest span this
+        // window ever showed was a settled book, not a mid-message transient, so
+        // sampling fewer instants did not lose it. A max over publishes can only
+        // fall or hold when the publishes become a subset — a rise here would
+        // mean the change had invented a book state.
         CHECK(r.window.worst_tick_span == 308);
         CHECK(r.window.final_bid.rows_filled == 25);
         CHECK(r.window.final_bid.levels_offered == 25);
@@ -504,18 +521,34 @@ TEST_CASE("row counts pinned per policy on the committed traces") {
             std::uint64_t validated;
             depthcharge::PriceTicks worst_span;
         };
+        // `validated` under LargestFirst is the ONE figure here that is not
+        // arithmetic: how many of the 27 largest levels fall inside the venue's
+        // checksummed top 10 is a property of each book, not a constant a
+        // publish. It was predicted at 15,797 by the independent replayer before
+        // this file was touched; paper arithmetic on the old per-publish mean
+        // (6.4222 x 2,472) says 15,876, and the 0.5% between them is itself the
+        // finding — a settled book is not a mid-message book, which is the whole
+        // subject of this stage.
         const Expect expected[] = {
-            {Policy::TopOfBook,    104120,  319},
-            {Policy::LargestFirst,  33433, 1128},
-            {Policy::ThinnedTail,  104120, 1060},
+            {Policy::TopOfBook,     49440,  319},
+            {Policy::LargestFirst,  15797, 1116},
+            {Policy::ThinnedTail,   49440, 1050},
         };
         for (const Expect& e : expected) {
             CAPTURE(std::string(policy_name(e.policy)));
             const auto r = replay_with("kraken_btcusd_d100_20260816", e.policy);
-            CHECK(r.window.rows_filled == 281124);     // every row filled, always
+            CHECK(r.window.rows_filled == 133488);     // every row filled, always
             CHECK(r.window.rows_unknown == 0);
-            CHECK(r.window.levels_dropped == 760185);
-            CHECK(r.window.frames_with_drops == 5206);
+            // 146 A PUBLISH EXACTLY — (100 - 27) a side, and the exactness is a
+            // measurement rather than a tidy number. The old total was 760,185,
+            // which is 109 MORE than 146 x 5,206: those 109 were levels the book
+            // held only part-way through a message, before the removal in the
+            // same message took them away. At the message boundary Kraken's book
+            // is 100 a side every single time, so the excess is gone and the
+            // total is exactly 146 x 2,472. The crossed touch and this number are
+            // the same defect seen through two instruments.
+            CHECK(r.window.levels_dropped == 360912);
+            CHECK(r.window.frames_with_drops == 2472);
             CHECK(r.window.rows_validated == e.validated);
             CHECK(r.window.worst_tick_span == e.worst_span);
             check_row_arithmetic(r);

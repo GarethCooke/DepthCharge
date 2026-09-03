@@ -132,6 +132,9 @@ public:
             current_frame_ = frame.index;
             current_rx_ns_ = frame.rx_ns;
             decoder_.decode(frame, [this](const FeedEvent& ev) { on_event(ev); });
+            // THE MESSAGE BOUNDARY, AND IT NEEDED NO NEW SEAM (M5 stage E): it
+            // is the return of the decode call, and it always was.
+            publish_message();
         }
 
         // The trace ended. If the caller told us how long the stream stayed
@@ -228,6 +231,10 @@ private:
         decoder_.on_transport_gap(GapReason::Disconnect,
                                   [this](const FeedEvent& ev) { on_event(ev); });
         synthesising_watchdog_gap_ = false;
+        // A synthesised gap is a message too — one the transport wrote rather
+        // than the venue — so it publishes at its own boundary and BEFORE the
+        // age reset below, which the next paragraph depends on.
+        publish_message();
 
         // THE BACKLOG DIED WITH THE SOCKET (M4 stage A2). A reconnect is given a
         // fresh server-side send queue and a fresh snapshot, so an estimate
@@ -313,6 +320,68 @@ private:
         }
     }
 
+    // ONE PUBLISH PER MESSAGE (M5 stage E), and the whole of the change on this
+    // side of the boundary.
+    //
+    // WHY THE PANEL WAS DRAWING A BOOK THAT CANNOT EXIST. One `depthUpdate`
+    // becomes N single-side `Delta` events, and a publish after each of them
+    // samples the book between the bid levels that lift the touch and the ask
+    // removals in the same message that pay for them. 11,062 crossed publishes
+    // across the committed Binance corpus, and 1,032 crossed LIVE ladder lines
+    // in the 34.5 h soak. The message is the smallest unit at which the venue
+    // has told us something whole, so it is the unit the panel is entitled to
+    // see.
+    //
+    // AND IT IS NOT A BINANCE FACT. Kraken emits one `Delta` per level too
+    // (`kraken_adapter.hpp`, `emit_delta`), so it had the same exposure all
+    // along and the committed captures simply never straddled the touch —
+    // measured, stage E §2. Anvil is the only venue where this is a no-op,
+    // because one frame there yields one whole-book Snapshot.
+    //
+    // CONDITIONAL ON THE MESSAGE HAVING SAID ANYTHING. A frame that emits no
+    // event — Anvil's summary, a heartbeat, an ack — publishes nothing, exactly
+    // as before. Publishing unconditionally per decode call would take Anvil
+    // from 1,225 publishes to 1,406 and move every Anvil golden, for a frame
+    // whose content the book never saw.
+    void publish_message() {
+        if (!pending_publish_) { return; }
+        pending_publish_ = false;
+
+        book_.publish(latest_);
+        note_window();
+        stamp_age(latest_);
+        stamp_reseed(latest_);
+        channel_.publish(latest_);
+
+        // §3: the frame the panel would actually have shown at the moment it
+        // went grey is this one — the publish that follows the message
+        // containing the Gap — not the book as it stood part-way through it.
+        if (first_stale_pending_) {
+            first_stale_ = latest_;
+            saw_stale_ = true;
+            first_stale_pending_ = false;
+        }
+
+        if (observer_) {
+            ReplayStep step;
+            step.frame_index = current_frame_;
+            step.event_index = events_;
+            step.rx_ns = current_rx_ns_;
+            // The last event of the message, because that is the one this frame
+            // shows. A step was a FeedEvent before this stage and is a PUBLISH
+            // now, which is the honest reading of a callback that is handed a
+            // rendered snapshot: it fires when there is a new frame to render.
+            step.kind = last_kind_;
+
+            // The render side takes the published frame the way the M3 render
+            // task will — through the channel, by copy — so the seam is
+            // exercised by every replay, not just documented.
+            DisplaySnapshot rendered{};
+            if (!channel_.consume(rendered)) { rendered = latest_; }
+            if (!observer_(step, rendered)) { stopped_ = true; }
+        }
+    }
+
     void on_event(const FeedEvent& ev) {
         ++events_;
 
@@ -372,30 +441,19 @@ private:
             ep.stale_ms = static_cast<double>(ep.cleared_rx_ns - ep.watchdog_rx_ns) / 1e6;
         }
 
-        book_.publish(latest_);
-        note_window();
-        stamp_age(latest_);
-        stamp_reseed(latest_);
-        channel_.publish(latest_);
+        // THE PUBLISH USED TO BE HERE, AND THAT WAS THE DEFECT (M5 stage E).
+        // What is left is the message's own bookkeeping; the frame the panel
+        // sees is built once, after the last event of the message, by
+        // `publish_message` above.
+        pending_publish_ = true;
+        last_kind_ = ev.kind;
 
+        // The first-stale capture becomes a REQUEST here and is served at the
+        // boundary — §3 of the stage brief, and the one place this change is not
+        // a refactor. Capturing `latest_` on this line would record the previous
+        // message's book, because this message has not published yet.
         if (is_stale && !saw_stale_ && ev.kind == FeedEvent::Kind::Gap) {
-            first_stale_ = latest_;
-            saw_stale_ = true;
-        }
-
-        if (observer_) {
-            ReplayStep step;
-            step.frame_index = current_frame_;
-            step.event_index = events_;
-            step.rx_ns = current_rx_ns_;
-            step.kind = ev.kind;
-
-            // The render side takes the published frame the way the M3 render
-            // task will — through the channel, by copy — so the seam is
-            // exercised by every replay, not just documented.
-            DisplaySnapshot rendered{};
-            if (!channel_.consume(rendered)) { rendered = latest_; }
-            if (!observer_(step, rendered)) { stopped_ = true; }
+            first_stale_pending_ = true;
         }
     }
 
@@ -419,6 +477,11 @@ private:
     // True only while raise_watchdog_gap is driving the adapter, so on_event can
     // tell a gap this harness synthesised from one the adapter decided on.
     bool synthesising_watchdog_gap_ = false;
+    // Set by any event, cleared by the publish at the end of its message. This
+    // is what makes the publish conditional rather than per decode call.
+    bool pending_publish_ = false;
+    bool first_stale_pending_ = false;
+    FeedEvent::Kind last_kind_{};
     std::size_t frames_ = 0;
     std::size_t events_ = 0;
     std::size_t liveness_arrivals_ = 0;
