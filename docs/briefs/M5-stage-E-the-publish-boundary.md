@@ -260,3 +260,81 @@ count and close E on its own acceptance in §6.
 ## Session log
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
+
+### 2026-09-03 · Claude Opus 5 · §2, the measurement, before any edit
+
+**Done.** Frames, events and publishes for all 22 committed slices, plus the
+publish count one-per-message would produce. Nothing in the tree was touched:
+the numbers come from a scratchpad tool linked against the host libs, driving
+`run_replay` with an observer. `publishes(after)` counts decode calls that
+emitted at least one event — the conditional form §1 now states.
+
+| venue | slice | frames | events | publishes now | after | max ev/msg | msgs >1 ev | crossed |
+|---|---|---|---|---|---|---|---|---|
+| anvil | `anvil_101_baseline` | 1406 | 1225 | 1225 | **1225** | 1 | 0 | 0 |
+| anvil | `anvil_101_baseline_20260809` | 1513 | 1332 | 1332 | **1332** | 1 | 0 | 0 |
+| anvil | `anvil_101_depth27_20260816` | 1399 | 1218 | 1218 | **1218** | 1 | 0 | 0 |
+| anvil | `anvil_101_feederoff_20260817` | 1753 | 1512 | 1512 | **1512** | 1 | 0 | 0 |
+| anvil | `anvil_101_reconnect` | 1288 | 1117 | 1117 | **1117** | 1 | 0 | 0 |
+| kraken | `kraken_btcusd_d10_20260816` | 902 | 1532 | 1532 | **839** | 6 | 488 | 0 |
+| kraken | `kraken_btcusd_d25_20260816` | 1599 | 2994 | 2994 | **1537** | 6 | 1058 | 0 |
+| kraken | `kraken_btcusd_d100_20260816` | 2535 | 5206 | 5206 | **2472** | 6 | 1920 | 0 |
+| kraken | `kraken_minagbp_d25_20260816` | 93 | 77 | 77 | **30** | 4 | 28 | 0 |
+| kraken | `kraken_minagbp_d25_20260817` | 144 | 0 | 1 | **1** | — | 0 | 0 |
+| kraken | `kraken_minagbp_d25_resync_20260818` | 99 | 27 | 27 | **20** | 3 | 6 | 0 |
+| binance | `binance_btcusdt_d100ms_20260824` | 305 | 1435 | 1435 | **138** | 44 | 124 | 0 |
+| binance | `binance_btcusdt_d1000ms_20260824` | 131 | 9468 | 9468 | **60** | 743 | 60 | 537 |
+| binance | `binance_btcusdt_deepseed_20260824` | 503 | 11497 | 11497 | **233** | 822 | 232 | 2493 |
+| binance | `binance_btcusdt_deepseed2_20260824` | 502 | 7838 | 7838 | **231** | 689 | 223 | 774 |
+| binance | `binance_btcusdt_mixed1_20260825` | 997 | 46764 | 46764 | **855** | 932 | 830 | 5320 |
+| binance | `binance_btcusdt_mixed2_20260825` | 999 | 28355 | 28355 | **826** | 813 | 783 | 323 |
+| binance | `binance_btcusdt_reconnect_20260824` | 556 | 18287 | 18287 | **519** | 560 | 511 | 1615 |
+| binance | `binance_atomeur_d100ms_20260824` | 69 | 37 | 37 | **30** | 3 | 6 | 0 |
+| binance | `binance_atomeur_d100ms_liveness_20260826` | 95 | 116 | 116 | **83** | 4 | 27 | 0 |
+| binance | `binance_atomeur_deepseed_20260824` | 23 | 16 | 16 | **8** | 4 | 5 | 0 |
+| binance | `binance_btcusdt_DEFECT_silent_stream_20260826` | 4 | 0 | 1 | **1** | — | 0 | 0 |
+
+The two zero-event slices publish once each — the driver's terminal
+`published_version() == 0` publish, which the change leaves alone.
+
+**Two cross-checks that the tool is measuring the real thing**, both against
+numbers already committed: the crossed total over the census-8 is 11,062, which
+is `eff1ee9`'s figure to the unit; and the publish counts 5,206
+(`kraken_btcusd_d100`) and 1,225 (`anvil_101_baseline`) are exactly the
+`frames_with_drops` pins standing in `test_window.cpp:518` and `:545`. A
+measurement that agreed with neither would have been the first thing to doubt.
+
+**Decisions.**
+
+- **The publish must be conditional on the message having emitted ≥1 event**,
+  and that is now §1's last paragraph rather than a session-local note. Anvil's
+  summary frames emit nothing; an unconditional publish-per-decode would take
+  its 1,225 to 1,406 and move every Anvil golden, which would have turned a
+  refactor into a re-baseline for no gain. It is the one implicit choice in §1's
+  table that changes the answer.
+- **The hypothesis was recorded as refuted for Kraken rather than repaired.**
+  `emit_delta` (`kraken_adapter.hpp:506–514`) emits one `Delta` per level, so
+  Kraken has Binance's granularity exactly; 1,920 of 2,472 messages on the d100
+  slice carry more than one event. Its `crossed_publishes == 0` is a property of
+  these six captures, not of the adapter. The brief's §2, §6 and §7 were
+  rewritten around that rather than the measurement being narrowed to the venue
+  the defect was found at.
+- **Gaps do not share a message with anything on this corpus** (measured:
+  `gap_not_last = 0` on all 22 slices; the three traces containing a Gap —
+  `anvil_101_reconnect`, `binance_btcusdt_reconnect_20260824`,
+  `kraken_minagbp_d25_resync_20260818` — each have it as the last event of its
+  message). So §3's flag-then-capture cannot currently observe a message that
+  greys and heals within itself, and no guard for that case is being written
+  blind. Worth re-measuring if a future capture contains one.
+
+**Known unknowns answered:** 1 (Anvil no, Kraken yes — 2.01×) and 4 (the silent
+stream slice is 4 frames, 0 events, 1 terminal publish; unchanged. Same for
+`kraken_minagbp_d25_20260817`). 2 is reasoned but not run. 3 and 5 are bench and
+firmware questions and stay open; 5 is now a near-certainty, since Binance's
+publish rate falls ~42×.
+
+**Next step.** §5 step 1 — the driver alone: move the publish to the message
+boundary in `harness/src/replay_driver.cpp`, re-derive the two Kraken window
+goldens with each expected value written down before the run (§7), correct the
+stale rationale at `test_replay_goldens.cpp:934–937`, and turn the census into a
+`CHECK`.
