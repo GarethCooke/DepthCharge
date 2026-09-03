@@ -49,33 +49,45 @@ and report — the seam you needed was already there and you have missed it.**
 `FeedTask::republish_if_due` (`feed_task.cpp:538`) is untouched and is the floor:
 a book that produces no publish still gets one every `kRepublishPeriodUs`.
 
-## 2 · Measure before you touch anything
+**The publish is conditional on the message having emitted ≥1 event.**
+Unconditional would publish on Anvil's summary frames too — 1,225 → 1,406 —
+and every Anvil golden would move. Every figure in §2's `after` column assumes
+the conditional form.
 
-This is the step that makes the diff checkable, and it comes before the first
-edit.
+## 2 · Measured, 2026-09-03 — and the hypothesis is half wrong
 
-**Record, per venue and per committed slice: frames, events, publishes.**
+Done before any edit, with a scratchpad tool linked against the host libs and
+nothing in the tree touched. `publishes(after)` = decode calls that emitted ≥1
+event.
 
-The hypothesis to confirm or refute: **Anvil and Kraken emit one book-bearing
-event per frame, so their publish counts do not move and no Anvil or Kraken
-golden can move.** The reconnect trace already says this out loud for Anvil —
-`test_replay_goldens.cpp:389`, 1,288 frames and 1,117 events, of which 1,013 are
-snapshots and 103 trades.
+| venue | frames | events | publishes now | after | factor | crossed |
+|---|---|---|---|---|---|---|
+| anvil | 7,359 | 6,404 | 6,404 | 6,404 | 1.00× | 0 |
+| kraken | 5,372 | 9,836 | 9,837 | 4,899 | 2.01× | 0 |
+| binance | 4,184 | 123,813 | 123,814 | 2,984 | 41.5× | 11,062 |
 
-Why it matters more than it looks: **every golden in `test_replay_goldens.cpp`
-that asserts publish-derived content runs on an Anvil trace.**
-`first_stale_snapshot` (`:416–419`, `:485–486`), the rendered ladders (`:636–648`),
-the stale episodes — all of them replay `anvil_101_baseline` or
-`anvil_101_reconnect`. The Binance slices appear in exactly one place, the
-crossed-touch census at `:899–906`, which asserts nothing about content. The
-Binance adapter tests are upstream of `Book::publish` entirely.
+Census-8 alone: 123,681 → 2,892 (42.8×), crossed 11,062 — reproducing `eff1ee9`
+exactly. Per-slice figures are in the session log.
 
-So if the hypothesis holds, **the golden churn is zero** and the only numbers
-that move are Binance publish totals.
+**Anvil holds.** `max/msg == 1` on all five slices. The one Gap in the reconnect
+trace is a watchdog gap with no frame — its own decode call.
 
-**If it does not hold, stop and report before editing a single expectation.** A
-moved expectation in a stage that was supposed to move none is the whole reason
-this is its own stage.
+**Kraken is refuted, and the reason matters more than the number.**
+`kraken_adapter.hpp:506–514` emits one `Delta` per level, exactly as Binance
+does. Every Kraken slice is 1 Snapshot + N Deltas; 1,920 of 2,472 messages on
+the d100 slice carry more than one event. Kraken's publish count halves.
+
+**So Kraken's `crossed_publishes == 0` is luck, not structure.** It has the same
+publish granularity and the same exposure; these six captures happened never to
+straddle the touch. The census comment at `test_replay_goldens.cpp:934–937` —
+"Kraken's adapter applies a whole message before emitting" — **is wrong, and so
+is the corresponding paragraph of `eff1ee9`'s commit message.** Correct the
+comment in this stage's driver commit and record the correction in §9; the
+commit message is pushed and stands as written, which is why the correction has
+to live somewhere a reader will reach.
+
+That upgrades the fix from "Binance had a defect" to "two venues had it and one
+was never caught in the act".
 
 ## 3 · `first_stale_` is the one place this is not a refactor
 
@@ -129,18 +141,45 @@ measurable; the firmware is where they are not.
 
 ## 6 · Acceptance
 
-- `crossed_publishes == 0` on all eight Binance slices, and `worst_cross_ticks == 0`.
+- `crossed_publishes == 0` on every Binance slice, and `worst_cross_ticks == 0`.
   **Turn the census at `test_replay_goldens.cpp:899–943` from a `MESSAGE` into a
   `CHECK`.** That is what the guard was for; leaving it as a print after the fix
   lands would be an instrument that reports nothing.
-- Anvil and Kraken `crossed_publishes` still 0, and their publish totals
-  unchanged from the figures recorded in §2.
+- **Anvil unchanged**: 6,404 publishes, crossed 0. Any movement here is a defect
+  in the change, not a consequence of it.
+- **Kraken**: crossed still 0, and its new publish total recorded — expected
+  9,837 → 4,899. The total is *expected to move*; that is the corrected clause.
+- The two Kraken window goldens re-derived — see §7.
 - Full host suite green from a fresh detached worktree, `CMAKE_HOME_DIRECTORY`
   read from the cache and matched.
 - `pio run` for `firmware/`. **The host suite is not entitled to claim anything
   about `firmware/` — a verification claims only what it compiled.**
 
-## 7 · The crash is a hypothesis, not a finding
+## 7 · The two Kraken goldens, and the rule for moving them
+
+They move in the driver commit, not a separate one: a pin re-derived in a commit
+that does not contain the change that moved it has nothing to check it against.
+
+`test_window.cpp:486–489` (d25) and `:515–519` (d100). Most of it is arithmetic
+you can do on paper — uniform 50/4/20 rows per publish × the new publish count —
+and those values are to be **stated before the run prints them**.
+
+Two are not uniform: `levels_dropped` (760,185) and `worst_tick_span`. The rule
+for both: **write down what you expect to happen to the number and why, then
+run.** `worst_tick_span` is a max over publishes, so it can only fall or hold —
+if it rises, the change is wrong. `levels_dropped` must first be classified: if
+it is summed per publish it should fall by roughly the publish factor; if it is
+a property of the book at publish it should hold. Say which, then check.
+
+**A golden whose new value is "whatever the code printed" is not a golden.** If
+either of the two non-uniform numbers cannot be predicted before the run, say so
+and stop rather than adopting the output.
+
+`check_row_arithmetic` (`:430–437`) is relative to `book.publishes` and survives.
+The cross-policy equality checks (`:465–471`) survive. Anvil's subcase is
+unaffected.
+
+## 8 · The crash is a hypothesis, not a finding
 
 Re-derived from `firmware/logs/device-monitor-260830-223245.log` (71.9 MB,
 2026-08-30 22:32 → 2026-09-01 08:06), six occurrences, uniform:
@@ -170,26 +209,34 @@ count and close E on its own acceptance in §6.
 
 ## Known unknowns — resolve and record
 
-1. Do Anvil and Kraken publish counts move? (§2. Expected: no.)
+1. ~~Do Anvil and Kraken publish counts move?~~ **Answered §2:** Anvil no,
+   Kraken yes (2.01×). Kraken's zero crossed count is empirical, not structural.
 2. Is `first_stale_snapshot` byte-identical across the change on the Anvil
-   reconnect trace? (§3. Expected: yes.)
+   reconnect trace? Structurally it should be — the Gap is a lone-event watchdog
+   message — but that is reasoning, not a run. **Verify it.**
 3. **Is the panel under-fed on a quiet book?** One publish per message at
    Binance's cadence should stay well above panel refresh, and
    `republish_if_due` is the floor beneath it — but confirm from the bench
    `pipe: published=` counter rather than assuming.
-4. Does `binance_btcusdt_DEFECT_silent_stream_20260826` behave differently? It is
-   the one slice whose whole point is a stream that stops.
+4. ~~`binance_btcusdt_DEFECT_silent_stream_20260826`?~~ **Answered §2:** 4
+   frames, 0 events, 1 terminal publish. Unchanged by the fix. Same for
+   `kraken_minagbp_d25_20260817` (144 frames, 0 events).
 5. Does any figure in `tools/soak_report.py` derive from a publish rate that is
-   about to change? (`soak_report.py:53` parses `published=`.)
+   about to change? (`soak_report.py:53` parses `published=`.) Binance's rate
+   falls ~42×; this is now a near-certainty rather than a question.
 
 ## Definition of done
 
-☐ §2's frames/events/publishes table recorded in the session log, before the diff
+☐ §2's per-slice frames/events/publishes table recorded in the session log — done 2026-09-03
 ☐ Driver commit laddered green in its own fresh detached worktree
 ☐ Firmware commit laddered green; `pio run` clean
 ☐ `crossed_publishes` 0 and `worst_cross_ticks` 0 on all eight Binance slices
 ☐ The census is a `CHECK`, not a `MESSAGE`
-☐ Anvil and Kraken unmoved, with the before/after numbers in the log
+☐ Anvil unmoved at 6,404 publishes; Kraken recorded at 9,837 → 4,899
+☐ The two Kraken window goldens re-derived, each expected value written down
+  before the run that produced it (§7)
+☐ The stale rationale corrected: `test_replay_goldens.cpp:934–937` no longer
+  claims Kraken applies a whole message before emitting
 ☐ All five known unknowns answered in the log, including the ones whose answer
   was "unchanged"
 ☐ Soak re-run >24 h continuous; reset count recorded whatever it is
