@@ -229,7 +229,7 @@ count and close E on its own acceptance in §6.
 
 ☑ §2's per-slice frames/events/publishes table recorded in the session log — done 2026-09-03
 ☑ Driver commit laddered green in its own fresh detached worktree — `d2618d8`, 2026-09-04
-☐ Firmware commit laddered green; `pio run` clean
+☑ Firmware commit laddered green; `pio run` clean — `b49c923`, all six arms
 ☑ `crossed_publishes` 0 and `worst_cross_ticks` 0 on all eight Binance slices — on all
   eleven, and on the Anvil and Kraken slices too
 ☑ The census is a `CHECK`, not a `MESSAGE` — per slice as well as in total
@@ -238,7 +238,7 @@ count and close E on its own acceptance in §6.
   before the run that produced it (§7)
 ☑ The stale rationale corrected: `test_replay_goldens.cpp:934–937` no longer
   claims Kraken applies a whole message before emitting
-☐ All five known unknowns answered in the log, including the ones whose answer
+☑ All five known unknowns answered in the log, including the ones whose answer
   was "unchanged"
 ☐ Soak re-run >24 h continuous; reset count recorded whatever it is
 ☑ ARCHITECTURE §9 gets the decision: the publish boundary is the message, not
@@ -423,3 +423,94 @@ rather than wrong, but the firmware half still publishes per event and a doc
 updated now would describe a world that is half true. Update it when step 2
 lands. Known unknowns 3 and 5 need the bench. ROADMAP untouched until the
 milestone moves.
+
+### 2026-09-04 · Claude Opus 5 · §5 step 2 — the firmware, and the board
+
+**Done.** `firmware/src/feed_task.cpp` mirrors the driver at its three sites
+(`b49c923`). `apply_and_publish` → `apply_only` + a flag; `publish_message()`
+after each adapter call returns. `republish_if_due` untouched. Laddered in a
+fresh detached worktree at `C:/tmp/dc-E2-ladder` with `secrets.h` copied in and
+`CMAKE_HOME_DIRECTORY` confirmed as the worktree: **all six arms `pio run`
+clean** — `depthcharge`, `-ps`, `-noping`, `-kraken`, `-binance`,
+`-binance-silent` — and the host suite green there as well, though **the host
+suite claims nothing about this commit**: no host test includes `feed_task.hpp`,
+so `pio` is the whole of its verification. Worktree deleted.
+
+**Flashed** `depthcharge-binance` to COM7, hash verified. Four orphaned `python`
+children were holding the port and were killed first, per the standing bench
+rule — that is the failure that reads as a brownout loop.
+
+**The board confirms the change is live, and by the right number.** 80 s of
+monitor:
+
+| | |
+|---|---|
+| `book: publishes` | **416** over 80 s ≈ 5.2/s |
+| `rate: events` | **209.30/s** |
+| `channel:` | `published_v=420 consumed_v=416 drawn=391 superseded=29` |
+| ladder lines sampled | 73, of which 50 LIVE, **0 crossed** |
+
+Before the change the publish rate *was* the event rate. 209/s → 5.2/s is a
+**~40× reduction on the board**, against the 41.5× the host corpus predicted for
+Binance. That is the strongest evidence available short of the soak that what
+was flashed is what was measured.
+
+**Known unknown 3, answered: the panel is not under-fed — it is now correctly
+fed.** `drawn=391` of `published_v=420` is 93%, with 29 superseded. Before, the
+panel drew ~6/s out of ~209/s published, so ~97% of published frames were
+discarded unseen; the frame the panel drew was an arbitrary sample of a book
+mid-message. `republish_if_due` was not needed to hold the rate up.
+
+**Known unknown 5, answered — and the brief's expectation was wrong.**
+`soak_report.py:53` parses `-- pipe : published=`, which is
+`FramePipe::frames_published`, *"complete messages handed to the feed"*
+(`frame_pipe.hpp:234`, printed at `render_task.cpp:370`). It is a frame counter
+and has nothing to do with `DisplaySnapshot` publishes. **No figure in
+`soak_report.py` moves.** The brief called this "a near-certainty rather than a
+question"; it was neither. Two different counters are spelled `published` on
+adjacent report lines — `-- pipe : published=664` and `-- channel:
+published_v=420` in the same dump — and the tool reads the one that does not
+move. Worth remembering as a naming hazard rather than a near miss.
+
+**Decisions.**
+
+- **The two publish-path instruments survive the thinning, and NOT for the host's
+  reason.** The driver's `stamp_age` reads a value constant within a message, so
+  the dropped calls there were exact duplicates. `publish_current` reads
+  `esp_timer_get_time()` live, so its readings genuinely differ — what survives
+  is the *last* of each message, `now` only advances within one, so the surviving
+  reading is the largest and `age_and_bank`'s high-water mark cannot fall.
+  `GreyLedger::note` is edge-triggered and a transition is caused by an event, so
+  the publish that follows that event's message is the same publish that used to
+  catch it; only the stamping instant moves, by the width of one message. Both
+  arguments live in the comment above `publish_current`, because that is where
+  the next person will be reading.
+- **`publish_message()` goes immediately after the adapter call, above the reject
+  capture and the slot recycle.** Those two have their own forced ordering and
+  neither may sit between a message and the frame it produces. It also holds the
+  RX slot for *less* time than before, not more: the publishes used to happen
+  inside the adapter call and there were N of them.
+- **`DESIGN.html`'s two sequence diagrams updated in the same commit.** Both
+  already drew the publish arrow after the adapter call returns — this pair of
+  commits makes that accurate rather than approximate — so what they gained is
+  what the arrow now *means*, plus the `first_stale_` capture on the reconnect
+  diagram and `publish_message()` on the `Replay` class diagram. **The milestone
+  status strip was deliberately not touched:** it still ends at stage C and is
+  missing the whole of stage D, so adding E alone would read as though D never
+  happened. That drift predates this stage and belongs to whoever closes D.
+- **ROADMAP gains `D8`** for the terminal-publish/`note_window` defect found in
+  step 1 — what it is, how far it reaches (`check_row_arithmetic` would be
+  `0 == 54` on the two zero-event slices, neither of which is passed to it), and
+  the two candidate fixes with why neither is obviously right.
+
+**Observed and not attributed to this change.** The first 80 s showed
+`grey_n=3 grey_ms=32358`, a seq-gap stale at v421 and three holes classed
+`link=2 board=0`, cleared by a REST reseed after 3,993 ms. `cpu window c0=93%`.
+Boot-window link behaviour, and the soak is what says whether any of it persists.
+The pre-existing `rest: largest internal block 4596 B is BELOW the 16717 B a TLS
+session needs` warning fired as usual.
+
+**Next.** §5 step 3 — the soak, per D-C: > 24 h continuous on
+`depthcharge-binance`, `log2file`, the commit SHA written into the log as a `###`
+marker. §8 is the standing warning that a surviving reset is a separate stage,
+not a failure of this one. Then ROADMAP's milestone status.
