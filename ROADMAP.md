@@ -378,6 +378,28 @@ instead of rediscovering one.*
 - Evidence: `harness/replay/NOTES.md` stage C addendum (the sparsity table that ruled the price
   axis out at one tick per row), ARCHITECTURE §9 2026-08-19, DESIGN §08 strain 24.
 
+**D8 · The driver's fallback publish is not counted by `note_window`, so one replay's
+window report cannot be checked against its publish count.** *[C] — latent, found at M5 stage E
+and deliberately left alone there.*
+
+- **What it is.** `harness/src/replay_driver.cpp`'s terminal
+  `if (channel_.published_version() == 0)` block calls `book_.publish`, `stamp_age` and
+  `stamp_reseed`, but not `note_window()` and not `channel_.publish()`. So a trace that emits
+  no event at all reports `book.publishes == 1` beside a `window` report of all zeros.
+- **Why it matters, and exactly how far.** `test_window.cpp`'s `check_row_arithmetic` asserts
+  `rows_filled + rows_unknown == 2 x kDisplayLevels x book.publishes`, which is
+  `0 == 54` on such a trace. Two committed slices are in that state —
+  `kraken_minagbp_d25_20260817` (144 frames, 0 events) and
+  `binance_btcusdt_DEFECT_silent_stream_20260826` (4 frames, 0 events) — and neither is passed
+  to that helper, so nothing is red today. It is an identity that holds by not being asked.
+- **The two candidate fixes are not equivalent and the choice is a judgement.** Calling
+  `note_window()` there makes the identity true and adds a publish nobody consumes to the
+  window totals; teaching `check_row_arithmetic` about the fallback keeps the totals as they
+  are and makes the helper carry a special case. Neither is obviously right, which is why
+  M5 stage E recorded it rather than picking one inside a stage whose whole claim was that
+  its diff moved nothing it did not have to.
+- Evidence: `docs/briefs/M5-stage-E-the-publish-boundary.md` session log 2026-09-04.
+
 **D4 · Live web mirror** *(optional)* — a browser twin of the panel's `DisplaySnapshot` feed.
 *That* would be companion site #4 and trigger the shared-component-repo review. The portfolio
 page itself is scheduled work (MP) inside the portfolio repo and does **not** count toward

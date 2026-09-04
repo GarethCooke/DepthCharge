@@ -340,9 +340,15 @@ private:
     void service_liveness(std::int64_t now_us) noexcept;
     void on_disconnected() noexcept;
 
-    // The single door every event leaves by. Book, then publish, then channel —
-    // in that order, once per event, exactly as the host replay driver does it.
-    void apply_and_publish(const FeedEvent& ev) noexcept;
+    // The single door every event leaves by. It applies and no longer publishes:
+    // since M5 stage E the frame is built once per venue MESSAGE, by
+    // `publish_message` below, exactly as the host replay driver does it.
+    void apply_only(const FeedEvent& ev) noexcept;
+
+    // The message boundary — the return of the adapter call that produced the
+    // events. Publishes if and only if this message emitted at least one; a
+    // frame the adapter ignored publishes nothing, as before.
+    void publish_message() noexcept;
 
     // Push the book's current state to the channel without applying an event.
     // Used once at start-up so the consumer has an honest Stale{Resync} frame to
@@ -445,6 +451,11 @@ private:
     std::uint32_t prev_idle1_us_ = 0;
     std::int64_t last_msg_arrival_us_ = 0;
     bool socket_dropped_pending_ = false;
+    // Set by any event, cleared by the publish at the end of its message. It is
+    // never live across a loop pass: every adapter call in this class is followed
+    // by `publish_message()` in the same function, which is what lets
+    // `republish_if_due` call `publish_current()` directly without consulting it.
+    bool pending_publish_ = false;
 
     Stats stats_{};
 };

@@ -239,10 +239,13 @@ void FeedTask::service_seed(std::int64_t now_us) noexcept {
     if (seed_.ready()) {
         // THE SAME SINK `on_frame` USES. `on_rest_body` may emit a Snapshot, a
         // Gap, or nothing at all — the bracket decides — and every one of those
-        // must reach the book through the one path that publishes. This is also
+        // must reach the book through the one path that applies. This is also
         // the only place a REST body ever becomes book state: invariant #8 says
         // one writer, and the seed task deliberately produces bytes only.
-        adapter_.on_rest_body(seed_.body(), [this](const FeedEvent& ev) { apply_and_publish(ev); });
+        adapter_.on_rest_body(seed_.body(), [this](const FeedEvent& ev) { apply_only(ev); });
+        // A REST seed is one message: the whole body is one statement the venue
+        // made, whether it becomes a Snapshot, a Gap or nothing.
+        publish_message();
         schedule_.note_result(true, seed_.report().http_status, now_us);
         // Released immediately: `BinanceFrame` copies what it needs and retains
         // no `string_view` into the JSON, so the 96 KiB buffer is free the
@@ -354,7 +357,12 @@ void FeedTask::on_frame(const FeedMessage& msg) noexcept {
     // histogram's: bytes arriving is not the same as the ladder advancing.
     const std::uint64_t events_before = adapter_.stats().events_out;
     const std::string_view text(pipe_.buffer(msg.slot), msg.len);
-    adapter_.on_frame(text, [this](const FeedEvent& ev) { apply_and_publish(ev); });
+    adapter_.on_frame(text, [this](const FeedEvent& ev) { apply_only(ev); });
+    // THE MESSAGE BOUNDARY. Immediately after the adapter call and before
+    // anything below it, because the reject capture and the slot recycle that
+    // follow both have their own forced ordering and neither is allowed to sit
+    // between a message and the frame it produces.
+    publish_message();
 
     // A rejected frame is captured HERE — after the adapter, before the recycle
     // below — and the order is forced rather than chosen. `text` points into the
@@ -579,11 +587,45 @@ void FeedTask::raise_gap_once() noexcept {
     // Neither venue here sends one — Anvil has no error frame at all, and
     // Kraken's silence is silence.
     adapter_.on_transport_gap(GapReason::Disconnect,
-                              [this](const FeedEvent& ev) { apply_and_publish(ev); });
+                              [this](const FeedEvent& ev) { apply_only(ev); });
+    // A synthesised gap is a message too — one the transport wrote rather than
+    // the venue.
+    publish_message();
 }
 
-void FeedTask::apply_and_publish(const FeedEvent& ev) noexcept {
+void FeedTask::apply_only(const FeedEvent& ev) noexcept {
     book_.apply(ev);
+    pending_publish_ = true;
+}
+
+// ONE PUBLISH PER MESSAGE (M5 stage E), mirroring `publish_message` in
+// `harness/src/replay_driver.cpp`. The two are the same rule in two places
+// because this class and that one are the same object either side of the desk —
+// and the host is where the rule is measurable, which is why the driver went
+// first and this follows it rather than the other way round.
+//
+// WHY. One `depthUpdate` becomes N single-side `Delta` events, and publishing
+// after each of them samples the book between the bid levels that lift the touch
+// and the ask removals in the same message that pay for them. The 34.5 h soak
+// drew 1,032 LIVE ladder lines whose best bid was at or above their best ask,
+// 2.9% of the time the panel claimed to be live, worst spread -$39.79; the host
+// corpus had 11,062 such publishes and now has none.
+//
+// AND IT CUTS THE WORK THIS TASK DOES PER MESSAGE BY THE DELTA COUNT, which is
+// the other reason it is here: six task-watchdog aborts in that soak, six for
+// six with IDLE on CPU 0 starved while `dc_feed` held it. That is a HYPOTHESIS
+// and the soak is what tests it (stage E §8) — a `DisplaySnapshot` is 1,168
+// bytes and it was being built, stamped and copied hundreds of times per
+// message, but nothing here proves that was the cause.
+//
+// CONDITIONAL, and the condition is what keeps a quiet venue quiet: a frame the
+// adapter ignored — a heartbeat, an ack, an out-of-bracket diff — publishes
+// nothing, exactly as before. `republish_if_due` remains the floor beneath all
+// of it, so a book that produces no message at all still refreshes the age and
+// the beat pixel every `kRepublishPeriodUs`.
+void FeedTask::publish_message() noexcept {
+    if (!pending_publish_) { return; }
+    pending_publish_ = false;
     publish_current();
 }
 
@@ -599,7 +641,21 @@ void FeedTask::apply_and_publish(const FeedEvent& ev) noexcept {
 // (invariant #8), so the field belongs to the two statements between them.
 //
 // `age_and_bank` rather than `age`, because this is the once-per-publish caller
-// and the high-water mark is what survives a reconnect.
+// and the high-water mark is what survives a reconnect. **M5 stage E made that
+// sentence more true rather than less:** a publish is now one per venue message
+// rather than one per level, so "once per publish" and "once per thing the venue
+// said" have become the same statement.
+//
+// AND THE TWO INSTRUMENTS BELOW SURVIVE THE THINNING, for different reasons and
+// neither of them by accident. This clock is read live, so unlike the host
+// driver — where the reading is constant within a message and the dropped calls
+// were exact duplicates — the readings here genuinely differ. What is kept is
+// the LAST of each message, and `now` only advances within one, so the reading
+// that survives is the largest and `bank`'s high-water mark cannot fall.
+// `GreyLedger::note` is edge-triggered: it acts only on a live/grey TRANSITION,
+// and a transition is caused by an event, so the publish that follows that
+// event's message is the same publish that used to catch it. What moves is the
+// instant it is stamped at, by the width of one message.
 //
 // The clock is read ONCE and used for both the age and the grey ledger, so the
 // two cannot disagree about which instant this frame belongs to.

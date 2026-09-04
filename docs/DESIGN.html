@@ -965,6 +965,7 @@ sequenceDiagram
     BK->>BK: adopt — copy_clamped both sides, status = Live
     deactivate BK
     deactivate AD
+    Note over DRV,BK: the message boundary — one publish per MESSAGE, however many events
     DRV->>BK: publish(latest_)
     activate BK
     BK->>BK: version_++, copy top 27/side, unwind trade ring
@@ -980,6 +981,15 @@ sequenceDiagram
       frames are <code>book</code>. Steps 4–17 are the same instructions on host and target;
       only steps 1 and 21–23 differ. Note that <code>publish</code> is driven by the caller,
       not by <code>Book</code> — the book never decides when to be read.
+      <b>And since M5 stage E the caller drives it once per MESSAGE, not once per event.</b>
+      At Anvil that is invisible — one frame is one whole-book <code>Snapshot</code>, so this
+      diagram is unchanged by it. At Kraken and Binance it is the difference between a
+      correct ladder and a crossed one: those adapters emit one <code>Delta</code> per
+      LEVEL, and publishing inside the loop drew the book part-way through a message, with
+      the bids that lifted the touch applied and the asks that paid for them not yet. 11,062
+      published frames across the committed corpus had a best bid at or above their best
+      ask; the boundary took that to zero. A frame that emits no event — a
+      <code>summary</code>, a heartbeat, an ack — still publishes nothing.
     </figcaption>
   </figure>
 </section>
@@ -1249,7 +1259,9 @@ sequenceDiagram
     activate BK
     BK->>BK: mark_stale(Disconnect) — levels KEPT, not cleared
     deactivate BK
+    Note over DRV,BK: a synthesised gap is a MESSAGE too — one the transport wrote
     DRV->>BK: publish(latest_)
+    DRV->>DRV: first_stale_ = latest_ — captured AFTER the boundary publish
     DRV->>CH: publish — status = Stale
     R->>CH: consume
     R->>R: draw the SAME levels, greyed, banner reads STALE
@@ -1262,6 +1274,7 @@ sequenceDiagram
     BK->>BK: adopt — full replace, status = Live
     deactivate BK
     DRV->>DRV: episode.cleared = true, stale_ms = 3470
+    DRV->>BK: publish(latest_) — the boundary again
     DRV->>CH: publish — status = Live
     R->>CH: consume
     R->>R: clean live ladder, no torn intermediate
@@ -1273,6 +1286,15 @@ sequenceDiagram
       the book has not been re-baselined in between, so it is the same outage continuing.
       Opening a second window would report the first as never cleared and measure the grey
       period from the wrong start.
+      <b>The <code>first_stale_</code> capture is the one place M5 stage E was not a
+      refactor.</b> The Gap event no longer publishes on its own, so capturing at the event
+      would have recorded the PREVIOUS message's book. The rule is stated as meaning rather
+      than mechanism — the snapshot recorded as first-stale is the one the panel would
+      actually have shown at the moment it went grey — so the event sets a flag and the
+      boundary publish serves it. Measured across the change by hashing the whole object:
+      byte-identical on the Anvil reconnect and Kraken resync traces, version stamp
+      included; on the Binance reconnect trace every byte matches except
+      <code>version</code>, which must differ because the publish count did.
     </figcaption>
   </figure>
 
@@ -1733,6 +1755,7 @@ classDiagram
         +run(TraceReader) ReplayResult
         -raise_watchdog_gap(double) void
         -on_event(FeedEvent) void
+        -publish_message() void
         -stamp_age(DisplaySnapshot) void
         -stamp_reseed(DisplaySnapshot) void
     }
