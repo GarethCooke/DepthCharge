@@ -1,7 +1,9 @@
 # M5 Stage D-C — the soak
 
-**Track:** Bench [owner-driven, wall-clock] · **Status:** Not started — **and it cannot start yet;
-see §2** · **Size:** a desk sitting, then a run longer than a day, then a reading
+**Track:** Bench [owner-driven, wall-clock] · **Status:** **Started and not done — one run taken
+2026-08-30/09-01 and read; §1's > 24 h is NOT met (7 boots, longest 9.84 h), so a second run is
+owed. §2's four gaps are closed by D-A3 and confirmed from the capture; see the session log** ·
+**Size:** a desk sitting, then a run longer than a day, then a reading
 **Written:** 2026-08-30 by the desk seat at D-B's close.
 
 **This is the one definition-of-done clause only wall-clock can close.** Everything else in M5 has
@@ -252,3 +254,118 @@ this one.
 
 <!-- Append one block per session: date · model · done · decisions (with why) ·
      exact next step for the following session. -->
+
+### 2026-09-03 · Opus 5 · the first run, read — and it does not meet §1
+
+**Done.** The 2026-08-30/09-01 Binance capture is preserved and read.
+`hardware/bench-2026-08-30-D-C-soak.log.gz` (9,638,192 B) inflates to the 71,901,480 B source
+`firmware/logs/device-monitor-260830-223245.log`, sha256 `d4c4fd12…`, verified byte-identical
+rather than assumed. The reading is `hardware/bench-2026-08-30-D-C-soak.md`, one document covering
+deliverable 4 and the six checks of §4. `tools/soak_report.py` was run over the capture first, as
+D-A3 left it: it parses, and its census reports `SOAK` 12,425, `-- pipe` 12,424, `-- signal` 12,417,
+`-- age` 12,417 — no grammar matched nothing, so deliverable 1's reader half is confirmed
+retroactively, and so are gaps (a), (b) and (c) from the board's own output.
+
+**§1 IS NOT MET, and this run closes no duration-dependent box.** 34.56 h of wall clock, **seven
+boots** — 1 POWERON and 6 `RTC_SW_CPU_RST` — longest continuous stretch **9.84 h**. The six
+restarts are the task watchdog on a starved `IDLE (CPU 0)` with `dc_feed` on core 0, then `abort()`
+at the identical PC `0x4201c9f8`; zero `Brownout` lines in 490,498. **The scheduled-disconnect
+question is therefore untouched**: no connection lived long enough to meet the venue's 24 h close.
+The crash is being chased in `firmware/` by another session and is reported, not diagnosed, here.
+
+**The six checks read anyway**, because they are per-connection and per-message quantities and only
+the duration claim dies with the reboots. Scoreboard in the record's §11; the four that matter:
+
+- **Check 1 PASSES with margin.** Eight reconnect readings, minimum `largest internal before=53236`
+  (the one genuine mid-session reconnect), `after=51188` on all eight — **3.18× and 3.06×** the
+  16,717 B threshold, never near it. **Steady state is re-established at 51,188 B**, superseding
+  D-A1's `17,396 / 679 B margin`, which was a different build. `kReserveInternalBytes` is
+  **confirmed at 104 KiB, not moved**; the brief's stale-remedy warning stands and the threshold is
+  untouched.
+- **Check 2: k = 2.0 stands by the letter of the falsifier, on a 2.4% margin rather than a 99%
+  one.** `>=2x med` is 0 on all 12,417 samples, so the rule as written does not raise k. But the
+  basis has changed: **6,183 healthy intervals** against stage C's ten, **39 of them in the 25–40 s
+  band**, and the **worst healthy interval is 39,061 ms = 1.9529 × median, 943 ms short of that
+  boot's 40,004 ms threshold**. Stage C's "clears the jitter by 1.99×" is refuted; the measured
+  clearance is **1.024×**. Both facts are recorded because printing only the first would be the
+  wave-through. **Whether the falsifier as worded is still the right rule is close-out work** — this
+  run is not entitled to rewrite the rule it was run to test.
+- **Check 3: `max_held = 4 of 4` sustained in all seven boots**, over 1,188,879 published frames,
+  in B4's 1.48 h as surely as B6's 9.84 h. `held(>100ms)` 3.49%, `no_slot` 4.44%, `slow(>25ms)`
+  3.71%, `max_run` **19 of 4**, `qfull` 0. This supplies the *sustained* the brief said would close
+  a constraint with no lever — and per §7 and §9 it does **not** license an engine change from here.
+- **Check 4 is NOT clean.** `oversize` reached **1** (B1, one event in 1,188,879 — against 13 of
+  3,119 at the old slot, so the sizing decision is vindicated), but the largest accepted message is
+  now **61,823 B of 65,536**: a **1.060×** margin where §4.4 states 2.29× over 28,639 B. §9 keeps
+  sizing closed, so this is recorded for the close-out with the two numbers it needs.
+- **Check 6(a) HOLDS on an unprovoked event, and it is the run's best argument for D-A3.** In B1 the
+  feed went silent at `up=6657s`; the clock crossed its 39,978 ms threshold and fired at `up=6667s`
+  (`worst_age=43.0s`, one 10 s sample of latency). **The transport believed the socket up for
+  another 1,571 s (26.2 min)**, until the peer *cleanly closed* it — the run's only socket-end
+  autopsy, `[clean-close]` after 8,228 s and 133.5 MB. Without the liveness clock the board would
+  have shown a stale coloured ladder for 26 minutes. **The 2.3 h clean close is NOT the venue's 24 h
+  policy close and must not be read as one.** (b) holds: `live=1` on 28.5% of samples. (c) is
+  untested — no server-side subscription death is identifiable. (d) is confirmed at 651–672 s.
+
+**Decisions, with why.**
+
+1. **One document, not two.** The gzip's write-up and the six-check reading share a provenance
+   section and every figure; splitting them would put the sha256 in one file and the numbers
+   derived from it in another. Precedent `bench-2026-08-22-kraken-b3-soak.md` is also one file.
+2. **Named `bench-2026-08-30-D-C-soak.md`, not `bench-2026-08-<dd>-m5-soak.md` as §3.4 says.** The
+   capture was already gzipped as `bench-2026-08-30-D-C-soak.log.gz`, and "beside it" is worth more
+   than the brief's placeholder name. Deliverable 4 is met on substance.
+3. **Per-boot figures were produced outside `tools/soak_report.py`.** The tool reads the file as one
+   series and this file is seven: its `THE RUN` header reports `board uptime 10s -> 16014s (4.45 h)`
+   — the last boot alone — and its grey-percentage and watchdog-versus-socket sections mix boots. It
+   prints all six `REBOOTS` transitions, so nothing is concealed, but a reader taking the header at
+   face value understates the run by 30 h. **Per-boot segmentation is a tool change for the
+   close-out**, and it is named in the record's §12 so it is not lost.
+4. **The image cannot name its own commit, and that is recorded as a defect of the run rather than
+   guessed past.** Deliverable 2 asked for the SHA by hand; `markers : 0`. The only identity in
+   71.9 MB is `main.cpp:114`'s banner, which still reads *"DepthCharge M4 stage D"*. `61640bf` (in
+   `daa8013`, 18:04) is the only candidate on behaviour and timing — the log carries all four D-A3
+   instruments — **but that is inference, not evidence**, and it is written that way.
+5. **Check 5's premise is wrong and the record says so.** The uncalibrated window is **per boot,
+   not per connection**: B1's mid-session reconnect at `up=8238s` did not re-enter UNCALIBRATED.
+   Measured 160.3–180.4 s per boot against the predicted 159.7 s, 0.96% of uptime, nothing visible
+   inside any of the seven. Whether the clock *should* re-derive its median per connection — a
+   threshold carried across a reconnect is derived from a socket that no longer exists — is left as
+   the close-out's candidate fourth number, not decided here.
+6. **The re-seed storm is stated but not diagnosed.** `live=1` on 28.5% of samples; grey 71.4% of
+   uptime; 5,336 `seq-gap` STALEs; 5,562 seed fetches, one per 22.4 s; 85.5% of holes classified
+   LINK-BOUND by the board itself. It is not one of the six checks, but checks 3, 4 and 6 were all
+   measured on a board in this state and a quieter run may read differently — so it is named where
+   a reader will see it before the numbers.
+7. **Both §5 traps were live and neither is reported as a finding.** The final SOAK's
+   `largest=7668` is the periodic sampler inside a fetch (the adjacent `rest: fetch` reads
+   `largest 51188/4852/51188`; during-fetch median over the run is 4,084 B), and the 5,547
+   `is BELOW the 16717 B` WARN lines are the per-fetch warning §5 predicts, one per fetch. The
+   tripwire is the reconnect reading and only that, per D-A2 over `ARCHITECTURE.md:335`.
+8. **"Half-open" means two different things and the record separates them explicitly**, because
+   §3 and §8 of it would otherwise read as a contradiction. The **memory** case (an old TLS context
+   still held while the new one is built — what check 1 guards) did **not** occur: the autopsy at
+   `00:50:04.463` precedes the new socket by 2.7 s and the free total jumps **+47,484 B** at the
+   close, so `before=53236` is a post-release reading. The **liveness** case (a socket the transport
+   believes up while nothing arrives) **did** occur, for 26 minutes. B3 saw the memory case twice in
+   25.39 h; this run saw it none in 34.55 h, so **check 1 passes without having been stressed the
+   way M4 stressed it** — worth knowing before anyone treats 3.18× as a proven worst case.
+9. **A gap in `soak_report.py`'s own guard is recorded, not fixed.** `owned()` enrols five
+   grammars; `RE_STALE`, `RE_LIVE`, `RE_GREYFOR` and `RE_SOCK_UP` are read and printed but not
+   enrolled, so a drift in one of those four still produces a silently missing section — the exact
+   failure the census exists to remove. All four matched on this capture (5,343 / 5,343 / 5,343 /
+   8), so nothing in this reading is affected. **Not fixed here** because `tools/` is D-A3's and the
+   close-out's, and a tool change made while reading its output is a change nobody reviewed.
+
+**Nothing committed.** Split proposed to the owner, not executed. No `ARCHITECTURE.md` §9 row is
+proposed: every finding above is either a reading the brief already anticipated or a close-out
+question, and §9 is not where open questions go. `docs/DESIGN.html` untouched — cards 27 and 29
+have a plausible D-C half, but that box is gated on the milestone completing and this run does not
+complete it.
+
+**Exact next step.** **The crash lands before any re-run.** Six task-watchdog aborts at a fixed PC
+make a 24 h stretch impossible, and soak hours spent before that fix cannot close the box. When the
+board is stable: flash from a known commit, **write the SHA into the log by hand as a `###` marker
+before starting** (the one thing this run cannot supply about itself), and repeat the run. Every
+non-duration check above will then be re-read on a single-boot capture, and checks 2 and 4 are the
+two whose margins moved.
