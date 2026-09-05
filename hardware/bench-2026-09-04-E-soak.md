@@ -74,12 +74,14 @@ At the pre-fix rate, 92,656 LIVE lines would have carried about 2,800. There are
 boot. The host corpus went 11,062 → 0 at `d2618d8`; this is the same result on the panel.
 
 **The two published figures for the pre-fix run reconcile exactly, and the difference is the
-comparison operator.** The stage E brief quotes **1,032**, which is `bid > ask`. `Book::publish`'s
-own guard is `out.bids[0].px >= out.asks[0].px`, which also catches the **34** locked frames, giving
-**1,066**. So the brief's panel figure was 34 short of the engine's own criterion. It changes
-nothing here — the post-fix count is 0 on the stricter `>=`, and therefore 0 on both — but a future
-reader comparing 1,032 with a `crossed_publishes` counter should know they are not the same
-question.
+comparison operator.** Everything in this repository quoted **1,032** until 2026-09-05, which is
+`bid > ask`. `Book::publish`'s own guard is `out.bids[0].px >= out.asks[0].px`, which also catches
+the **34** locked frames, giving **1,066**. So the panel figure was 34 short of the engine's own
+criterion, while sitting in sentences that said "at or above" and next to a counter that means
+`>=`. It changes nothing about the fix — the post-fix count is 0 on the stricter test, therefore 0
+on both — but a reader reconciling 1,032 against `crossed_publishes` was reconciling two different
+questions and could never have closed it. **Corrected at every site on 2026-09-05**, each one
+keeping the old number and saying what it counted rather than quietly overwriting it.
 
 ### 2 · The publish reduction, measured on the board
 
@@ -156,7 +158,7 @@ in the record rather than in a later argument:
 **What it does settle is D-C §1's reasoning.** That constraint exists so the run would observe "the
 one disconnect the venue guarantees". This run exceeded 24 h and observed no such disconnect, so the
 guarantee is either not in force on this host or not what we believed. **Whether >24 h is still the
-right bar is close-out work, not this record's** — the bar was met, and the thing it was meant to
+right bar is close-out work, not this record's** — carried as backlog **D9** — the bar was met, and the thing it was meant to
 catch did not appear.
 
 ### 5 · Grey time fell sharply, and it is still the same mechanism

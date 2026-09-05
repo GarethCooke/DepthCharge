@@ -9,10 +9,13 @@ One `depthUpdate` becomes N single-side `Delta` events, and every one of them
 currently drives a full `DisplaySnapshot` publish. That granularity is one
 defect with two faces:
 
-- **The panel drew a book that cannot exist.** 1,032 LIVE ladder lines in the
-  34.5 h soak with the best bid at or above the best ask — 2.9% of the time the
-  panel claimed to be live, worst spread −$39.79. Across the committed corpus,
-  `crossed_publishes` = **11,062**. Anvil 0, Kraken 0.
+- **The panel drew a book that cannot exist.** 1,066 LIVE ladder lines of 35,177
+  in the 34.5 h soak with the best bid at or above the best ask — 3.03% of the
+  time the panel claimed to be live, worst spread −$39.79. Across the committed
+  corpus, `crossed_publishes` = **11,062**. Anvil 0, Kraken 0.
+  *(Corrected 2026-09-05 from 1,032/2.9%. Same run, different question: 1,032 is
+  `bid > ask`, and this line says "at or above", which is `Book::publish`'s own
+  `>=` guard and takes in the 34 LOCKED frames too.)*
 - **The IDLE task on CPU 0 starved.** Six task-watchdog aborts in the same soak,
   six for six with `dc_feed` running on CPU 0.
 
@@ -559,7 +562,7 @@ boots. The pre-fix run drew **1,066 of 35,177** (3.03%), worst spread −$39.79.
   from 13:49:21.937 to the last line — **27.59 h, no close of any kind**. Two caveats are in the
   record rather than left for a later argument: the endpoint is `data-stream.binance.vision`, not
   production `stream.binance.com`, and one connection is one sample. **Whether >24 h is still the
-  right bar is close-out work** — the bar was met and the thing it was meant to catch did not appear.
+  right bar is close-out work** — the bar was met and the thing it was meant to catch did not appear. Carried as backlog **D9**.
 - **Grey fell 71.4% → 10.97% and the record explicitly does not claim it.** Still `seq-gap` driven
   (1,513 episodes, median 4.75 s, max 12.34 min, `resync_req=1262`, `heals=0`), which is the reseed
   mechanism — **D-A4, out of scope**. Market conditions differ and no controlled comparison exists.

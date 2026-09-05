@@ -869,11 +869,19 @@ TEST_CASE("the verbatim frame text is what reaches the adapter") {
 // THE CROSSED TOUCH, MEASURED OVER THE COMMITTED CORPUS
 // =====================================================================
 //
-// A 34.5 h soak rendered 1,032 LIVE ladder lines with the best bid ABOVE the
-// best ask -- 2.9% of the time the panel claimed to be live. This is the test
-// that says whether the committed corpus already contained it, and the answer
-// decides whether the defect needs a new capture or has been under every host
-// run since Binance landed.
+// A 34.5 h soak rendered 1,066 LIVE ladder lines of 35,177 with the best bid at
+// or above the best ask -- 3.03% of the time the panel claimed to be live. This
+// is the test that says whether the committed corpus already contained it, and
+// the answer decides whether the defect needs a new capture or has been under
+// every host run since Binance landed.
+//
+// THE FIGURE WAS 1,032 UNTIL 2026-09-05, AND THE CORRECTION IS THE COMPARISON
+// AND NOT THE DATA. 1,032 is `bid > ask`; the counter this test reads is
+// `Book::publish`'s `>=`, which also catches the 34 LOCKED frames. The two
+// numbers are one run under two questions, and quoting the strict one beside a
+// `>=` counter invited a reconciliation that could never close. Post-fix the
+// count is 0 either way -- on the corpus below, and on 92,656 LIVE lines of the
+// 27.81 h soak in `hardware/bench-2026-09-04-E-soak.md`.
 //
 // WHY NOTHING CAUGHT IT. M5 stage B1's "0 crossed, 0 touched across all seven
 // captures", quoted in ROADMAP.md and in the briefs, was asked of the VENUE's

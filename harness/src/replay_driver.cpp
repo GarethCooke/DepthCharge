@@ -327,8 +327,11 @@ private:
     // becomes N single-side `Delta` events, and a publish after each of them
     // samples the book between the bid levels that lift the touch and the ask
     // removals in the same message that pay for them. 11,062 crossed publishes
-    // across the committed Binance corpus, and 1,032 crossed LIVE ladder lines
-    // in the 34.5 h soak. The message is the smallest unit at which the venue
+    // across the committed Binance corpus, and 1,066 crossed LIVE ladder lines
+    // of 35,177 (3.03%) in the 34.5 h soak — quoted as 1,032 until 2026-09-05,
+    // which is the same run counted as `bid > ask` rather than as `Book::publish`'s
+    // own `>=`, and so misses the 34 LOCKED frames.
+    // The message is the smallest unit at which the venue
     // has told us something whole, so it is the unit the panel is entitled to
     // see.
     //

@@ -607,9 +607,14 @@ void FeedTask::apply_only(const FeedEvent& ev) noexcept {
 // WHY. One `depthUpdate` becomes N single-side `Delta` events, and publishing
 // after each of them samples the book between the bid levels that lift the touch
 // and the ask removals in the same message that pay for them. The 34.5 h soak
-// drew 1,032 LIVE ladder lines whose best bid was at or above their best ask,
-// 2.9% of the time the panel claimed to be live, worst spread -$39.79; the host
-// corpus had 11,062 such publishes and now has none.
+// drew 1,066 LIVE ladder lines of 35,177 whose best bid was at or above their
+// best ask, 3.03% of the time the panel claimed to be live, worst spread
+// -$39.79; the host corpus had 11,062 such publishes and now has none. (Quoted
+// as 1,032 until 2026-09-05: that is the same run counted as `bid > ask`, where
+// "at or above" is `Book::publish`'s `>=` and takes the 34 LOCKED frames too.)
+//
+// THE POST-FIX SOAK PUT THAT COUNT AT ZERO IN 92,656 LIVE LINES over 27.81 h
+// continuous — `hardware/bench-2026-09-04-E-soak.md`.
 //
 // AND IT CUTS THE WORK THIS TASK DOES PER MESSAGE BY THE DELTA COUNT, which is
 // the other reason it is here: six task-watchdog aborts in that soak, six for

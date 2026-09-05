@@ -400,6 +400,33 @@ and deliberately left alone there.*
   its diff moved nothing it did not have to.
 - Evidence: `docs/briefs/M5-stage-E-the-publish-boundary.md` session log 2026-09-04.
 
+**D9 · Binance's documented 24 h disconnect was never observed, so the board's handling of it
+is untested.** *[B] — measured at M5 stage E; needs a bench sitting, not a code change.*
+
+- **What was measured.** The stage E soak (`hardware/bench-2026-09-04-E-soak.md`) ran **27.81 h
+  continuous**, and within it **one websocket connection lived 27.59 h with no close of any kind**
+  — opened 13:49:21.937 on 2026-09-04, still up at the capture's last line at 17:24:40.639 the next
+  day. The three closes that did occur were all in the first 40 minutes (4.40 h, 2.44 min,
+  12.92 min), every one a `[clean-close]` with `errno=128`.
+- **Why it matters more than a missing tick.** D-C §1 requires a run exceeding 24 h *because the
+  venue is documented to close the connection at 24 h and a shorter run "has not observed the one
+  disconnect the venue guarantees"*. The bar was met and **the disconnect did not appear**, so the
+  reconnect path that a scheduled close would exercise remains **unexercised by any run in this
+  project**. The board is not known to be wrong here; it is not known to be right, and D-C's own
+  reasoning is what says the difference matters.
+- **Two limits on the finding, both of which are why this is a card and not a correction.** The
+  endpoint is **`data-stream.binance.vision`**, not the production `stream.binance.com` the 24 h
+  policy is documented for — so the venue may simply not apply it here. And one connection is one
+  sample.
+- **What would settle it**, cheapest first: run a soak against the production host and see whether a
+  close arrives near 24 h; or provoke the path directly rather than waiting for the venue, since a
+  server-initiated close is what is untested and not the clock that triggers it. **If the vision
+  host genuinely does not close, then D-C §1's >24 h bar is measuring something the venue does not
+  do**, and the bar itself should be re-derived rather than inherited — which is close-out work and
+  deliberately not decided here.
+- Evidence: `hardware/bench-2026-09-04-E-soak.md` §4; `docs/briefs/M5-stage-E-the-publish-boundary.md`
+  session log 2026-09-05; `docs/briefs/M5-stage-D-C-the-soak.md` §1 for the premise.
+
 **D4 · Live web mirror** *(optional)* — a browser twin of the panel's `DisplaySnapshot` feed.
 *That* would be companion site #4 and trigger the shared-component-repo review. The portfolio
 page itself is scheduled work (MP) inside the portfolio repo and does **not** count toward
