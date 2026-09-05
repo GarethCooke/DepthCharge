@@ -1,6 +1,6 @@
 # M5 Stage E — the publish boundary
 
-**Track:** Mixed [host first, then one flash, then a soak] · **Status:** Not started · **Size:** one evening for the host half; the soak runs overnight
+**Track:** Mixed [host first, then one flash, then a soak] · **Status:** ✅ **Done (2026-09-05)** · **Size:** one evening for the host half; the soak runs overnight
 **Read first:** `/ARCHITECTURE.md` §4 and §6, commit `eff1ee9` and its message, `docs/briefs/M5-stage-D-C-the-soak.md`.
 
 ## Goal
@@ -240,10 +240,10 @@ count and close E on its own acceptance in §6.
   claims Kraken applies a whole message before emitting
 ☑ All five known unknowns answered in the log, including the ones whose answer
   was "unchanged"
-☐ Soak re-run >24 h continuous; reset count recorded whatever it is
+☑ Soak re-run >24 h continuous; reset count recorded whatever it is — 27.81 h, 1 reset
 ☑ ARCHITECTURE §9 gets the decision: the publish boundary is the message, not
   the event, and why
-☐ ROADMAP status updated
+☑ ROADMAP status updated — M5 stays open on the close-out list and D-A4
 
 ## Out of scope
 
@@ -514,3 +514,67 @@ session needs` warning fired as usual.
 `depthcharge-binance`, `log2file`, the commit SHA written into the log as a `###`
 marker. §8 is the standing warning that a surviving reset is a separate stage,
 not a failure of this one. Then ROADMAP's milestone status.
+
+### 2026-09-05 · Claude Opus 5 · §5 step 3 — the soak, and sha256 `eb638db1…`
+
+**Capture pinned first, per D-C task 0.**
+`firmware/logs/device-monitor-260904-090921.log`, sha256
+`eb638db136dea82c8e1bb5bb546ddd671875811554748fb98d42bc2314321128`, **65,658,299 B**, **880,353
+physical lines** of which **440,180** carry the monitor timestamp, `09:09:23.371` (2026-09-04) →
+`17:24:40.639` (2026-09-05). Committed compressed as `hardware/bench-2026-09-04-E-soak.log.gz`
+(9,048,127 B, 7.3×), **verified by inflating and re-hashing rather than assumed**;
+`tools/soak_report.py` reports the same sha256 from its own provenance block, which is a second
+reader agreeing about the same bytes. The reading is `hardware/bench-2026-09-04-E-soak.md`, one
+document, on the D-C precedent that splitting it would put the hash in one file and the figures
+derived from it in another.
+
+**§1 IS MET.** 32.25 h of wall clock, **two boots**, the second **27.81 h continuous** — the first
+stretch in this project to clear 24 h, by 3.8 h. Accumulated uptime equals wall clock to the second.
+
+**Stage E's acceptance passes on the board.** **0 crossed LIVE ladder lines out of 92,656**, both
+boots. The pre-fix run drew **1,066 of 35,177** (3.03%), worst spread −$39.79.
+
+**Decisions, with why.**
+
+- **Both logs were counted by one pass rather than quoted from two documents**, which is what
+  surfaced the reconciliation: **this brief's 1,032 is `bid > ask`, and `Book::publish`'s guard is
+  `>=`, which also catches 34 locked frames — 1,066.** The brief's panel figure was 34 short of the
+  engine's own criterion. It changes nothing (post-fix is 0 on the stricter test, hence 0 on both)
+  and it is recorded because a reader comparing 1,032 against a `crossed_publishes` counter would
+  be comparing two different questions.
+- **The publish reduction is stated as a range, not a constant.** B2: 719,618 publishes in
+  100,102 s = 7.19/s, against 14,647,852 events integrated from the `-- rate` windows = 146.35/s.
+  That is **20.4×** on this run's traffic; the 90 s sample right after the flash measured 40×. Same
+  mechanism, different markets. Quoting either as *the* factor would be the mistake.
+- **Known unknown 3 is confirmed at length**: `published_v=719,620`, `drawn=674,672` — **93.8% of
+  published frames reached the panel** over 27.8 h, against roughly 4% before.
+- **§8's prediction is what happened, and the record says so in §8's own words.** One task-watchdog
+  reset, at 4.45 h, identical signature (`IDLE (CPU 0)` starved, `dc_feed` on CPU 0). Rate 6 in
+  34.56 h → **1 in 32.25 h**, longest continuous 9.84 h → 27.81 h. **Recorded as suggestive and not
+  as a result:** n=1, and `-- cpu healthy c0=93%` says core 0 is no less busy in steady state.
+  Separate stage, exactly as §8 declared in advance.
+- **The run refutes D-C §1's premise, which is worth more than the box it ticks.** D-C requires
+  >24 h *because Binance closes the connection at 24 h by policy*. This run exceeded 24 h and
+  **observed no such close**: three socket ends, all before 13:49 on day one, then one connection
+  from 13:49:21.937 to the last line — **27.59 h, no close of any kind**. Two caveats are in the
+  record rather than left for a later argument: the endpoint is `data-stream.binance.vision`, not
+  production `stream.binance.com`, and one connection is one sample. **Whether >24 h is still the
+  right bar is close-out work** — the bar was met and the thing it was meant to catch did not appear.
+- **Grey fell 71.4% → 10.97% and the record explicitly does not claim it.** Still `seq-gap` driven
+  (1,513 episodes, median 4.75 s, max 12.34 min, `resync_req=1262`, `heals=0`), which is the reseed
+  mechanism — **D-A4, out of scope**. Market conditions differ and no controlled comparison exists.
+  The number is good for one thing: this stage did not make greying worse, which was a live risk
+  when the publish rate fell by twenty.
+- **One reading recorded and deliberately not adjudicated.** `-- signal … >=2x med=4` of 4,977
+  samples, where D-C's check 2 rested on that counter being **0** of 12,417. The four coincide with
+  the four watchdog arms, so they look like intervals that legitimately greyed rather than healthy
+  ones that nearly did — but that is the ambiguity D-C's check 2 left open. Stage E ran to test a
+  publish boundary and is not entitled to rewrite the multiplier rule, exactly as D-C said of
+  itself. It goes to the M5 close-out with both sets of numbers.
+- **The image still cannot name its own commit** (`markers : 0`, banner still
+  `DepthCharge M4 stage D`), but unlike D-C the identification is evidence rather than inference:
+  `b49c923` was flashed at 08:17 with `esptool` hash verification, logged in this brief, and the
+  soak's POWERON is 09:09:23 the same morning with no flash between.
+
+**Not done.** The M5 close-out list is untouched and D-A4 is still out of scope. The watchdog crash
+is now a named successor with one post-fix data point.
