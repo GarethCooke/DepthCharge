@@ -667,6 +667,55 @@ defects §5c records — a document that has been half-updated reads as though i
 they cost commits 5–7 being rebuilt and re-laddered. **Prose has no compiler, which is the argument
 for putting the arithmetic in a test wherever it can go.**
 
+#### 6b · What has to be true of the board for the mechanism to run at all
+
+**Asked at the split, and it is the right question: if the state cannot be reached deliberately then
+`adopted = 0` at a bench confirms nothing.** Derived from the code, not estimated.
+
+**THE ONLY ENTRY POINT IS THE COVERAGE TRIGGER.** `reseed_holding_` is set only by
+`on_reseed_issued()`, and only when `seed_ == Seeded`; the transport calls that only on
+`SeedAction::Issue`, which needs `wanted`; and on a seeded book `wanted` is `reseed_wanted()`. Every
+writer of `reseed_wanted_` was enumerated: `drop_book` and `buffer_diff` leave the book `Unseeded`,
+`on_rest_missing` raises only while `Unseeded`, and `on_reseed_abandoned` / `hold_for_reseed` /
+`adopt_reseed` all require a hold already open. **`note_depth`'s cover trigger is the sole way in.**
+
+So the board must satisfy, simultaneously:
+
+1. **A seed that ARMS the trigger** — `limit=1000` returning at least
+   `kBinanceReseedCoverLevels` (448) levels on **both** sides. Below that the trigger is never armed
+   and `seeds_below_margin` counts it instead. (ATOMEUR cannot: its whole book is ~16 bids.)
+2. **~552 levels of seeded coverage consumed on one side** — from ~1,000 down to 447.
+3. **No `drop_book` anywhere in between** — no `SeqGap`, no socket drop, no overflow. This is the
+   binding constraint.
+
+**HOW LONG (2) TAKES, bounded from the two measurements in the tree.** B2's worst 15 s coverage loss
+is 168 levels, so 552 is **~50 s** at a sustained worst-case burst; the mean walk gives a
+`limit=1000` seed's $224.52 range against BTCUSDT's $0.33/s, so 55% of it is **~375 s**. The truth is
+between, and closer to the second.
+
+**HOW LONG THE BOOK LIVES, measured off the two committed soaks:**
+
+| run | mean live stretch | median | p90 | >= 375 s |
+| --- | ---: | ---: | ---: | ---: |
+| D-C (2026-08-30, pre-stage-E) | **6.6 s** | — | — | — |
+| stage E (2026-09-04) | **67.2 s** | 40 s | 180 s | **52 of 1,468 (3.5%)** |
+
+**So the answer changed under this stage's feet, and both halves matter.** On the D-C-era board the
+state was **unreachable** — mean book life 6.6 s against a 50 s floor — and `adopted = 0` there
+would have confirmed nothing. **Stage E's publish boundary is what made it reachable**: the same
+board now runs a median 40 s live and produced 52 stretches over 375 s in 32.25 h, with a maximum of
+1,592 s. It is a TAIL phenomenon: **a short sitting will see nothing; a multi-hour soak has dozens of
+chances.**
+
+**THE SITTING MUST THEREFORE BE A SOAK, NOT A SITTING** — and that is D-C's second run, which is
+where this belongs anyway.
+
+**AND THE LINE WAS BLIND TO THE DIFFERENCE UNTIL NOW.** `min_bid_cover` / `min_ask_cover` are
+tracked by the adapter and were printed nowhere, so a run could not say whether the trigger was
+approached or nowhere near. `-- reseed :` now carries `cover=B/A of 448` and `below=`, which splits
+`adopted = 0` into *never armed*, *never approached*, *came close* and *ran and failed* — only the
+last of which is a verdict on the mechanism. Without it the owner's objection stands in full.
+
 #### 7 · Exact next step
 
 1. ~~Review the split and approve or amend it.~~ **Done 2026-09-06** — approved as re-proposed with
@@ -674,7 +723,12 @@ for putting the arithmetic in a test wherever it can go.**
 2. ~~Create the commits, verify each in a detached worktree, push.~~ **Done** — eight commits,
    `origin/m5/stage-d-a4` = `ec80ec4`. **`master` is NOT fast-forwarded** and stays at `25510ec`
    until the owner publishes it, which is a separate deliberate act.
-3. **The one thing this session could not do: flash it.** `DisplaySnapshot::reseed` reaching
+3. **The one thing this session could not do: flash it — and it must be a SOAK rather than a
+   sitting.** §6b derives why: the coverage trigger is the only route to a re-seed on a live book,
+   it needs ~552 levels of coverage consumed with no `drop_book` in between, and only 3.5% of stage
+   E's live stretches are long enough. Read `cover=B/A of 448` and `below=` on the `-- reseed :`
+   line before reading `adopted`; `adopted=0` with `cover` far above 448 is a run that was too
+   short, not a mechanism that failed. `DisplaySnapshot::reseed` reaching
    `InFlight` *on the board* is unverified, and so is the `-- reseed :` line. The bench reading that
    settles it is `adopted` climbing while `greys` stays flat. Note that on the D-C capture **every**
    re-seed followed a `drop_book` (`resync_req=643`, `grey_n=642`, `seqbreak=641`, `no_slot=4708`) —
