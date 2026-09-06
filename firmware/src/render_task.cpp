@@ -280,14 +280,50 @@ void RenderTask::print_stats() noexcept {
     // re-seed land on a live book without dropping it".
     //
     // `adopted` climbing with `greys` flat is the whole claim of the stage.
+    //
+    // **AND `cover=` IS WHAT STOPS `adopted=0` MEANING NOTHING**, which is the
+    // question this line has to survive at a bench. The ONLY route to a re-seed
+    // on a LIVE book is `note_depth`'s coverage trigger — every other writer of
+    // `reseed_wanted_` either needs a hold already open or has just left the
+    // book `Unseeded` — so `adopted=0` has three completely different causes and
+    // the counters above cannot separate them:
+    //
+    //   below=N>0                 the seed never armed the trigger: it arrived
+    //                             already under its own margin, so re-fetching
+    //                             at the same depth would change nothing.
+    //   triggers=0, cover >> 448  the trigger armed and was never approached.
+    //                             The book did not live long enough, or the
+    //                             market did not walk. NOT a verdict on the
+    //                             mechanism, which was never asked to run.
+    //   triggers=0, cover ~ 448   it came close. A longer run would do it.
+    //   triggers=N, adopted=0     the mechanism RAN and did not adopt. That is
+    //                             a verdict, and `unbracketed` says which kind.
+    //
+    // Low-water marks, so they answer "how close did it get" over the whole run
+    // rather than "where is it now". `-` while `have_seed_bounds_` is false,
+    // because the sentinel is 0xFFFFFFFF and printing four billion as a depth
+    // would be the reassuring-instrument failure this project keeps recording.
+    char cover_b[12];
+    char cover_a[12];
+    const auto fmt_cover = [](char* out, std::size_t cap, std::uint32_t v) {
+        if (v == 0xFFFFFFFFu) { out[0] = '-'; out[1] = '\0'; }
+        else { std::snprintf(out, cap, "%u", static_cast<unsigned>(v)); }
+    };
+    fmt_cover(cover_b, sizeof cover_b, a.min_bid_cover);
+    fmt_cover(cover_a, sizeof cover_a, a.min_ask_cover);
+
     ESP_LOGI(kTag, "-- reseed : adopted=%llu unbracketed=%llu hold-overflow=%llu"
-                   " | declined(no-hold)=%llu adoptable=%llu | triggers=%llu",
+                   " | declined(no-hold)=%llu adoptable=%llu"
+                   " | triggers=%llu below=%llu cover=%s/%s of %u",
              static_cast<unsigned long long>(a.reseeds_adopted),
              static_cast<unsigned long long>(a.reseeds_unbracketed),
              static_cast<unsigned long long>(a.reseed_holds_overflowed),
              static_cast<unsigned long long>(a.resnapshots_declined),
              static_cast<unsigned long long>(a.resnapshots_adoptable),
-             static_cast<unsigned long long>(a.cover_triggers));
+             static_cast<unsigned long long>(a.cover_triggers),
+             static_cast<unsigned long long>(a.seeds_below_margin),
+             cover_b, cover_a,
+             static_cast<unsigned>(depthcharge::binance::kBinanceReseedCoverLevels));
     ESP_LOGI(kTag, "-- errors : parse=%llu price=%llu qty=%llu symbol=%llu unknown=%llu"
                    " | seqbreak=%llu overflow=%llu | levels applied=%llu removed=%llu evicted=%llu",
              static_cast<unsigned long long>(a.parse_errors),
