@@ -15,13 +15,56 @@
 //
 // At M5 stage D-A1 the Binance build cleared the double-buffer floor by
 // **3,628 bytes**, and at that margin one more field in the adapter removed the
-// panel. **D-A2 widened it to 44,596 B** by moving `FramePipe`'s 64 KiB out of
-// `.bss`, and the assertion is worth MORE rather than less for that: the margin
-// is no longer the thing holding the panel up, so a regression would now be
-// silent for a long time before it bit. It also now guards a second input — the
-// reserve rose 80 -> 104 KiB in the same stage to cover a concurrent TLS
-// session, and a future rise spends this margin without touching `engine/` at
-// all.
+// panel. D-A2 widened it, by moving `FramePipe`'s 64 KiB out of `.bss`, and the
+// assertion is worth MORE rather than less for that: the margin is no longer
+// the thing holding the panel up, so a regression would now be silent for a long
+// time before it bit. It also now guards a second input — the reserve rose
+// 80 -> 104 KiB in the same stage to cover a concurrent TLS session, and a
+// future rise spends this margin without touching `engine/` at all.
+//
+// ---------------------------------------------------------------------------
+// TWO MARGINS LIVED IN THAT PARAGRAPH AND ONLY ONE OF THEM WAS EVER MEASURED
+// (corrected M5 stage D-A4, which the brief sent to "reconcile or name" it)
+// ---------------------------------------------------------------------------
+//
+// The sentence above used to end *"D-A2 widened it to 44,596 B"*, and D-A4's
+// brief carried a second figure for what reads as the same quantity — *"~43.6
+// KiB headroom under the bound"*. Neither was right, and they were not even
+// about the same measurement:
+//
+//   **3,628 B is a BOARD READING and it is sound.** D-A1's acceptance printed
+//   `dma-internal free=117548 … reserve=81920 budget=35628`, and 35,628 - 32,000
+//   is 3,628 (`M5-stage-D-A1-…md`, reading 2). It is the RUNTIME margin.
+//
+//   **44,596 B was never measured.** No board reading in the tree produces it.
+//   `panel.hpp`'s reserve note forecasts *"the Binance build's budget goes
+//   35,628 -> ~76,588"*, and 76,588 - 32,000 = 44,588 — eight bytes away, and
+//   itself flagged there as **"STILL A FORECAST, AND SAID SO"**. So the figure
+//   was a forecast quoted as an outcome, in a file whose whole subject is a
+//   number going stale.
+//
+//   **43,564 B (the brief's "~43.6 KiB") is the right arithmetic on a stale
+//   input.** It is 111,624 - 68,060, and 68,060 is `sizeof(BinanceAdapter)` as
+//   D-A1 measured it — superseded by D-A2 in the same stage that produced
+//   44,596, when `buf_` (64 x 32 = 2,048 B) followed `buf_lvl_` to the heap.
+//
+// The two margins ARE the same quantity by construction — that is what the
+// derivation below establishes — but only when the free-internal reading, the
+// linker delta and the `sizeof` are all of one vintage. Here the reading was
+// D-A2's, the delta D-A1's and the `sizeof` D-A1's, so the identity broke and
+// nothing noticed, twice, in two documents.
+//
+// **THE FIX IS NOT A THIRD NUMBER IN A COMMENT.** The headroom is now a
+// constant this file computes and the build checks —
+// `kVenueInternalHeadroomBytes`, pinned below at the figure the compiler
+// actually produces. A margin quoted in prose has now been wrong twice in three
+// stages; a margin the linker recomputes on every build cannot be.
+//
+// Also corrected here: the linker table below is D-A1's and its Binance row is
+// **2,048 B stale for the same reason**. Left standing, with this note, because
+// it is the evidence for the derivation rather than an input to it — the
+// constant it feeds is `kAnvilAdapterBytesAtMeasurement`, which is Anvil's and
+// did not move.
 //
 // The failure it prevents is unchanged: `Panel::begin()` measures the free heap,
 // finds no rung fits, prints
@@ -189,10 +232,71 @@ static_assert(kVenueInternalBudgetBytes == 111'624,
 //      is derived against — which is a panel decision and belongs to a bench
 //      sitting, not to whoever tripped the assertion.
 //
-// What is NOT on the list is editing `71'308`.
+// What is NOT on the list is editing `111'624`. (This line said `71'308` until
+// M5 stage D-A4 — the D-A1 value, left behind when D-A2 re-derived the constant
+// two paragraphs above it. A note naming the wrong number is worse than none,
+// because it reads as a cross-check and is not one.)
 static_assert(internal_resident_bytes<venue::Adapter>() <= kVenueInternalBudgetBytes,
               "this venue's adapter no longer leaves room for a double-buffered panel: "
               "the board would boot single-buffered or with no panel at all. "
               "See venue_budget.hpp — firing this is a decision, not a number to raise.");
+
+// ===========================================================================
+// AND HOW MUCH IS LEFT — PINNED, BECAUSE PROSE HAS ALREADY GOT THIS WRONG TWICE
+// ===========================================================================
+//
+// M5 stage D-A4. The `static_assert` above is a CEILING: it catches an adapter
+// that has spent the whole 45 KiB and says nothing about one that has spent 40.
+// The headroom is the number every stage since D-A1 has actually quoted — into
+// briefs, into this file's own header, into ROADMAP — and it is the number that
+// went stale, because nothing recomputed it.
+//
+// This does. It is `sizeof` minus two constants, so the compiler produces it on
+// every build, and the pin below makes any movement a thing the desk is told
+// about rather than a thing a later reader has to re-derive. Same pattern, same
+// reason, as `sizeof(DisplaySnapshot) == 1168`.
+inline constexpr std::size_t kVenueInternalHeadroomBytes =
+    kVenueInternalBudgetBytes - internal_resident_bytes<venue::Adapter>();
+
+// BINANCE ONLY, AND THE OMISSION OF THE OTHER TWO IS DELIBERATE.
+//
+// M5 stage D-A4 built and verified `-e depthcharge-binance`. It did not build
+// the Anvil or Kraken arms, and a pin on an arm this session never compiled
+// would be a number nobody has seen the compiler produce — which is precisely
+// the wave-through the per-commit verification rule exists to prevent, written
+// into the file that rule protects. Whoever next builds those arms can add
+// theirs, with the same evidence.
+//
+// **66,040 B on xtensa, measured 2026-09-06** by instantiating an incomplete
+// template on `internal_resident_bytes<venue::Adapter>()` under
+// `pio run -e depthcharge-binance` and reading the value out of the diagnostic.
+// It is NOT the host figure — `dc_tests` reports 66,048, because two
+// `std::unique_ptr` members are 8 bytes there and 4 here — and this header is
+// compiled only by `main.cpp`, so the xtensa value is the only one this
+// assertion can ever see. (No host test reaches this file at all: it includes
+// `panel.hpp`, which includes the HUB75 driver. That is why a commit touching
+// this file is unverified by a green ctest, and it is the same coverage gap
+// D-A3 found in `venue_build.hpp`.)
+//
+// The stage moved it by **+32 B exactly** — four `std::uint64_t` counters added
+// to `BinanceAdapter::Stats`: three for the re-seed mechanism, and
+// `diffs_inside_baseline` for the venue-procedure clause review found missing.
+// **Both ends of that are measured rather than derived** — 66,008 B at `master`
+// and 66,040 B here, each read out of the compiler by instantiating an
+// incomplete template on the expression, in a detached worktree for the first.
+// This pin is what turned the fourth counter into a decision: it fired, and the
+// number below was re-measured rather than adjusted to fit. The mechanism's own
+// state is one `bool` and it cost nothing, landing in padding the object already
+// carried; the 8 KiB + 512 KiB it runs on is `buf_`/`buf_lvl_`, which have been
+// in PSRAM since D-A2. That is the invariant #7 statement in full: **no
+// allocation at all, at any point, including construction — only the access
+// pattern of an existing block changed.**
+#if DC_VENUE == DC_VENUE_BINANCE
+static_assert(kVenueInternalHeadroomBytes == 45'584,
+              "the Binance adapter's internal footprint moved. That is allowed and it is a "
+              "DECISION: re-measure under `pio run -e depthcharge-binance`, say what moved "
+              "it and why, and update this pin in the same commit. Do not delete it — the "
+              "margin it guards has been quoted wrongly in two documents already.");
+#endif
 
 }  // namespace depthcharge::fw
