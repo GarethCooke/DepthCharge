@@ -377,8 +377,9 @@
     <span class="status amber">next <b>M5 &mdash; Binance adapter &middot; <b>stage 0 done 2026-08-24</b> &mdash; the venue publishes no checksum, so the stage's real work was inventing the oracle. It is the venue's own <code>@depth20</code> stream: its <code>lastUpdateId</code> coincides exactly with a diff <code>u</code> on <b>every payload of every complete capture (899/899, 901/901, 90/90, 29/29)</b> &mdash; a committed <em>slice</em> can hold one trailing partial that cannot be graded, and one does, which is a cut artefact chased to its line and not a venue behaviour &mdash; it grades a correct client <b>884/884</b>, and it is red against all three mutants while <b>U/u bracketing catches 0 of 3</b> &mdash; U/u detects transport loss (it caught the deliberate reconnect's 2,204 missed updates) and says nothing about book correctness. It caught an undesigned defect on its first run: seeded at the obvious <code>limit=100</code> a correct client scores <b>82.4%</b> while U/u is 890/890 clean, because 100 levels is a <b>$16 price window</b> and BTCUSDT moved <b>$29.85 in 90 s</b>. Priced: <b>22.84 KiB/s</b> for both streams at the 100 ms tick (1.3&times; / 2.5&times; headroom), 9.47 KiB/s diff-only, and the oracle costs <b>+141%</b> and is the majority of the wire. Precision is a uniform <b>8 decimals, not <code>tickSize</code></b> (202,012/202,012 entries, zero exponents, zero floats) and <code>kMaxSnapshotLevels = 256</code> <b>is not enough</b> (33/884 failures in 90 s). <b>And the constraint with teeth: Binance declares no liveness signal at all</b> &mdash; both depth streams go silent, 30 messages in 90 s on a quiet pair with a 10.5 s worst gap &mdash; so the 2026-08-17 grey ruling has nothing to arm on and M5 must either publish the venue's 20 s server PING across the &sect;4 boundary or grey by socket death alone &middot; <b>stage A done 2026-08-25</b> &mdash; <b>the two records that are not frames</b>: the trace record grew an optional <code>kind</code> (absent = <code>frame</code>), so a <b>REST body</b> can carry the request that produced it and a <b>WebSocket PING</b> can be a record at all &mdash; one widening, because <code>classify()</code> had to become answerable about a record with no frame and the <code>static_assert</code> moved with it. <code>Venue::Binance</code> lands with its decoder a <b>classifier</b> (0 FeedEvents, counted not claimed) and the driver refusing the venue by name, exactly where Kraken sat between stage A and B1. <b>All seven committed slices read end to end, none reshaped; eleven pre-existing traces byte-identical and no golden moved</b> (dc_replay's output over them differs in six lines, all Kraken, all one parenthetical, no count). <b>Strain 22 closed</b>: unmatched venue is now a hard failure in both languages. The ping is counted in a committed file for the first time &mdash; <b>17 across the seven, every one answered</b> &mdash; and its cadence reproduces stage 0's 19,970 ms from the files themselves (19,951.7 / 20,011.6 / 20,013.3 ms), which is only obtainable from <code>event_ns</code>: three pings 20 s apart share one <code>rx_ns</code>. <b>Two findings handed to C</b>: the ruling's ~80 s threshold is <b>clamped to 30 s</b> by <code>kThresholdCeilingMs</code>, and at a 20 s cadence <code>kMinSamples = 8</code> needs ~160 s so <b>no committed slice calibrates at all</b> &mdash; the two values coincide, so nothing misbehaves and the self-calibration is simply inert. And the pre-<code>48ba299</code> trailing-snapshot question is answered: <b>one of the seven lost one</b> (<code>binance_atomeur_d100ms</code>), and it costs nothing &middot; <b>stage B1 done 2026-08-25</b> &mdash; <b>the third adapter, graded on day one</b>: `dc_binance_oracle` drives the REAL adapter over every committed slice and compares its ladder against the venue's own <code>@depth20</code>, and <b>every matched count equals tools/binance_oracle.py's for the same file</b> &mdash; two implementations, two languages, identical grades (<b>235/235 GREEN</b> on both deep-seed witnesses). <b>Strain 25 closed</b>: no third scanner, Kraken's lifted verbatim into <code>json_scan.hpp</code> and reused with <b>no venue flag</b>, 327 lines moved and none changed, held still by an assertion count identical to the byte (<b>3,609,744</b>). Mutation-verified against the oracle: <b>qty-0-not-a-removal, sides-swapped and book-bounded-at-256 all go 235&rarr;0 matched</b>. <b>TWO TRUNCATION BOUNDARIES</b>, which is new &mdash; storage must be 1,024 deep because the sweep says the requirement is a property of how far the market walked (<b>the two witnesses disagree by 5&times;</b>: 100 clean on one, 500 needed on the other), while emission cannot exceed the engine's 256. Cost stated: <b>~96 KiB</b> fixed, never allocated. <b>The crossed-book question answered with a count: 0 crossed, 0 touched across all seven</b>, tightest spread one tick. And <b>strain 26 opened</b>, which is the finding with teeth: a <b>misspelled stream returns HTTP 101, answers pings in 0.107 ms and delivers nothing for ever</b> &mdash; invariant #5's frozen ladder arriving through the mechanism installed to prevent it, and the liveness ruling cannot see it &middot; <b>stage B2 done 2026-08-26</b> &mdash; <b>the seed, the walk and the schedule</b>. &sect;9's untracked-evidence clause is <b>discharged</b>: the two mixed-cadence captures the audit-stream ruling was signed on are committed <b>whole</b>, not sliced &mdash; because a guard trace pins a BEHAVIOUR and may be cut to the smallest window that exercises it, while <b>a ruling's evidence pins a DECISION and cannot be cut at all</b>, its figure being a rate over a complete capture. They reproduce 90/90 coincidence and <b>88/88 GREEN</b> in two implementations, and they close a gap nobody had named: <b>the board runs <code>@depth20</code> at 1000 ms and no mutant had ever been run at that cadence</b>. <b>The re-snapshot trigger is an observable rather than a timer &mdash; and it is NOT the instrument B1 built</b>: <code>min_bid_levels</code> counts levels HELD, which only ever grows, so it reads a flat, healthy <b>100/100 through the two captures where the 82.4% failure class actually happens</b>, while seeded COVERAGE goes to <b>0</b> &mdash; on the reconnect capture the bid side collapses <b>100&rarr;0 in 1.2 s</b>, faster than one REST round trip. The margin is sized against a <b>bounded fetch deadline</b> rather than a percentile (<code>margin &ge; walk rate &times; T</code>, T = 15 s, worst 15 s coverage loss <b>168 levels</b>, trigger at <b>448</b>): 36 committed REST records over two tiers give max/median <b>1.053</b> and <b>1.058</b>, so the round trip has no tail worth sizing against &mdash; and every one of them is a <em>desk-box</em> figure against a board where B3 measured DNS at 14,000 ms. <b><code>age_ms</code> measured through a throttled replay</b> and the B1 hypothesis <em>narrowed</em>: it <b>TRACKS</b> a socket backlog at 1.00&times; (the ping shares the TCP stream) and is <b>BLIND</b> to a feed backlog, which is physical only at this venue &mdash; and, separately, <b>it has no reading at all for the first ~11 minutes of every connection</b>, because 32 baseline intervals at a 20 s ping cadence is 639 s. Two captures committed, including the <b>221 s calibration trace</b> that finally lets a host test enter the self-calibrated liveness branch C has to tune &middot; <b>stage C done 2026-08-26</b> &mdash; <b>what a green liveness clock is entitled to mean</b>. The threshold is settled and the measurement said neither of the two numbers on the table: <b>the multiplier AND the ceiling become per-venue</b>, because an absolute duration in a venue-agnostic object is a per-venue multiple &mdash; one 30,000 ms ceiling is 60&times; Anvil's median, 30&times; Kraken's and <b>1.50&times; Binance's</b>, and a ceiling at 1.5&times; the healthy median is not a ceiling, it is the threshold. The multiplier is <em>derived</em> by <code>liveness_clock.hpp</code>'s own rule rather than inherited &mdash; worst healthy as a multiple of the venue's own median, times ~2 &mdash; giving <b>2.0</b> against this signal's measured 1.005&times;, and a threshold of <b>39,927.94 ms, calibrated and unclamped for the first time</b>. <b>Anvil and Kraken do not move at all, by construction</b>: their rows are the shipping defaults and <code>firmware/</code> passes nothing, so every Anvil and Kraken report is byte-identical and no pin or golden moves. Cost stated: the uncalibrated default IS the ceiling, so Binance's pre-calibration threshold goes 30 s &rarr; 60 s for the 159.7 s <code>kMinSamples</code> takes here. <b>Strain 26's seed limb is closed by remedy (a)</b> &mdash; the <code>Snapshot</code> is published when a diff brackets <code>lastUpdateId + 1</code> and never before, so the lying socket greys with no threshold, no detector, no new <code>GapReason</code> and no §4/§6 change; the defect fixture went from a populated <b>LIVE</b> ladder to <code>STALE &mdash; book unknown</code> and <b>its two THE LIE assertions were inverted in the commit that made it pass</b>. <b>(b) was rejected on a finding</b>: it does not work on the board, because <code>expired()</code> is gated on <code>armed_</code> and only the first <code>on_liveness</code> sets it, so withholding liveness leaves the watchdog never armed and the lie permanent. <b>The transport-versus-feed limb has no fix and is now stated at the point of use</b>, and <b>M5 cannot claim parity with M4's definition of done</b> &mdash; the reduced claim is written out rather than left to the bench. Strain 28's C-half is done: <code>DisplaySnapshot::reseed</code> in existing padding, <code>sizeof</code> unmoved on host <em>and</em> xtensa, with <code>InFlight</code> deliberately unreachable so the open card is visible on the panel. <code>kAgeWindowSamples</code> decided and unchanged. And two ground-truth traces had been <b>CRLF in the working tree since 2026-08-07</b> with <code>git status</code> clean throughout &mdash; restored, and since the repair has no diff, <b>what ships is the guard</b>: no committed trace may contain a CR byte</b></span>
     <span class="status"><b>stage D-A1 desk work done 2026-08-27</b> &mdash; <code>[env:depthcharge-binance]</code> builds, <code>DC_VENUE=3</code>, one TLS anchor for both hosts (a shared wildcard leaf, verified against each server). <b>The stage’s first lever was void:</b> the &ldquo;four WS buffers to PSRAM, +16,384&nbsp;B&rdquo; went with <code>esp_websocket_client</code> on 2026-08-16, so the 16&nbsp;KB was already inside the baseline and the projected +3,488&nbsp;B clearance of the double-buffer floor was really a <b>12,920&nbsp;B deficit</b>. Covered by <code>kReserveInternalBytes</code> 96&rarr;80&nbsp;KiB &mdash; the same obsolete sentence, and recoverable: worst-ever draw <b>62,140&nbsp;B through <code>connects=4</code></b>. <code>buf_lvl_</code> is the project’s <b>first deliberate PSRAM placement</b>, and <code>venue_budget.hpp</code> now asserts the venue adapter’s internal footprint at compile time so the panel cannot be lost at boot &mdash; mutation-verified. <b>Flashed 2026-08-27:</b> the Anvil control moved <code>budget=</code> by <b>exactly 16,384</b> with its rung unchanged, and the Binance board boots <b><code>depth=3 double-buffered</code></b> (<code>free=117,548 budget=35,628</code>, 156&nbsp;B off the projection) with an honestly grey ladder over 580 real depth frames. The cut buys that second buffer out of the network heap, so steady-state largest-block is <b>17,396&nbsp;B against mbedTLS’s 2&times;16,717&nbsp;B</b> &mdash; a 679&nbsp;B margin at <code>connects=1</code>, and <b>D-C records largest-block at every reconnect</b></span>
     <span class="status"><b>stage D-A2 done 2026-08-29 &mdash; a LIVE Binance book on the panel</b>, <code>live=1 rows=54/54</code> held 60&ndash;140&nbsp;s with <code>bracket ok=4 FAIL=0</code> and <code>oversize=0</code>. The seed is fetched by a <b>third task</b> &mdash; the first new cross-task hand-off since M3 &mdash; because <code>esp_tls_conn_new_async</code> does not converge on this build (1,780 polls, four runs, stuck at <code>conn_state=1</code>) and a blocking fetch on the feed task stalled it 1.93&nbsp;s and <b>broke the very bracket it existed to satisfy</b>. A fetch and a TLS reconnect <b>never overlap</b>: a fetch takes the largest free internal block to <b>~4&nbsp;KB against the 16,717&nbsp;B one session needs</b>. <code>kFrameCapacity</code> 16&rarr;64&nbsp;KiB (<b>2.29&times;</b> this venue’s largest message) stopped the board re-greying every ~23&nbsp;s &mdash; its old comment was <b>Anvil’s reasoning, false at a diff venue</b></span>
+    <span class="status"><b>stage D-A4 done 2026-09-06 &mdash; the re-seed is ADOPTED, and strain 28 closes.</b> A body that lands on a live book is now rolled forward across the diffs held during the fetch, so the ladder is rebaselined with a <code>Snapshot</code> where a <code>Gap</code> used to go and <b>the panel never greys for a re-seed</b> (D-B decision 2). <b>Candidate (a), and it cost +32&nbsp;B of internal SRAM &mdash; four counters</b>: stage C priced it at ~128&nbsp;KiB, and D-A2 had already bought 8&nbsp;KiB + 512&nbsp;KiB in PSRAM for the pre-seed path, sized against the same 15&nbsp;s deadline and idle for the whole life of a seeded book. Headroom 45,616&rarr;<b>45,584&nbsp;B</b>, now a pinned constant rather than prose that had been wrong in two documents. <b>Two things it found:</b> <code>replay_buffer</code>&rsquo;s bracket and <code>apply_buffered</code>&rsquo;s continuity check <b>contradict each other</b> &mdash; a body whose <code>lastUpdateId</code> fell inside a coalesced message went live for one event and then grey &mdash; unfired only because the 100&nbsp;ms stream aligns <b>18 of 18</b> times while the 1,000&nbsp;ms one straddles <b>2 of 6</b>; and <b>D-B&rsquo;s header marker could not be drawn on the build it was decided for</b>, because a live BTCUSDT price was 15 characters and 74&nbsp;px on a 64&nbsp;px panel. <b>Both closed by the owner at the split, with the fifth and sixth rendering decisions</b> &mdash; the value trims trailing zeros, and during a fetch the marker (<code>GET</code>) outranks the age. It now draws on every header this project renders; <b>ROADMAP D11 closes</b></span>
     <span class="status">first-party C++ <b>~19,800 lines</b></span>
-    <span class="status">drawn from source at <b>b5578b6</b> + M5 stage D-A2 working tree</span>
+    <span class="status">drawn from source at <b>b5578b6</b> + M5 stage D-A2 working tree; &sect;08 card 28 and the status strip refreshed at <b>M5 stage D-A4</b> (2026-09-06)</span>
   </div>
 </header>
 
@@ -1758,6 +1759,7 @@ classDiagram
         -publish_message() void
         -stamp_age(DisplaySnapshot) void
         -stamp_reseed(DisplaySnapshot) void
+        -service_reseed() void
     }
 
     class SampleRing~T,N~ {
@@ -3764,7 +3766,8 @@ classDiagram
 
   <div class="strain">
     <h4>28 &middot; The trigger asks for a re-seed and nothing can adopt one &mdash;
-        <em>opened 2026-08-26 at M5 stage B2, deliberately, with the choice priced</em></h4>
+        <em>opened 2026-08-26 at M5 stage B2, deliberately, with the choice priced &mdash;
+        CLOSED 2026-09-06 at M5 stage D-A4</em></h4>
     <p>
       B2 built the re-snapshot <b>trigger</b> and did not build the <b>adoption</b>. That is
       not an oversight and it is not a half-finished feature: the brief's constraint is that
@@ -3895,7 +3898,103 @@ classDiagram
       rather than overlapping the price or the age; and it is drawn in <code>Ink::Symbol</code>
       rather than a new <code>Ink</code>, which would cost a stale-palette entry and a
       <code>static_assert</code> for a marker that never appears on a grey panel.
-      <b>This card's D-half is now the mechanism and the memory alone.</b></p>
+      <b>This card's D-half is now the mechanism and the memory alone.</b>
+      <br><br>
+      <b>CLOSED 2026-09-06 (M5 stage D-A4) &mdash; the mechanism is <em>(a)</em>, and its price had
+      already been paid.</b> The adapter holds the diffs spanning a re-seed fetch and rolls the body
+      forward across them: <code>on_reseed_issued()</code> opens the hold at the instant the
+      transport issues (the same instant <code>reseed_wanted_</code> was already cleared at, and it
+      must be that instant &mdash; the venue snapshots about three-quarters of the way through the
+      round trip, so a hold opening later could begin after <code>lastUpdateId</code>), every diff
+      is thereafter applied to the live book <em>and</em> appended to
+      <code>buf_</code>/<code>buf_lvl_</code>, and when the body lands it is bracketed against the
+      first held survivor and, if it brackets, the ladder is reinstalled from the body with the
+      survivors replayed on top. <b>A <code>Snapshot</code> reaches the engine where a
+      <code>Gap</code> used to, so the panel never greys</b> &mdash; D-B decision 2 satisfied by
+      construction. <b>A re-seed that cannot be bracketed leaves the live book standing</b>, which
+      is the one place this path must differ from the seed path: <code>drop_book</code> is right
+      when there is no book to lose, and is candidate (b) through the error door when there is.
+      <br><br>
+      <b>The 128 KiB this card priced (a) at was already bought, by D-A2, for the pre-seed path.</b>
+      <code>kBinanceBufferEvents</code>/<code>kBinanceBufferLevels</code> went 64/2,048 &rarr;
+      256/32,768 at that stage &mdash; <b>8 KiB + 512 KiB, on the heap and therefore in PSRAM</b> &mdash;
+      sized against <code>kBinanceFetchDeadlineMs</code>, <em>the same 15 s deadline a re-seed runs
+      under</em>. That is 4&times; this card's estimate, allocated on every boot, and idle for the
+      entire life of a seeded book: <code>buffer_diff</code> has exactly one caller,
+      <code>on_diff</code>'s <code>Unseeded</code> branch. Pre-seed holding runs only while
+      <code>Unseeded</code> and re-seed holding only while <code>Seeded</code>, so they can never
+      overlap and the array is shareable. <b>Measured cost of the whole mechanism: +32&nbsp;B of
+      internal SRAM, all of it four new counters</b> &mdash; the hold's own <code>bool</code> landed
+      in padding &mdash; and <b>no allocation at all, at any point, including construction</b>.
+      Headroom 45,616 &rarr; <b>45,584&nbsp;B</b>, now pinned as
+      <code>kVenueInternalHeadroomBytes</code> rather than carried in prose, because the prose
+      figure had been wrong in two documents (<code>venue_budget.hpp</code>'s unmeasured 44,596 and
+      the brief's 43,564, computed from D-A1's superseded <code>sizeof</code>).
+      <br><br>
+      <b><code>InFlight</code> is reachable, and reached on the HOST.</b> (<b>Not yet on the board: D-A4 did not flash.</b> The stamp is in <code>publish_current()</code> and all three firmware arms build, but the bench reading that confirms it &mdash; <code>adopted</code> climbing while <code>greys</code> stays flat &mdash; is owed.)
+      It is stamped from <code>reseed_holding()</code> rather than from
+      <code>SeedTask::busy()</code>, which makes D-B's premise a property instead of an assumption:
+      the hold opens only on a seeded book, so <code>InFlight</code> is a live-palette state by
+      construction and the boot fetch stays <code>None</code> over its honest grey.
+      <code>FeedTask::publish_current</code> and <code>replay_driver.cpp</code>'s
+      <code>stamp_reseed</code> carry the identical three-way choice, so the state a golden pins is
+      the state the board publishes. <b>No committed capture fires the coverage trigger</b>
+      (<code>cover_triggers == 0</code> on all six BTCUSDT captures, replayed with the fetch
+      modelled &mdash; the trigger needs 192 levels of margin consumed and the longest capture is
+      90&nbsp;s), so the transition <code>None &rarr; Wanted &rarr; InFlight &rarr; None</code> is
+      asserted against a <b>synthesised</b> trace, on the precedent ARCHITECTURE&nbsp;&sect;9
+      (2026-08-18) sets and stage C already used for this same card. Every publish across it is
+      <code>Live</code> and no stale episode opens, which is D-B decision 2 as an assertion.
+      <br><br>
+      <b>AND THE MARKER CANNOT BE DRAWN ON THE BUILD IT WAS DECIDED FOR &mdash; reported, not
+      fixed.</b> <code>&quot;RESEED&quot;</code> is implemented to all four constraints and is 29&nbsp;px,
+      so it needs <code>left_limit &gt;= 34</code>. Binance's <code>price_decimals</code> is 8 and
+      <code>format_scaled</code> emits exactly that many fractional digits by design, so a live
+      BTCUSDT price is <code>&quot;108234.56000000&quot;</code> &mdash; <b>fifteen characters,
+      74&nbsp;px on a 64&nbsp;px panel</b> &mdash; <code>value_x</code> clamps to 0, and the age, the
+      symbol and the marker are dropped together. The grey panel does not rescue it:
+      <code>&quot;NO LINK&quot;</code> leaves 21&nbsp;px with no age reading and <b>6&nbsp;px with
+      one</b>. <b>D-B judged decision 2 from photographs of a grey panel, and
+      <code>InFlight</code> is a live-palette state</b> &mdash; the observation-window rule
+      (&sect;9, 2026-08-30) with a palette in place of a clock. The arithmetic is pinned in
+      <code>test_ladder_render.cpp</code> and <b>that case is written to fail when the value slot is
+      fixed</b>. The ways out are all rendering decisions and therefore the owner's; the board
+      reports the mechanism on a new <code>-- reseed :</code> serial line meanwhile, so a bench can
+      read it even while the panel says nothing. <b>See ROADMAP D11.</b>
+      <br><br>
+      <b>AND THE OWNER TOOK ONE THE SAME DAY — M5's FIFTH rendering decision, 2026-09-06: the
+      header trims trailing zeros from the value.</b> <code>&quot;108234.56000000&quot;</code>
+      &rarr; <code>&quot;108234.56&quot;</code>, 74&nbsp;px &rarr; 44&nbsp;px. Scoped to the header
+      and <em>not</em> to <code>format_scaled</code>, which nine call sites share — one of them
+      <code>kraken_checksum.hpp</code>, where the formatted string is what the venue's CRC32 is
+      computed over. <b>It is the first rendering decision in this project taken from arithmetic
+      rather than from a panel at desk distance</b>, and it was allowed to be because M5 stage 0
+      measured Binance's scale as a uniform 8 decimals with <code>tickSize</code> a validator: the
+      trimmed digits are <em>provably</em> always zero, so nothing was judged by eye. The licence
+      is a property test — <code>parse_scaled(trim(format_scaled(v,d)),d) == v</code> over nine
+      scales — which is why a venue whose decimals are meaningful cannot be caught by it.
+      ARCHITECTURE &sect;9, 2026-09-06.
+      <br><br>
+      <b>It landed as designed and did not close D11 on its own.</b> A six-character marker needs
+      <code>left_limit &ge; 34</code> and the widest header now leaves 20. And what the trim bought
+      is the <code>-</code> <b>placeholder</b> — 9&nbsp;px spent saying NO READING — not a reading:
+      <code>AgeText</code> has no three-character form (<code>0.0s</code> is four, 19&nbsp;px; the
+      minute and hour forms five), so a real age needs 24&nbsp;px against the 20 on offer and
+      <b>never fits a live Binance header in any priority order</b>. <code>age_ms</code> stays
+      undrawable as a number, which has been true since M4 stage D and which nobody had noticed until
+      this stage measured the header for the marker's sake.
+      <br><br>
+      <b>THE SIXTH RENDERING DECISION, the same day, is what closed it: during a fetch the marker
+      outranks the age.</b> <b>VALUE &gt; MARKER &gt; AGE &gt; SYMBOL</b> while in flight, reverting
+      otherwise — an amendment to a priority standing since M4 stage D, scoped to a fetch and to
+      nothing else. A shorter marker was ruled out on arithmetic: allocated last, one short enough to
+      fit would appear <em>only when the age was too wide to draw itself</em>, so its presence would
+      encode the age's width rather than a re-seed. The marker is <code>GET</code> (three characters,
+      14&nbsp;px) — what is actually outstanding, correlating with the <code>rest: fetch</code>
+      serial line, and deliberately outside <code>reason_text</code>'s vocabulary, every word of which
+      says something is wrong. <b>Measured: the marker now draws on every header this project renders,
+      and ROADMAP D11 closes.</b> The dash it displaces is the ~11 minute baseline window — exactly
+      when a re-seed is most likely. ARCHITECTURE &sect;9, 2026-09-06.</p>
   </div>
 
   <div class="strain">
