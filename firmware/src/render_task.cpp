@@ -266,6 +266,28 @@ void RenderTask::print_stats() noexcept {
              static_cast<unsigned long long>(a.seed_bracket_failed),
              static_cast<unsigned long long>(a.seeds_unconfirmed),
              static_cast<unsigned long long>(a.reseeds_requested));
+    // THE RE-SEED LEDGER (M5 stage D-A4), AND IT IS THE ONLY PLACE THE
+    // MECHANISM IS VISIBLE — which is a finding rather than a preference.
+    //
+    // D-B decision 2 put a marker in the header for a re-seed in flight, and
+    // D-A4 measured that the marker cannot be drawn on this build: Binance's
+    // `price_decimals` is 8, so a live BTCUSDT last price is fifteen characters
+    // and 74 px on a 64 px panel, and the value slot takes the whole header.
+    // The panel therefore says nothing about a re-seed, and this line is what a
+    // bench has instead. It is on its own line rather than appended to the seed
+    // ledger above because the two answer different questions — that one is
+    // "did the seed arrive and did the feed corroborate it", this one is "did a
+    // re-seed land on a live book without dropping it".
+    //
+    // `adopted` climbing with `greys` flat is the whole claim of the stage.
+    ESP_LOGI(kTag, "-- reseed : adopted=%llu unbracketed=%llu hold-overflow=%llu"
+                   " | declined(no-hold)=%llu adoptable=%llu | triggers=%llu",
+             static_cast<unsigned long long>(a.reseeds_adopted),
+             static_cast<unsigned long long>(a.reseeds_unbracketed),
+             static_cast<unsigned long long>(a.reseed_holds_overflowed),
+             static_cast<unsigned long long>(a.resnapshots_declined),
+             static_cast<unsigned long long>(a.resnapshots_adoptable),
+             static_cast<unsigned long long>(a.cover_triggers));
     ESP_LOGI(kTag, "-- errors : parse=%llu price=%llu qty=%llu symbol=%llu unknown=%llu"
                    " | seqbreak=%llu overflow=%llu | levels applied=%llu removed=%llu evicted=%llu",
              static_cast<unsigned long long>(a.parse_errors),
