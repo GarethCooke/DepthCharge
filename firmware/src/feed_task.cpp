@@ -252,6 +252,14 @@ void FeedTask::service_seed(std::int64_t now_us) noexcept {
         // moment this returns.
         seed_.release();
     } else if (seed_.failed()) {
+        // THE BODY IS NOT COMING, SO THE HOLD IS RELEASED (M5 stage D-A4). A
+        // fetch that ended without a body leaves the adapter keeping an interval
+        // nothing will ever be rolled forward across, and the array it keeps it
+        // in is the same one the pre-seed path needs if this book is later
+        // dropped. `on_reseed_abandoned` re-raises the request, which is what
+        // makes the schedule's retry reachable — `due_in_us` returns -1 while
+        // nothing is wanted.
+        adapter_.on_reseed_abandoned();
         schedule_.note_result(false, seed_.report().http_status, now_us);
         seed_.release();
     }
@@ -279,12 +287,25 @@ void FeedTask::service_seed(std::int64_t now_us) noexcept {
             // CLEARED AT ISSUE, NEVER AT COMPLETION. `on_rest_body`'s failure
             // path calls `drop_book`, which re-raises the latch; clearing after
             // would erase the request it had just made.
-            adapter_.clear_reseed_wanted();
+            //
+            // **AND SINCE M5 STAGE D-A4 THIS ALSO OPENS THE HOLD**, which is why
+            // it is `on_reseed_issued()` rather than the `clear_reseed_wanted()`
+            // it replaced: on a live book the adapter now keeps the diffs
+            // spanning this fetch, so the body can be rolled forward across them
+            // instead of being declined. The two acts share this call site
+            // because they share this instant — a hold that opened any later
+            // could start after the instant the venue snapshots.
+            adapter_.on_reseed_issued();
             overflows_at_issue_ = adapter_.stats().buffer_overflows;
             schedule_.note_issued(now_us);
             if (!seed_.request(subscription_.seed_addr(), kBinanceSeedPath)) {
                 // No address yet, or the task is not idle. Counted as a failure
                 // so the schedule backs off rather than spinning on it.
+                //
+                // The hold opened one line above and must close again here: no
+                // fetch was actually started, so nothing will ever arrive to be
+                // reconciled against it.
+                adapter_.on_reseed_abandoned();
                 schedule_.note_result(false, 0, now_us);
             }
             break;
@@ -293,6 +314,13 @@ void FeedTask::service_seed(std::int64_t now_us) noexcept {
             // Condemned. The seed task honours this between esp-tls calls, so
             // the buffer comes back within one `kFetchCallTimeoutMs` and the
             // result is discarded whenever it lands.
+            //
+            // The hold closes NOW rather than when the abandoned fetch's result
+            // lands, and the difference matters in the case this action exists
+            // for: the socket dropped, so `on_disconnected` is about to raise
+            // `Gap{Disconnect}` and `drop_book` — and a hold still open at that
+            // point would be describing a book the next line discards.
+            adapter_.on_reseed_abandoned();
             seed_.abandon();
             break;
         case SeedAction::GiveUp:
@@ -671,6 +699,46 @@ void FeedTask::publish_current() noexcept {
     const AgeReading r = watchdog_.age_and_bank(ns_from_us(now));
     staging_.has_age = r.valid;
     staging_.age_ms = r.ms;
+
+    // THE RE-SEED STATE, STAMPED HERE FOR THE TWO REASONS THE AGE IS (M5 stage
+    // D-A4, deliverable 2). `Book::publish` fills every other field and cannot
+    // fill this one: whether a fetch is outstanding is a fact about a transport
+    // `engine/` does not have (invariant #1), and the feed side is the single
+    // writer (invariant #8). Same position, one line later, for the same reason.
+    //
+    // **`InFlight` IS `reseed_holding()` AND NOT `seed_.busy()`, WHICH IS THE
+    // WHOLE OF THE CHOICE HERE.** `busy()` is true for the BOOT seed as well,
+    // when there is no book and the panel is honestly grey — and D-B's decision
+    // 2 defines `InFlight` as a live-palette state whose ladder keeps its colour
+    // because *"a re-seed fires on a book that has not gone wrong"*. The
+    // adapter's hold is open exactly when that sentence is true: it opens only
+    // on a seeded book (`on_reseed_issued`) and closes on `drop_book`. So the
+    // decision's premise becomes a property of the state rather than an
+    // assumption about it, and the boot fetch stays `None` over a grey panel,
+    // which is what it has always been.
+    //
+    // AND IT IS LITERALLY THE SAME RULE `replay_driver.cpp`'s `stamp_reseed`
+    // applies — `reseed_state_for` in `display_snapshot.hpp`, called from both —
+    // because this object and that one are the same object either side of the
+    // desk, and a state the two spelled differently would be a state no golden
+    // could pin. The choice is arithmetic over two booleans, so it lives in
+    // `engine/` without giving `engine/` a transport (invariant #1); what stays
+    // here is only the reading of the two booleans off this venue's adapter.
+    //
+    // NOTHING BRANCHES ON IT (invariant #5) — here or anywhere. It is published
+    // for the renderer to draw, exactly as `age_ms` is.
+#if DC_VENUE == DC_VENUE_BINANCE
+    staging_.reseed = reseed_state_for(adapter_.reseed_holding(), adapter_.reseed_wanted());
+#else
+    // The other two venues have no re-seed to be in. Kraken latches
+    // `resync_wanted()` and it is NOT the same question — a re-SUBSCRIBE, served
+    // by B2's healing path, its rendering settled at M4 — and giving two venues
+    // one vocabulary on the strength of one card's need is how a venue fact
+    // becomes a universal rule. Assigned rather than left alone because
+    // `staging_` is reused across publishes and an unassigned field is a field
+    // that carries the last venue-shaped thing anybody put in it.
+    staging_.reseed = ReseedState::None;
+#endif
 
     stats_.grey.note(staging_.live(), now);
     last_publish_us_ = now;

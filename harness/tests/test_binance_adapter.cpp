@@ -203,53 +203,6 @@ TEST_CASE("a snapshot older than the first surviving event re-fetches rather tha
     CHECK(ev.v.back().reason == GapReason::SeqGap);
 }
 
-TEST_CASE("the bracketing event may STRADDLE the body, and the corpus contains one") {
-    // **THE CONTRADICTION `apply_buffered` CARRIED UNTIL M5 STAGE D-A4.** The
-    // venue's rule for the event after a snapshot is `U <= L + 1 <= u`; the rule
-    // for every event after that is `U == prev_u + 1`. `replay_buffer` tested
-    // the first and then applied the survivor through the second, so a body
-    // whose `lastUpdateId` fell strictly INSIDE a coalesced message passed the
-    // bracket, published its Snapshot, and was dropped one statement later with
-    // `Gap{SeqGap}` — a ladder live for the width of one event and then grey.
-    //
-    // It never fired because the board subscribes to `@depth@100ms`, where the
-    // venue's snapshot lands on a message boundary 18 times out of 18 across the
-    // committed corpus. At the 1000 ms cadence it does not:
-    // `binance_btcusdt_d1000ms_20260824.ndjson` carries two bodies whose
-    // `lastUpdateId` falls 12 and 45 ids inside a message.
-    SUBCASE("the initial seed, through replay_buffer") {
-        Adapter a = make();
-        Events ev;
-        // U = 18 <= L = 20 < u = 25. The old code took this to `drop_book`.
-        a->on_frame(diff(18, 25, level("100.00000000", "3.00000000"), ""), ev);
-        a->on_rest_body(seed_body(20, level("100.00000000", "9.00000000"), ""), ev);
-
-        CHECK(a->stats().seed_bracket_ok == 1);
-        CHECK(a->stats().seq_breaks == 0);
-        CHECK(a->has_baseline());
-        CHECK(a->last_update_id() == 25);
-        CHECK(ev.count(FeedEvent::Kind::Snapshot) == 1);
-        CHECK(ev.count(FeedEvent::Kind::Gap) == 0);
-        // The survivor's quantity won, not the body's.
-        REQUIRE(a->bid_count() == 1);
-        CHECK(a->bids()[0].qty == 300000000);
-    }
-
-    SUBCASE("a genuine hole is still refused") {
-        // The fix must not widen the bracket. U = 30 > L + 1 = 21 is a hole and
-        // the answer is unchanged: no Snapshot, a Gap, and fetch again.
-        Adapter a = make();
-        Events ev;
-        a->on_frame(diff(30, 35, level("100.00000000", "3.00000000"), ""), ev);
-        a->on_rest_body(seed_body(20, level("100.00000000", "9.00000000"), ""), ev);
-        CHECK(a->stats().seed_bracket_failed == 1);
-        CHECK(a->stats().seed_bracket_ok == 0);
-        CHECK_FALSE(a->has_baseline());
-        CHECK(ev.count(FeedEvent::Kind::Snapshot) == 0);
-        CHECK(ev.count(FeedEvent::Kind::Gap) == 1);
-    }
-}
-
 TEST_CASE("the OTHER bracket site answers the same way — no buffered event, first diff misses") {
     // **THE SAME EVENT REACHES `drop_book` DOWN TWO PATHS, AND THEY MUST NOT
     // DISAGREE.** The case above brackets against a surviving BUFFERED event, in
@@ -592,6 +545,22 @@ void retire_best_bid(BinanceAdapter& a, Events& ev, int step, int seed_levels,
     id += 2;
 }
 
+// THE PRECONDITION EVERY RE-SEED CASE STARTS FROM, spelled once (M5 stage D-A4).
+//
+// A deeply seeded book that a diff has bracketed, so it is `Seeded`,
+// `seed_confirmed()`, live, and sitting at `last_update_id() == 1010`. Seven
+// cases below opened with these same four lines; naming it means a change to the
+// starting state is one edit rather than seven, and means each case's own body
+// is only the thing it is actually testing.
+constexpr std::int64_t kLiveBookLastId = 1010;
+
+Adapter seeded_live_book(Events& ev) {
+    Adapter a = make();
+    a->on_rest_body(deep_seed(1000, kTopCents, kDeepLevels), ev);
+    a->on_frame(diff(1001, kLiveBookLastId, level("49000.00000000", "1.00000000"), ""), ev);
+    return a;
+}
+
 }  // namespace
 
 TEST_CASE("seeded coverage erodes where held depth does not, and the trigger fires on it") {
@@ -669,7 +638,12 @@ TEST_CASE("the trigger fires at the sized threshold and only once per seed") {
     // low would spend 50 IP weight ten times a second, and the venue bans on
     // breach. Bounding the SEEDS is the transport's job and is recorded as a
     // required property of it.
-    a->clear_reseed_wanted();
+    // `on_reseed_issued()` since M5 stage D-A4 — the transport telling the
+    // adapter it has acted on the request, which is what `clear_reseed_wanted()`
+    // used to say half of. On a live book it also opens the hold, so the diffs
+    // below are held as well as applied; the latch is what this case is about
+    // and it is unaffected.
+    a->on_reseed_issued();
     for (int step = to_threshold + 1; step < to_threshold + 40; ++step) {
         retire_one(step);
     }
@@ -734,10 +708,8 @@ TEST_CASE("a re-snapshot on a live book is counted, and its loss is measured") {
     // fetch deadline is ~128 KiB, so the mechanism is D's. What this stage owes D
     // is the measurement: how far behind the stream a body actually is when it
     // lands, because that is what decides whether a buffer is needed at all.
-    Adapter a = make();
     Events ev;
-    a->on_rest_body(deep_seed(1000, kTopCents, kDeepLevels), ev);
-    a->on_frame(diff(1001, 1010, level("49000.00000000", "1.00000000"), ""), ev);
+    Adapter a = seeded_live_book(ev);
     REQUIRE(a->last_update_id() == 1010);
 
     // Behind the stream: adopting would rewind the book past update ids this
@@ -757,6 +729,512 @@ TEST_CASE("a re-snapshot on a live book is counted, and its loss is measured") {
     // diffs built.
     CHECK(a->last_update_id() == 1010);
     CHECK(a->has_baseline());
+
+    // AND THIS IS STILL THE BEHAVIOUR WITH NO HOLD OPEN (M5 stage D-A4). The
+    // mechanism does not change what a body means when nobody told the adapter a
+    // fetch was outstanding — a capture tool's own REST record replayed through
+    // the harness is exactly that case, which is why every committed golden is
+    // unmoved by this stage.
+    CHECK_FALSE(a->reseed_holding());
+}
+
+// ---------------------------------------------------------------------------
+// THE RE-SEED, ANSWERED (M5 stage D-A4 — DESIGN strain 28's D-half)
+// ---------------------------------------------------------------------------
+//
+// Candidate (a): hold the diffs spanning the fetch, then roll the body forward
+// across them. The ruling that selected it is D-A3 §2; the pricing is at
+// ANSWERING THE TRIGGER in `binance_adapter.hpp`.
+
+TEST_CASE("the two stampers cannot disagree about what an adapter state publishes") {
+    // `FeedTask::publish_current()` and `replay_driver.cpp`'s `stamp_reseed` both
+    // turn (holding, wanted) into a `ReseedState`, and they are the same object
+    // either side of the desk — so a state they spelled differently would be a
+    // state no golden could pin, and the board would draw something the host had
+    // asserted was impossible. M5 stage D-A4 made it one function; this is what
+    // holds the function still.
+    using depthcharge::ReseedState;
+    using depthcharge::reseed_state_for;
+
+    CHECK(reseed_state_for(false, false) == ReseedState::None);
+    CHECK(reseed_state_for(false, true) == ReseedState::Wanted);
+    CHECK(reseed_state_for(true, false) == ReseedState::InFlight);
+    // A hold outranks a request. The two are mutually exclusive in practice —
+    // `on_reseed_issued()` clears `wanted` as it opens the hold — so this pins
+    // the precedence rather than a reachable state, which is the point: nothing
+    // should come to depend on it silently.
+    CHECK(reseed_state_for(true, true) == ReseedState::InFlight);
+
+    // And it is constexpr, so a caller on either side pays nothing for it.
+    static_assert(reseed_state_for(true, false) == ReseedState::InFlight);
+    static_assert(reseed_state_for(false, false) == ReseedState::None);
+}
+
+TEST_CASE("a re-seed on a live book is ADOPTED, with no Gap and no grey") {
+    // The whole of D-B decision 2 in one case: the ladder is rebaselined off a
+    // body that names an EARLIER instant than the book, and the panel never
+    // greys, because a `Snapshot` reaches the engine where a `Gap` used to.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    REQUIRE(a->last_update_id() == 1010);
+    REQUIRE(a->seed_confirmed());
+    const std::size_t gaps_before = ev.count(FeedEvent::Kind::Gap);
+
+    // The transport issues. From here every diff is applied to the live book AND
+    // held — the ladder keeps its colour throughout, which is the requirement.
+    a->on_reseed_issued();
+    CHECK(a->reseed_holding());
+    CHECK_FALSE(a->reseed_wanted());          // cleared at issue, as it always was
+
+    a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+    a->on_frame(diff(1021, 1030, level("47000.00000000", "3.00000000"), ""), ev);
+    CHECK(a->last_update_id() == 1030);       // the live book advanced as usual
+
+    // The body lands describing instant 1015 — BEHIND the book by two events,
+    // which is the case B2 measured at 0 of 7 adoptable and had to decline.
+    a->on_rest_body(deep_seed(1015, kTopCents, kDeepLevels), ev);
+
+    CHECK(a->stats().reseeds_adopted == 1);
+    CHECK(a->stats().reseeds_unbracketed == 0);
+    CHECK_FALSE(a->reseed_holding());
+    CHECK(a->has_baseline());
+    CHECK(a->seed_confirmed());
+
+    // **NO GAP.** This is the line D-B's decision reduces to: greying a book
+    // that has not gone wrong is what candidate (b) did and what decision 2
+    // refused, and a `Gap` is the only way this adapter can cause it.
+    CHECK(ev.count(FeedEvent::Kind::Gap) == gaps_before);
+
+    // The book is rolled FORWARD, not rewound: the body's 1015 plus the one
+    // held event it did not contain leaves the ladder at 1030, exactly where the
+    // diffs had it.
+    CHECK(a->last_update_id() == 1030);
+
+    // And the level that survivor carried is still there at the quantity the
+    // DIFF set, not the body's — which is what "lossless" means here.
+    bool found = false;
+    for (std::uint32_t i = 0; i < a->bid_count(); ++i) {
+        if (a->bids()[i].px == 4700000000000LL) {
+            found = true;
+            CHECK(a->bids()[i].qty == 300000000);   // 3.0 at 8 decimals
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("a re-seed that cannot be bracketed LEAVES THE LIVE BOOK STANDING") {
+    // The difference from the seed path, and the reason `adopt_reseed` tests the
+    // bracket before it touches the ladder. On an unseeded book the same failure
+    // is answered with `drop_book` — right, because there is no book to lose.
+    // Here there is one, it is correct, and dropping it would be candidate (b)
+    // arriving through the error path after the ruling closed it as a design.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    REQUIRE(a->seed_confirmed());
+
+    a->on_reseed_issued();
+    a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+    const std::size_t gaps_before = ev.count(FeedEvent::Kind::Gap);
+    const std::size_t snaps_before = ev.count(FeedEvent::Kind::Snapshot);
+
+    // A body from BEFORE the hold opened: the first survivor is 1011 and it does
+    // not span 1006, so there is a hole between the body and everything held.
+    a->on_rest_body(deep_seed(1005, kTopCents, kDeepLevels), ev);
+
+    CHECK(a->stats().reseeds_unbracketed == 1);
+    CHECK(a->stats().reseeds_adopted == 0);
+    CHECK_FALSE(a->reseed_holding());
+
+    // NOTHING WAS EMITTED AND NOTHING WAS LOST. The book is the one the diffs
+    // built, still live, still at 1020.
+    CHECK(ev.count(FeedEvent::Kind::Gap) == gaps_before);
+    CHECK(ev.count(FeedEvent::Kind::Snapshot) == snaps_before);
+    CHECK(a->has_baseline());
+    CHECK(a->seed_confirmed());
+    CHECK(a->last_update_id() == 1020);
+
+    // The request stands, so the transport asks again. Without this the schedule
+    // sees nothing wanted, `due_in_us` returns -1, and the re-seed the coverage
+    // trigger asked for is silently abandoned.
+    CHECK(a->reseed_wanted());
+}
+
+TEST_CASE("a body newer than everything held is adopted with nothing to replay") {
+    // B2's `resnapshots_adoptable` case — routinely true on a pair that goes
+    // seconds between diffs, and 13 of 13 at limit=100 in the corpus. There is
+    // no survivor, so nothing is replayed; the bracket is deferred to the next
+    // diff exactly as it is for an initial seed with an empty buffer.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+
+    a->on_reseed_issued();
+    a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+    a->on_rest_body(deep_seed(1030, kTopCents, kDeepLevels), ev);
+
+    CHECK(a->stats().reseeds_adopted == 1);
+    CHECK(a->last_update_id() == 1030);
+    CHECK(a->has_baseline());
+
+    // The next diff brackets 1031 and the book carries on.
+    a->on_frame(diff(1031, 1040, level("46000.00000000", "4.00000000"), ""), ev);
+    CHECK(a->last_update_id() == 1040);
+    CHECK(a->stats().seq_breaks == 0);
+}
+
+TEST_CASE("THE BODY BECOMES THE LADDER, which nothing asserted until review said so") {
+    // **A SURVIVING MUTANT, and the worst kind: it survived the whole suite.**
+    // Review mutated `adopt_reseed` to keep `last_u_`, `seed_` and the seeded
+    // bounds but never rebuild the ladder from the body — the exact half of the
+    // mechanism this stage exists to add — and `ctest` stayed **52/52 green**,
+    // oracle and every golden included. Every case here asserted the BOOKKEEPING
+    // of an adoption (`reseeds_adopted`, `last_update_id()`, no `Gap`) and none
+    // of them asserted its EFFECT.
+    //
+    // So: a body whose ladder is visibly different from the live book's, and an
+    // assertion that the difference arrived.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+
+    // The live book holds a level at 49000 that the diff put there, and the
+    // seeded ladder is `kDeepLevels` deep from `kTopCents`.
+    const std::uint32_t bids_before = a->bid_count();
+    bool had_49000 = false;
+    for (std::uint32_t i = 0; i < a->bid_count(); ++i) {
+        if (a->bids()[i].px == 4900000000000LL) { had_49000 = true; }
+    }
+    REQUIRE(had_49000);
+
+    a->on_reseed_issued();
+    a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+
+    // The body is a DIFFERENT ladder: two levels shallower, and it does not
+    // contain 49000 at all. Adopting it must be visible in the book.
+    a->on_rest_body(deep_seed(1015, kTopCents, kDeepLevels - 2), ev);
+    REQUIRE(a->stats().reseeds_adopted == 1);
+
+    // The 49000 level came from a diff the body predates and does not carry, and
+    // no held survivor re-adds it — so adoption must have removed it. If the
+    // ladder were not rebuilt it would still be there.
+    bool still_49000 = false;
+    for (std::uint32_t i = 0; i < a->bid_count(); ++i) {
+        if (a->bids()[i].px == 4900000000000LL) { still_49000 = true; }
+    }
+    CHECK_FALSE(still_49000);
+
+    // ...and the depth is the BODY's, not the book's — plus exactly the one
+    // level the surviving diff re-adds. 48000 is below the body's deepest bid
+    // (`px_at(kTopCents - 497)` is 49950.03), so the survivor is an INSERT
+    // rather than an update, and 498 + 1 is the arithmetic of "rebuilt from the
+    // body, then rolled forward" stated as a count.
+    CHECK(a->bid_count() != bids_before);
+    CHECK(a->bid_count() == static_cast<std::uint32_t>(kDeepLevels - 2) + 1);
+
+    // The survivor's own level IS still there, at the quantity the diff set —
+    // which is the other half: rebuilt from the body, then rolled forward.
+    bool has_48000 = false;
+    for (std::uint32_t i = 0; i < a->bid_count(); ++i) {
+        if (a->bids()[i].px == 4800000000000LL) {
+            has_48000 = true;
+            CHECK(a->bids()[i].qty == 200000000);
+        }
+    }
+    CHECK(has_48000);
+}
+
+TEST_CASE("the hold's overflow abandons the re-seed and leaves the transport able to retry") {
+    // **TWO SURVIVING MUTANTS lived here.** Deleting `reseed_wanted_ = true` from
+    // the overflow path — the permanent-stall mutant, since the schedule then
+    // sees nothing wanted and `due_in_us` returns -1 for ever — left the suite
+    // 52/52 green, as did miscounting the overflow as `reseeds_unbracketed`.
+    // The path is documented as "sized not to happen"; that is a reason to test
+    // it, not a reason not to.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    a->on_reseed_issued();
+    REQUIRE(a->reseed_holding());
+
+    // Fill the held window. `kBinanceBufferEvents` is 256, so this is bounded
+    // and fast; each frame carries one level so the LEVEL bound is not the one
+    // that trips.
+    std::int64_t id = kLiveBookLastId;
+    for (std::uint32_t i = 0;
+         i <= depthcharge::binance::kBinanceBufferEvents && a->reseed_holding(); ++i) {
+        a->on_frame(diff(id + 1, id + 2, level("47000.00000000", "1.00000000"), ""), ev);
+        id += 2;
+    }
+
+    CHECK(a->stats().reseed_holds_overflowed == 1);
+    CHECK(a->stats().reseeds_unbracketed == 0);   // a different outcome, counted apart
+    CHECK_FALSE(a->reseed_holding());
+
+    // **THE STALL MUTANT'S ASSERTION.** Without this the board would hold a
+    // cleared latch and a closed hold, and nothing would ever ask again.
+    CHECK(a->reseed_wanted());
+
+    // The live book is untouched by any of it — an overflow abandons the
+    // RE-SEED and nothing else.
+    CHECK(a->has_baseline());
+    CHECK(a->last_update_id() == id);
+    CHECK(ev.count(FeedEvent::Kind::Gap) == 0);
+}
+
+TEST_CASE("a body AHEAD of the socket leaves the next message still bracketable") {
+    // **THE DEFECT THE STAGE'S OWN FIX WAS ONE LEVEL DOWN FROM, FOUND AT REVIEW.**
+    // With no survivor, nothing from the feed is applied on top of the new
+    // baseline — so the next diff is the FIRST event after a snapshot and the
+    // venue's rule for it is `U <= L + 1 <= u`, not `U == last_u + 1`. Claiming
+    // `bracket_checked_` on that path put the next message through the strict
+    // rule and dropped a book that had not gone wrong.
+    //
+    // The case is the quiet pair's, and it is the one B2 measured as adoptable
+    // 13 times out of 13: the fetch spans no diff at all, and the body names an
+    // instant the socket has not reached because the venue took it mid-message.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    a->on_reseed_issued();
+
+    // Body at 1025: the venue has applied [1011,1030] and has not shipped it.
+    a->on_rest_body(deep_seed(1025, kTopCents, kDeepLevels), ev);
+    CHECK(a->stats().reseeds_adopted == 1);
+    const std::size_t gaps_before = ev.count(FeedEvent::Kind::Gap);
+
+    // ...and here it comes, straddling 1026 exactly as the venue documents.
+    a->on_frame(diff(1011, 1030, level("48000.00000000", "2.00000000"), ""), ev);
+
+    CHECK(ev.count(FeedEvent::Kind::Gap) == gaps_before);
+    CHECK(a->stats().seq_breaks == 0);
+    CHECK(a->stats().seed_bracket_failed == 0);
+    CHECK(a->has_baseline());
+    CHECK(a->last_update_id() == 1030);
+}
+
+TEST_CASE("a message the adopted body already contains is dropped, not treated as a hole") {
+    // THE FIRST CLAUSE OF THE VENUE'S PROCEDURE — *drop what the snapshot
+    // already contains* — existed in this file only for BUFFERED events. A
+    // message that arrives AFTER adoption and is wholly inside the body
+    // (`u <= lastUpdateId`) is the same statement at a different moment, and it
+    // is reachable whenever the body is ahead of the socket.
+    //
+    // Latent on the initial-seed path since B1, where it costs a wasted seed
+    // over a panel that is already grey. On the re-seed path it would destroy a
+    // live, correct book, which is what makes it this stage's to close.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    a->on_reseed_issued();
+
+    // The body is the whole of [1011,1030]; the message carrying it is still in
+    // flight behind it.
+    a->on_rest_body(deep_seed(1030, kTopCents, kDeepLevels), ev);
+    REQUIRE(a->stats().reseeds_adopted == 1);
+    const std::size_t gaps_before = ev.count(FeedEvent::Kind::Gap);
+
+    a->on_frame(diff(1011, 1030, level("48000.00000000", "2.00000000"), ""), ev);
+
+    // Contained, so it is a no-op — not a hole, and above all not a Gap.
+    CHECK(ev.count(FeedEvent::Kind::Gap) == gaps_before);
+    CHECK(a->stats().seq_breaks == 0);
+    CHECK(a->stats().seed_bracket_failed == 0);
+    CHECK(a->has_baseline());
+    CHECK(a->last_update_id() == 1030);   // NOT rewound by the contained frame
+
+    // And the stream carries on from the body's own instant.
+    a->on_frame(diff(1031, 1040, level("47000.00000000", "3.00000000"), ""), ev);
+    CHECK(a->last_update_id() == 1040);
+    CHECK(a->has_baseline());
+    CHECK(ev.count(FeedEvent::Kind::Gap) == gaps_before);
+}
+
+TEST_CASE("an abandoned fetch releases the hold and re-raises the request") {
+    // `SeedAction::Abandon` — the deadline, or the socket dropping under the
+    // fetch. The events being held describe a body that will never arrive, and
+    // the array they are in is the one the pre-seed path needs if this book is
+    // dropped next.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+
+    a->on_reseed_issued();
+    a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+    REQUIRE(a->reseed_holding());
+
+    a->on_reseed_abandoned();
+    CHECK_FALSE(a->reseed_holding());
+    CHECK(a->reseed_wanted());
+    // The book is untouched by any of it.
+    CHECK(a->has_baseline());
+    CHECK(a->last_update_id() == 1020);
+
+    // Idempotent: a second call on a closed hold does nothing, which matters
+    // because `feed_task.cpp` reaches it from three paths that can overlap.
+    const bool wanted = a->reseed_wanted();
+    a->on_reseed_abandoned();
+    CHECK(a->reseed_wanted() == wanted);
+}
+
+TEST_CASE("a body that does not parse releases the hold, and does not silently strand it") {
+    // **THE QUIET LEAK, and it is quiet because of how the retry is armed.**
+    // `reseed_wanted_` is cleared at issue, so if a hold survives a fetch that
+    // produced nothing usable, the schedule sees nothing wanted,
+    // `SeedSchedule::due_in_us` returns -1, and **nothing ever asks again** —
+    // the hold would go on collecting every diff until it overflowed minutes
+    // later, and the overflow counter would attribute it to the buffer.
+    //
+    // Three ways a body can arrive and be useless, and all three must release.
+    const auto held_then = [](const std::string& body, const char* what) {
+        Events ev;
+        Adapter a = seeded_live_book(ev);
+        a->on_reseed_issued();
+        a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+        REQUIRE(a->reseed_holding());
+
+        a->on_rest_body(body, ev);
+
+        INFO(what);
+        CHECK_FALSE(a->reseed_holding());
+        // The request stands, so the transport asks again rather than stalling.
+        CHECK(a->reseed_wanted());
+        // ...and the live book is untouched by any of it.
+        CHECK(a->has_baseline());
+        CHECK(a->last_update_id() == 1020);
+    };
+
+    held_then("{ this is not json", "malformed JSON");
+    held_then(R"({"lastUpdateId":1015,"bids":[["not-a-price","1.0"]],"asks":[]})", "bad price");
+    // Well-formed JSON, right shape, but no `lastUpdateId` — the second early
+    // return in `on_rest_body`, which counts a parse error and used to fall
+    // straight out with the hold still set.
+    held_then(R"({"bids":[["49000.00000000","1.00000000"]],"asks":[]})", "no lastUpdateId");
+}
+
+TEST_CASE("a fetch that produced no body releases the hold too") {
+    // `on_rest_missing` is the harness's way in (`dc_binance_oracle`); on the
+    // board the same case arrives as `SeedTask::failed()` and the feed task
+    // calls `on_reseed_abandoned()` directly. Both must end the hold, and the
+    // adapter half is what a host test can hold still.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    a->on_reseed_issued();
+    REQUIRE(a->reseed_holding());
+
+    a->on_rest_missing();
+    CHECK_FALSE(a->reseed_holding());
+    CHECK(a->reseed_wanted());
+    CHECK(a->has_baseline());
+
+    // And it is still the unseeded statement it always was: on a book with no
+    // baseline it latches the request and counts it.
+    Adapter b = make();
+    const std::uint64_t before = b->stats().reseeds_requested;
+    b->on_rest_missing();
+    CHECK(b->stats().reseeds_requested == before + 1);
+    CHECK(b->reseed_wanted());
+}
+
+TEST_CASE("issuing on an unseeded book opens no hold, so one array never has two writers") {
+    // `on_reseed_issued` must be a no-op for the hold while `Unseeded`, because
+    // the pre-seed buffer is already holding every diff into the same array. If
+    // both ran, each event would be appended twice and the replay would apply it
+    // twice.
+    Adapter a = make();
+    Events ev;
+    a->on_reseed_issued();
+    CHECK_FALSE(a->reseed_holding());
+    CHECK_FALSE(a->reseed_wanted());   // the latch still clears, as it always did
+
+    a->on_frame(diff(1001, 1010, level("49000.00000000", "1.00000000"), ""), ev);
+    CHECK(a->stats().buffered_events == 1);      // held once, by the pre-seed path
+    a->on_rest_body(deep_seed(1005, kTopCents, kDeepLevels), ev);
+    CHECK(a->has_baseline());
+    CHECK(a->last_update_id() == 1010);
+}
+
+TEST_CASE("dropping the book closes any open hold, so one array never has two writers") {
+    // `buf_`/`buf_lvl_` serve the pre-seed buffer and the re-seed hold, and the
+    // two are mutually exclusive by construction — Unseeded versus Seeded. That
+    // is what makes the array shareable and therefore what makes candidate (a)
+    // free. `drop_book` is the transition between them and must close the hold.
+    Events ev;
+    Adapter a = seeded_live_book(ev);
+    a->on_reseed_issued();
+    a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+    REQUIRE(a->reseed_holding());
+
+    a->on_transport_gap(GapReason::Disconnect, ev);
+    CHECK_FALSE(a->reseed_holding());
+    CHECK_FALSE(a->has_baseline());
+    CHECK(a->reseed_wanted());
+
+    // ...and the pre-seed buffer now works normally on the same array.
+    a->on_frame(diff(2001, 2010, level("49000.00000000", "5.00000000"), ""), ev);
+    CHECK(a->stats().buffered_events > 0);
+    a->on_rest_body(deep_seed(2000, kTopCents, kDeepLevels), ev);
+    CHECK(a->has_baseline());
+    CHECK(a->last_update_id() == 2010);
+}
+
+TEST_CASE("the bracketing event may STRADDLE the body, and the corpus contains one") {
+    // **THE CONTRADICTION `apply_buffered` CARRIED UNTIL M5 STAGE D-A4.** The
+    // venue's rule for the event after a snapshot is `U <= L + 1 <= u`; the rule
+    // for every event after that is `U == prev_u + 1`. `replay_buffer` tested
+    // the first and then applied the survivor through the second, so a body
+    // whose `lastUpdateId` fell strictly INSIDE a coalesced message passed the
+    // bracket, published its Snapshot, and was dropped one statement later with
+    // `Gap{SeqGap}` — a ladder live for the width of one event and then grey.
+    //
+    // It never fired because the board subscribes to `@depth@100ms`, where the
+    // venue's snapshot lands on a message boundary 881 times out of 881 in the
+    // committed corpus. At the 1000 ms cadence it does not:
+    // `binance_btcusdt_d1000ms_20260824.ndjson` carries two bodies whose
+    // `lastUpdateId` falls 12 and 45 ids inside a message.
+    //
+    // Both bracket sites are covered, because both had it.
+    SUBCASE("the initial seed, through replay_buffer") {
+        Adapter a = make();
+        Events ev;
+        // U = 18 <= L = 20 < u = 25. The old code took this to `drop_book`.
+        a->on_frame(diff(18, 25, level("100.00000000", "3.00000000"), ""), ev);
+        a->on_rest_body(seed_body(20, level("100.00000000", "9.00000000"), ""), ev);
+
+        CHECK(a->stats().seed_bracket_ok == 1);
+        CHECK(a->stats().seq_breaks == 0);
+        CHECK(a->has_baseline());
+        CHECK(a->last_update_id() == 25);
+        CHECK(ev.count(FeedEvent::Kind::Snapshot) == 1);
+        CHECK(ev.count(FeedEvent::Kind::Gap) == 0);
+        // The survivor's quantity won, not the body's.
+        REQUIRE(a->bid_count() == 1);
+        CHECK(a->bids()[0].qty == 300000000);
+    }
+
+    SUBCASE("a re-seed, through adopt_reseed — where it would now run every fetch") {
+        Events ev;
+        Adapter a = seeded_live_book(ev);
+        a->on_reseed_issued();
+        // Straddles: U = 1011 <= L = 1015 < u = 1020.
+        a->on_frame(diff(1011, 1020, level("48000.00000000", "2.00000000"), ""), ev);
+        const std::size_t gaps_before = ev.count(FeedEvent::Kind::Gap);
+
+        a->on_rest_body(deep_seed(1015, kTopCents, kDeepLevels), ev);
+
+        CHECK(a->stats().reseeds_adopted == 1);
+        CHECK(a->stats().seq_breaks == 0);
+        CHECK(ev.count(FeedEvent::Kind::Gap) == gaps_before);
+        CHECK(a->last_update_id() == 1020);
+        CHECK(a->has_baseline());
+    }
+
+    SUBCASE("a genuine hole is still refused") {
+        // The fix must not widen the bracket. U = 30 > L + 1 = 21 is a hole and
+        // the answer is unchanged: no Snapshot, a Gap, and fetch again.
+        Adapter a = make();
+        Events ev;
+        a->on_frame(diff(30, 35, level("100.00000000", "3.00000000"), ""), ev);
+        a->on_rest_body(seed_body(20, level("100.00000000", "9.00000000"), ""), ev);
+        CHECK(a->stats().seed_bracket_failed == 1);
+        CHECK(a->stats().seed_bracket_ok == 0);
+        CHECK_FALSE(a->has_baseline());
+        CHECK(ev.count(FeedEvent::Kind::Snapshot) == 0);
+        CHECK(ev.count(FeedEvent::Kind::Gap) == 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -997,15 +1475,19 @@ TEST_CASE("a re-seed the adapter asked for and no layer served is PUBLISHED, not
     CHECK(seen[1] == depthcharge::ReseedState::Wanted);
     CHECK(r.final_snapshot.reseed == depthcharge::ReseedState::Wanted);
 
-    // **AND `InFlight` IS NEVER REACHED, WHICH IS THE CARD ITSELF.** Nothing in
-    // this build issues a fetch, so the request is published and never
-    // progresses. When D builds the adoption this line is what has to change,
-    // and until then the state on the panel is the honest one: asked for, and
-    // nobody answering.
+    // **AND `InFlight` IS NOT REACHED HERE, WHICH IS NOW A STATEMENT ABOUT THE
+    // DRIVER RATHER THAN ABOUT THE ADAPTER.** Stage C wrote *"nothing in this
+    // build issues a fetch, so the request is published and never progresses …
+    // when D builds the adoption this line is what has to change"*. M5 stage
+    // D-A4 built the adoption; what has not changed yet is that this driver
+    // still issues no fetch, so the request stands unanswered — which is
+    // exactly the state a board with no REST client publishes, and exactly what
+    // this case is for. The next commit gives the driver a fetch to issue.
     for (const depthcharge::ReseedState s : seen) {
         CHECK(s != depthcharge::ReseedState::InFlight);
     }
 }
+
 
 TEST_CASE("the report's median and the clock's median are two conventions, and they differ here") {
     // **PINS A DIVERGENCE, NOT A CONTRACT, AND IS EXPECTED TO INVERT.** Same
@@ -1122,3 +1604,4 @@ TEST_CASE("a seed body that arrives after a buffer overflow cannot bracket") {
     // rather than sit grey over a healthy socket.
     CHECK(a->reseed_wanted());
 }
+

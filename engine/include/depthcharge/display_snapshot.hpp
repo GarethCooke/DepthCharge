@@ -59,13 +59,45 @@ enum class FeedStatus : std::uint8_t { Live, Stale };
 // NOTHING BRANCHES ON IT, exactly as with `age_ms`: it is a state the renderer
 // may draw, never a rule the engine applies. Grey is still `status` alone.
 //
-// **`InFlight` IS UNREACHABLE IN THIS BUILD, AND THAT IS THE POINT RATHER THAN
-// AN OMISSION.** Nothing here issues a fetch — the adapter has no clock and no
-// socket — so a board on which strain 28 is still open publishes `Wanted` and
-// never advances past it. That makes the card's condition visible in the
-// published state rather than only in a harness counter, which is the difference
-// between a defect a bench sitting can see and one it cannot.
+// **`InFlight` WAS UNREACHABLE UNTIL M5 STAGE D-A4, AND THAT WAS THE POINT
+// RATHER THAN AN OMISSION.** Stage C's note read: *nothing here issues a fetch —
+// the adapter has no clock and no socket — so a board on which strain 28 is
+// still open publishes `Wanted` and never advances past it*, which put the
+// card's condition in the published state rather than in a harness counter
+// nobody reads at a bench. **D-A4 built the adoption and the state now
+// advances**: the adapter holds the diffs spanning a re-seed fetch and rolls the
+// body forward across them, so `InFlight` means *a fetch is outstanding and the
+// interval it will be reconciled against is being kept*.
+//
+// It is stamped from the adapter's HOLD rather than from the transport's "a
+// fetch is running", and the difference is what makes D-B's decision 2 sound: a
+// hold opens only on a seeded book, so `InFlight` is a **live-palette state by
+// construction** and the boot seed — no book, honest grey — stays `None`.
 enum class ReseedState : std::uint8_t { None, Wanted, InFlight };
+
+// THE CHOICE ITSELF, SPELLED ONCE (M5 stage D-A4).
+//
+// Two objects stamp this field and they are the same object either side of the
+// desk: `FeedTask::publish_current()` on the board and `replay_driver.cpp`'s
+// `stamp_reseed` on the host. **A state the two spell differently is a state no
+// golden can pin** — the host would assert one thing and the board would draw
+// another — and until this function existed the only thing holding them
+// together was that one session wrote both on the same afternoon.
+//
+// It lives in `engine/` because it is arithmetic over two booleans and touches
+// no transport (invariant #1). The two booleans are the transport's to supply:
+// `holding` is the adapter keeping the interval a body will be rolled forward
+// across, `wanted` is its unanswered request.
+//
+// **`InFlight` IS TESTED FIRST, AND THE ORDER IS THE RULE RATHER THAN AN
+// ACCIDENT.** The two are already mutually exclusive — `on_reseed_issued()`
+// clears `wanted` at the instant it opens the hold — so nothing depends on the
+// precedence today. Stating it means nothing will depend on it silently
+// tomorrow either.
+constexpr ReseedState reseed_state_for(bool holding, bool wanted) noexcept {
+    if (holding) { return ReseedState::InFlight; }
+    return wanted ? ReseedState::Wanted : ReseedState::None;
+}
 
 struct TradePrint {
     PriceTicks px{};

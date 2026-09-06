@@ -351,6 +351,100 @@ static_assert(kBinanceReseedCoverLevels <
               "the trigger must sit below the seed depth, or every seed fires it "
               "on arrival and the client re-fetches for ever");
 
+// ===========================================================================
+// ANSWERING THE TRIGGER: THE RE-SEED IS THE SEED, RUN A SECOND TIME
+// (M5 stage D-A4, DESIGN strain 28's D-half)
+// ===========================================================================
+//
+// Everything above BUILDS a request and nothing answers it. `note_depth()`
+// latches `reseed_wanted_` when coverage erodes, the transport fetches, and
+// until this stage `on_rest_body` looked at the body on a live book, counted it
+// and threw it away — because *"a `/api/v3/depth` body is a statement about a
+// PAST instant and adopting one rewinds the book"*. That sentence is still
+// true. What changes is that the client now holds the interval it would have
+// been rewound across.
+//
+// **THE RULING THIS IMPLEMENTS (M5 stage D-A3 §2).** Three mechanisms were
+// priced at stage C: **(a)** a deferred buffer, **(b)** drop-gap-reseed, **(c)**
+// a merge below the touch. **(b) is CLOSED** — it greys a book that has not gone
+// wrong, and D-B's decision 2 refused exactly that. The choice was (a) or (c).
+//
+// **(a) IS CHOSEN, AND ITS PRICE HAS ALREADY BEEN PAID.** Stage C costed (a) at
+// *"~150 events / 8,200 levels, about 128 KiB"* and that was the objection to
+// it. **M5 stage D-A2 then bought that buffer for the OTHER path** — the
+// pre-seed hold — and sized it against the same 15 s deadline this one runs
+// under: `kBinanceBufferEvents` 256 and `kBinanceBufferLevels` 32,768, which is
+// 8 KiB + 512 KiB, **on the heap and therefore in PSRAM** (see the constructor).
+// That is 4x stage C's estimate, already allocated on every boot, and **idle
+// for the entire life of a seeded book** — `buf_events_` and `buf_levels_` are
+// zeroed by `replay_buffer` and by `drop_book`, and nothing writes them again
+// until the next unseeded connect. So the re-seed hold costs **no new
+// allocation, no new PSRAM and no new internal SRAM beyond one bool**, and the
+// two uses can never overlap: pre-seed holding runs only while `Unseeded`,
+// re-seed holding only while `Seeded`.
+//
+// **AND THE PROCEDURE IS NOT A NEW ONE.** Once the diffs spanning a fetch are
+// held, adopting a re-snapshot is *character for character* the venue's
+// documented seed procedure — drop what the body already contains, require the
+// first survivor to bracket `L + 1`, replay the rest on top — which
+// `replay_buffer` has implemented since B1. `adopt_reseed` therefore reuses it
+// rather than restating it, and differs in exactly one thing, stated where it
+// happens: **a re-seed that cannot be bracketed LEAVES THE LIVE BOOK STANDING.**
+// The initial seed's failure path calls `drop_book`, which is right when there
+// is no book to lose; here there is one, it is correct, and dropping it would be
+// candidate (b) arriving through the error path.
+//
+// **WHY NOT (c).** A merge below the touch needs no memory at all, which was its
+// whole argument, and stage C's own description is *"cheapest, least proven —
+// nothing in the corpus exercises it"*. It is also unprovable at this venue:
+// the resulting book is a mixture of two instants, no bracketing statement
+// covers it, **and Binance publishes no checksum**, so nothing on the board or
+// in the harness could ever detect that the deep half had gone wrong. (a) is
+// lossless by construction — the book it produces is exactly the book a client
+// that had seeded at `L` and applied every diff since would hold — and that is a
+// property a host test can assert. With (a)'s memory objection void, the
+// argument for (c) was reduced to bytes it no longer saves.
+//
+// **THE FRAME-PATH OBJECTION, ANSWERED (it is the one D-A1 raised).** `bids_`,
+// `asks_` and `frame_` stay in internal SRAM because they are touched on every
+// diff at 100 ms and PSRAM's latency is real. The hold IS on the per-diff path
+// while a fetch is outstanding — every diff is written to `buf_lvl_` as well as
+// applied — so the objection has to be met rather than waved:
+//
+//   * It is a SEQUENTIAL WRITE of `bid_count + ask_count` levels, appended at
+//     `buf_levels_` and never read until the body lands. Streaming writes are
+//     the access pattern PSRAM is least bad at, and it is the same pattern
+//     D-A1 already sanctioned for this array on the pre-seed path.
+//   * It is BOUNDED BY THE SAME DEADLINE the buffer is sized against: the worst
+//     15 s window over the corpus is 12,458 levels, ~830 levels/s, ~13 KB/s.
+//   * It is DUTY-CYCLED. The hold runs only while a fetch is outstanding —
+//     measured at 3,973 ms (lower median, n=5,542) against a re-seed roughly
+//     every 22 s in the same capture, so ~18% of the time and not the steady
+//     state invariant #7 names.
+//   * **And it is already instrumented.** `FeedTask::Stats` has carried
+//     `worst_parse_quiet_us` / `worst_parse_fetch_us` since D-A2, which split
+//     the frame path's high-water mark by exactly this condition. The cost of
+//     this change is measurable by an instrument that predates it.
+//
+// ---------------------------------------------------------------------------
+// WHAT IS PUBLISHED, AND WHY THE PANEL NEVER GREYS FOR A RE-SEED
+// ---------------------------------------------------------------------------
+//
+// Nothing is emitted while the hold is open: the diffs are applied to the live
+// book exactly as before and the ladder keeps its colour, which is D-B decision
+// 2's requirement and the reason (b) was refused. When the body lands and
+// brackets, `publish_seed` emits a `Snapshot` and the survivors follow it as
+// `Delta`s — `Book::apply(Snapshot)` sets `Live`, so the transition is
+// live-to-live and no `Gap` is raised. When it does not bracket, nothing is
+// emitted at all: the book the diffs built is still the book, and the only
+// visible consequence is that `reseed_wanted_` stands and the transport will
+// ask again.
+//
+// **`ReseedState::InFlight` IS THE FEED SIDE'S, NOT THIS FILE'S**, for the
+// reason `age_ms` is: whether a fetch is outstanding is a fact about a transport
+// `engine/` does not have. This class publishes `reseed_holding()` so the layer
+// that does have one can say so, and nothing here branches on it (invariant #5).
+//
 // ---------------------------------------------------------------------------
 // THE DECLARED SYMBOLS, AND WHY THE SCALE IS NOT THE TICK SIZE
 // ---------------------------------------------------------------------------
@@ -432,8 +526,22 @@ public:
         std::uint64_t transport_gaps = 0;
 
         // ---- the seed ------------------------------------------------------
-        std::uint64_t buffered_events = 0;        // held while awaiting the seed
+        // EVENTS HELD FOR A SNAPSHOT — for the PRE-SEED buffer since B1 and,
+        // since M5 stage D-A4, for the re-seed hold as well. Both write it
+        // through `append_held_event`, because they are the same act at two
+        // states; the two never overlap (`Unseeded` versus `Seeded`), so the
+        // total is still "events this adapter held awaiting a body". The serial
+        // line prints it under `-- seed :`, which is now half the story —
+        // `-- reseed :` carries the other half.
+        std::uint64_t buffered_events = 0;
         std::uint64_t buffered_dropped_by_seed = 0;  // u <= lastUpdateId
+        // ...and the same clause for a LIVE frame rather than a held one: a
+        // message that arrived after a baseline and lies wholly inside it
+        // (M5 stage D-A4). Separate from the count above because the two say
+        // different things about the fetch — that one is the buffer doing its
+        // job, this one is the venue having answered from ahead of the socket,
+        // which is the case B2 measured as `resnapshots_adoptable`.
+        std::uint64_t diffs_inside_baseline = 0;
         std::uint64_t buffer_overflows = 0;       // the connect outran the buffer
         std::uint64_t seed_bracket_ok = 0;        // U <= L+1 <= u on the first survivor
         std::uint64_t seed_bracket_failed = 0;    // ...and it did not
@@ -501,6 +609,40 @@ public:
         // the measurement D needs to choose a re-seed mechanism.
         std::uint64_t resnapshots_declined = 0;
         std::uint64_t resnapshots_adoptable = 0;
+
+        // ---- the re-seed, ANSWERED (M5 stage D-A4) --------------------------
+        //
+        // `resnapshots_declined` above counts the bodies this adapter still
+        // throws away, and after this stage that set is exactly the bodies that
+        // arrived with NO HOLD OPEN — a fetch nobody told the adapter about.
+        // The three below are the mechanism's own, and they are separate
+        // counters rather than one because the three outcomes have three
+        // different owners: the first is the feature working, the second is the
+        // venue, the third is a bound this file chose.
+
+        // A re-snapshot RECONCILED onto a live book: the diffs spanning the
+        // fetch were replayed on top of the body, so the ladder was rebaselined
+        // WITHOUT the book being dropped and without the panel greying. This is
+        // the counter that says strain 28's mechanism ran.
+        std::uint64_t reseeds_adopted = 0;
+
+        // ...and the bodies it could not bracket, **each of which left the live
+        // book standing.** Not a fault in the book: a re-seed that cannot be
+        // reconciled is a re-seed that did not happen. Distinct from
+        // `seed_bracket_failed`, which is the same arithmetic on an UNSEEDED
+        // book where the honest answer is `drop_book` — one number for two
+        // outcomes would hide precisely the difference this stage exists to
+        // make.
+        std::uint64_t reseeds_unbracketed = 0;
+
+        // The hold filled before the body arrived. Sized not to happen —
+        // `kBinanceBufferEvents` / `kBinanceBufferLevels` cover the fetch
+        // deadline by construction, and the same bound already holds the
+        // pre-seed path — and counted anyway, because "cannot happen" is a claim
+        // a counter should be allowed to contradict. Like the case above it
+        // leaves the live book alone; unlike it, it is this project's bound
+        // rather than the venue's ordering.
+        std::uint64_t reseed_holds_overflowed = 0;
     };
 
     // ONE HEAP BLOCK, TAKEN AT CONSTRUCTION, AND IT IS THE WHOLE OF M5 STAGE
@@ -600,7 +742,59 @@ public:
     // again. Same shape as Kraken's `resync_wanted()` and for the same reason —
     // the adapter cannot fetch, so it says so and the layer that can, does.
     bool reseed_wanted() const noexcept { return reseed_wanted_; }
-    void clear_reseed_wanted() noexcept { reseed_wanted_ = false; }
+
+    // THE TRANSPORT HAS ISSUED A FETCH FOR THAT REQUEST — and this is one call
+    // rather than two because the two things it does must not be able to
+    // separate. It replaces `clear_reseed_wanted()`, which said only half of it.
+    //
+    // **CLEARING THE LATCH AT ISSUE IS THE OLD RULE AND IT IS UNCHANGED**
+    // (`feed_task.cpp`, and the note on `note_depth`): `on_rest_body`'s failure
+    // path re-raises the request from inside `drop_book`, so a transport that
+    // cleared it at COMPLETION would erase the request the failure had just
+    // made. What is new is the second half: on a live book, issue is also the
+    // instant the hold has to open.
+    //
+    // **AND IT MUST BE ISSUE, NOT ANY LATER INSTANT.** The venue takes its
+    // snapshot at some point inside the round trip — measured about
+    // three-quarters of the way through (B2, median ~0.76) — so a hold that
+    // began after the fetch was issued could begin AFTER `lastUpdateId`, and the
+    // first survivor would then be an event the body already contains with a
+    // hole in front of it. Starting at issue makes `U <= L + 1 <= u` true by
+    // construction rather than by luck, for every body the venue can return.
+    //
+    // ONLY ON A LIVE BOOK. While `Unseeded` the pre-seed buffer is already
+    // holding every diff for the same fetch, and turning this on as well would
+    // hold each event twice into one array. The two states are mutually
+    // exclusive by construction, which is what makes the array shareable.
+    void on_reseed_issued() noexcept {
+        reseed_wanted_ = false;
+        if (seed_ != SeedState::Seeded) { return; }
+        reseed_holding_ = true;
+        // The window starts NOW. It should already be empty on a seeded book —
+        // `replay_buffer` and `drop_book` both zero it — and saying so here
+        // costs two stores and removes the need to prove it.
+        buf_events_ = 0;
+        buf_levels_ = 0;
+    }
+
+    // ...AND THAT FETCH IS NOT COMING. Abandoned at the deadline, refused by the
+    // transport, or ended with the socket. The hold is released and the REQUEST
+    // STANDS — coverage is still eroding and `note_depth`'s trigger has latched
+    // for this seed epoch, so nothing else would ask again.
+    //
+    // `reseeds_requested` is deliberately NOT bumped: this is the same request,
+    // re-raised because its answer never arrived, and counting it twice would
+    // make the retry cycle look like fresh demand.
+    void on_reseed_abandoned() noexcept {
+        if (!reseed_holding_) { return; }
+        end_reseed_hold();
+        reseed_wanted_ = true;
+    }
+
+    // Is a hold open — i.e. is this adapter keeping the interval a re-seed body
+    // will have to be rolled forward across? Published so the feed side can
+    // stamp `ReseedState`; nothing here branches on it (invariant #5).
+    bool reseed_holding() const noexcept { return reseed_holding_; }
 
     // ---- one WebSocket text frame, verbatim --------------------------------
     template <typename Sink>
@@ -649,9 +843,23 @@ public:
         const ParseStatus st =
             parse_binance_frame(json, FrameSource::RestBody, cfg_, frame_);
         last_status_ = st;
-        if (st != ParseStatus::Ok) { return note_parse_failure(st, sink); }
+        // **A BODY THAT DID NOT PARSE IS A FETCH THAT DID NOT ANSWER**, and the
+        // hold has to be released on both of these paths or it is held against a
+        // body that will never arrive (M5 stage D-A4). The leak is quiet and
+        // self-inflicted: `reseed_wanted_` was cleared at issue, so with the hold
+        // still open the schedule sees nothing wanted, `due_in_us` returns -1,
+        // and NOTHING ever asks again — the hold would accumulate every diff
+        // until it overflowed, minutes later, and be attributed to the buffer.
+        // `on_reseed_abandoned()` is the same release the transport uses for a
+        // fetch that failed, and it re-raises the request, which is what makes
+        // the retry reachable.
+        if (st != ParseStatus::Ok) {
+            on_reseed_abandoned();
+            return note_parse_failure(st, sink);
+        }
         if (frame_.kind != FrameKind::RestSnapshot || !frame_.has_last_update_id) {
             ++stats_.parse_errors;
+            on_reseed_abandoned();
             return;
         }
         ++stats_.rest_snapshots;
@@ -677,10 +885,31 @@ public:
         // between them to lose. Never true on a busy pair at a 100 ms cadence;
         // routinely true on a pair that goes 10 s between diffs. D needs to know
         // which world it is in before it pays 128 KiB for a buffer.
-        ++stats_.resnapshots_declined;
-        if (have_last_u_ && frame_.last_update_id >= last_u_) {
-            ++stats_.resnapshots_adoptable;
+        //
+        // **M5 STAGE D-A4 ANSWERS IT, AND THE MEASUREMENT ABOVE IS KEPT.** The
+        // paragraph is left standing because it is the derivation the mechanism
+        // rests on, not a description of what this function now does: a body
+        // that arrives with a hold open is rolled forward across exactly the
+        // events the paragraph says would otherwise be lost. See ANSWERING THE
+        // TRIGGER at the head of this file.
+        //
+        // A body with NO hold open is still declined, and that set is no longer
+        // "every re-snapshot" — it is the ones nobody told this adapter about:
+        // a capture tool's own fetch replayed through the harness, a transport
+        // that issued without calling `on_reseed_issued()`, **or a fetch the
+        // transport abandoned whose body then landed anyway** — `SeedTask` reads
+        // `abandon_` at the top of its loop, so a `step()` already in flight can
+        // still store `Ready` after the hold was closed. A bench reading
+        // `declined=` should know all three are in it. Counting
+        // them the way B2 did is what keeps the two populations separable.
+        if (!reseed_holding_) {
+            ++stats_.resnapshots_declined;
+            if (have_last_u_ && frame_.last_update_id >= last_u_) {
+                ++stats_.resnapshots_adoptable;
+            }
+            return;
         }
+        adopt_reseed(sink);
     }
 
     // ---- a REST fetch that produced no body --------------------------------
@@ -701,6 +930,13 @@ public:
             reseed_wanted_ = true;
             ++stats_.reseeds_requested;
         }
+        // ...and on a SEEDED book the same statement releases the hold instead
+        // (M5 stage D-A4): the fetch this adapter was holding an interval for
+        // produced no body, so there is nothing to roll forward onto. The two
+        // branches are the same sentence at two states — *the seed has not
+        // arrived* — and `on_reseed_abandoned` re-raises the request the way the
+        // `Unseeded` branch above does, without double-counting it.
+        on_reseed_abandoned();
     }
 
     template <typename Sink>
@@ -775,6 +1011,12 @@ private:
         have_last_u_ = false;
         buf_events_ = 0;
         buf_levels_ = 0;
+        // AND SO DOES ANY OPEN RE-SEED HOLD (M5 stage D-A4). The events it was
+        // keeping described a book that no longer exists, and the very next
+        // thing this adapter does is start buffering them again as a PRE-seed —
+        // the same array, the other state. Leaving the flag set would have the
+        // unseeded path and the re-seed path both writing it.
+        reseed_holding_ = false;
         bracket_checked_ = false;
         // The bounds die with the book. A coverage count against the previous
         // seed's floor, taken over levels the next seed will replace, is a
@@ -794,8 +1036,15 @@ private:
 
     // ---- the seed ----------------------------------------------------------
 
-    template <typename Sink>
-    void adopt_seed(Sink& sink) {
+    // THE BODY BECOMES THE LADDER. Split out of `adopt_seed` at M5 stage D-A4
+    // so the re-seed can install a body without inheriting the seed's failure
+    // path — which calls `drop_book`, and must not when there is a live book to
+    // lose. Every line below was `adopt_seed`'s and none changed; what moved is
+    // where the decision to run it is taken.
+    //
+    // It emits nothing and consults no sink, which is what makes it safe to call
+    // from a path that may still decide not to proceed.
+    void install_seed_ladder() noexcept {
         bid_count_ = 0;
         ask_count_ = 0;
         for (std::uint32_t i = 0; i < frame_.bid_count; ++i) {
@@ -835,6 +1084,11 @@ private:
         if (have_seed_bounds_ && !cover_trigger_armed_) { ++stats_.seeds_below_margin; }
         cover_trigger_latched_ = false;
         note_depth();
+    }
+
+    template <typename Sink>
+    void adopt_seed(Sink& sink) {
+        install_seed_ladder();
 
         // **NOTHING IS EMITTED HERE (M5 stage C).** The Snapshot used to go out
         // on this line, off the REST body alone, and that is the whole of DESIGN
@@ -844,6 +1098,98 @@ private:
         // it at that instant. If neither ever does, nothing is ever published,
         // and a book nobody published cannot be drawn live.
         replay_buffer(sink);
+    }
+
+    // ---- the re-seed (M5 stage D-A4) ---------------------------------------
+    //
+    // A body that arrived with a hold open. See ANSWERING THE TRIGGER at the
+    // head of this file for the ruling and the pricing; this is the arithmetic.
+    //
+    // **THE BRACKET IS TESTED BEFORE THE LADDER IS TOUCHED, AND THAT ORDERING IS
+    // THE WHOLE DIFFERENCE FROM `adopt_seed`.** The seed path may install first
+    // and drop afterwards, because the book it would drop does not exist yet.
+    // Here it does, it is correct, and it is live — so a body that cannot be
+    // reconciled has to be discarded without the ladder having been disturbed.
+    // Installing first and calling `drop_book` on failure would grey a book that
+    // had not gone wrong, which is candidate (b) reappearing as an error path
+    // after D-B's decision 2 refused it as a design.
+    template <typename Sink>
+    void adopt_reseed(Sink& sink) {
+        const std::int64_t body_id = frame_.last_update_id;
+        const std::uint32_t held = buf_events_;
+
+        // What the body already contains. The same query `replay_buffer` runs,
+        // and the levels are not touched — only the index is scanned.
+        const std::uint32_t first_survivor = first_survivor_after(body_id);
+
+        // The same bracket `replay_buffer` applies, through the same function.
+        // With no survivor at all the body is not older than anything held, so
+        // there is nothing between it and the book to lose — B2's
+        // `resnapshots_adoptable` case, and the continuity check will bracket
+        // the next diff to arrive.
+        const bool bracketed = first_survivor < held
+                                   ? brackets(buf_[first_survivor], body_id)
+                                   : (!have_last_u_ || body_id >= last_u_);
+
+        if (!bracketed) {
+            // **THE LIVE BOOK STANDS.** Nothing is emitted, nothing is dropped,
+            // and the request is re-raised so the transport asks again — which
+            // is the same answer the seed path gives ("fetch again rather than
+            // proceed onto a book with a gap in its provenance"), minus the Gap
+            // that answer needs only when there is no book.
+            ++stats_.reseeds_unbracketed;
+            end_reseed_hold();
+            reseed_wanted_ = true;
+            return;
+        }
+
+        // **FROM HERE IT IS THE SEED PATH, UNCHANGED, AND THAT IS THE POINT.**
+        // An earlier draft of this function replayed the survivors itself and
+        // reproduced — at a different site — the exact defect `apply_buffered`'s
+        // note records: with no survivor it claimed `bracket_checked_` although
+        // no feed event had been applied on top of the new baseline, so the next
+        // message was judged by `U == last_u + 1` when the venue's rule for the
+        // first event after a snapshot is `U <= L + 1 <= u`. A body taken
+        // mid-message therefore greyed a book that had not gone wrong, one
+        // message after the re-seed "succeeded". Found at review.
+        //
+        // Delegating removes the possibility rather than fixing an instance:
+        // `replay_buffer` is the one implementation of the venue's procedure,
+        // and it is the only thing that may decide the ladder has been
+        // corroborated.
+        reseed_holding_ = false;   // the hold is CONSUMED, not discarded —
+                                   // `replay_buffer` owns the array from here
+                                   // and zeroes it itself, so this must not be
+                                   // `end_reseed_hold()`.
+
+        install_seed_ladder();
+
+        // **AND THE NEW BASELINE NEEDS CORROBORATING LIKE ANY OTHER.**
+        // `install_seed_ladder` leaves `bracket_checked_` alone, and on a live
+        // book it is already true from the epoch just ended — which would carry
+        // the OLD ladder's corroboration onto a body no feed event has yet
+        // bracketed. Cleared here, so `replay_buffer` publishes only if a held
+        // survivor brackets it and `check_continuity` publishes at the next diff
+        // otherwise. Between those two moments the engine keeps the book the
+        // diffs built, which is correct, live, and exactly what stage C's
+        // deferred-`Snapshot` remedy asks for.
+        bracket_checked_ = false;
+
+        replay_buffer(sink);
+
+        // Counted only if the ladder survived. `replay_buffer` can still drop
+        // the book on a genuine hole BETWEEN survivors, and a re-seed that ended
+        // in a `Gap` did not adopt anything — the ledger's claim is `adopted`
+        // climbing while `greys` stays flat, so it must not count both.
+        if (seed_ == SeedState::Seeded) { ++stats_.reseeds_adopted; }
+    }
+
+    // Close the hold and release the array back to the pre-seed path. One place,
+    // so "the hold is over" cannot come to mean two different sets of stores.
+    void end_reseed_hold() noexcept {
+        reseed_holding_ = false;
+        buf_events_ = 0;
+        buf_levels_ = 0;
     }
 
     // The seed, published at the moment the FEED corroborated it and never
@@ -873,7 +1219,7 @@ private:
         const std::uint32_t held = buf_events_;
         const std::uint32_t first_survivor = first_survivor_after(last_u_);
         // Counted in bulk rather than as the scan walks. Same total, and it
-        // keeps the scan a pure query.
+        // keeps the scan a pure query the re-seed path can share.
         stats_.buffered_dropped_by_seed += first_survivor;
 
         if (first_survivor < held) {
@@ -909,19 +1255,127 @@ private:
     template <typename Sink>
     void on_diff(Sink& sink) {
         if (seed_ == SeedState::Unseeded) { return buffer_diff(sink); }
-        check_continuity(sink);
-        if (seed_ == SeedState::Unseeded) { return; }  // the break dropped the book
+        // FALSE means do not apply: either the baseline already contains this
+        // frame, or the book has just been dropped. Applying it in the first
+        // case would REWIND `last_u_` below the body's own instant, which is the
+        // half of that defect a `Gap` would not have made obvious.
+        if (!check_continuity(sink)) { return; }
         apply_levels(frame_.bids, frame_.bid_count, Side::Bid, sink);
         apply_levels(frame_.asks, frame_.ask_count, Side::Ask, sink);
         last_u_ = frame_.final_update_id;
         have_last_u_ = true;
         note_depth();
+
+        // AND, WHILE A RE-SEED FETCH IS OUTSTANDING, HELD AS WELL AS APPLIED
+        // (M5 stage D-A4). This is the whole of candidate (a) on the diff side:
+        // the live book advances exactly as it did before — the ladder keeps its
+        // colour, which is D-B decision 2 — and a copy of the interval goes into
+        // the array so the body, when it lands describing an earlier instant,
+        // can be rolled forward across it instead of rewinding the book.
+        //
+        // AFTER `apply_levels`, NOT BEFORE, AND `note_depth()` SITS BETWEEN THEM
+        // ON PURPOSE. The live book has priority: if the hold cannot take this
+        // event the book has still had it, and the re-seed is what is abandoned.
+        // `frame_` is unchanged by applying, so the copy is the same either way.
+        if (reseed_holding_) { hold_for_reseed(); }
     }
 
+    // The hold's own overflow rule, and it is NOT `buffer_diff`'s.
+    //
+    // `buffer_diff` answers an overflow with `Gap{Overflow}` and a dropped book,
+    // which is right when there is no book: the events it was holding can no
+    // longer be reconciled with any snapshot, so the whole attempt restarts.
+    // Here there IS a book, it is live, and it is correct — the hold is an
+    // OPTIONAL enrichment of a fetch, not the thing keeping the book alive. So
+    // an overflow abandons the RE-SEED and nothing else.
+    //
+    // Sized not to happen: `kBinanceBufferEvents` / `kBinanceBufferLevels` cover
+    // `kBinanceFetchDeadlineMs` by construction, asserted at their definition,
+    // and a fetch past that deadline is abandoned by the transport before the
+    // buffer could fill. Counted anyway.
+    void hold_for_reseed() noexcept {
+        if (!hold_has_room()) {
+            ++stats_.reseed_holds_overflowed;
+            end_reseed_hold();
+            // The request stands, for `on_reseed_abandoned`'s reason: coverage
+            // is still eroding and the trigger has latched for this epoch.
+            reseed_wanted_ = true;
+            return;
+        }
+        append_held_event();
+    }
+
+    // ---- the held window, which the two paths above SHARE ------------------
+    //
+    // Split out at M5 stage D-A4, when the re-seed hold became the array's
+    // second writer. The admission test and the copy are the same at both
+    // sites and must stay so — the pre-seed path and the re-seed path are
+    // reconciled by the SAME `replay_buffer` arithmetic, so an index written one
+    // way and read the other is a silently wrong book rather than a build error.
+    // **What differs between them is only the answer to a full buffer**, and
+    // that is now the only thing left at each call site: `Gap{Overflow}` and a
+    // dropped book where there is no book to lose, an abandoned re-seed where
+    // there is.
+    bool hold_has_room() const noexcept {
+        const std::uint32_t need = frame_.bid_count + frame_.ask_count;
+        // A null pointer is one of the constructor's two allocations having
+        // failed — no buffer at all, and there never will be. It lands in the
+        // same branch as a full one because the honest consequence is identical:
+        // these events cannot be reconciled with a snapshot.
+        return buf_ != nullptr && buf_lvl_ != nullptr && buf_events_ < kBinanceBufferEvents &&
+               buf_levels_ + need <= kBinanceBufferLevels;
+    }
+
+    // Copy this frame into the held window. `hold_has_room()` MUST have been
+    // checked; this writes unconditionally, which is what makes the bounds check
+    // one thing in one place rather than a condition repeated at two.
+    void append_held_event() noexcept {
+        BufferedEvent& ev = buf_[buf_events_++];
+        ev.first_id = frame_.first_update_id;
+        ev.final_id = frame_.final_update_id;
+        ev.bid_at = buf_levels_;
+        ev.bid_count = frame_.bid_count;
+        for (std::uint32_t i = 0; i < frame_.bid_count; ++i) {
+            buf_lvl_[buf_levels_++] = frame_.bids[i];
+        }
+        ev.ask_at = buf_levels_;
+        ev.ask_count = frame_.ask_count;
+        for (std::uint32_t i = 0; i < frame_.ask_count; ++i) {
+            buf_lvl_[buf_levels_++] = frame_.asks[i];
+        }
+        ++stats_.buffered_events;
+    }
+
+    // Returns whether `on_diff` should APPLY this frame. False means either that
+    // the frame is not ours to apply (the baseline already contains it) or that
+    // the book has just been dropped — in both cases applying it would be wrong,
+    // and in the second there is no longer a book to apply it to.
     template <typename Sink>
-    void check_continuity(Sink& sink) {
-        if (!have_last_u_) { return; }
+    bool check_continuity(Sink& sink) {
+        if (!have_last_u_) { return true; }
         if (!bracket_checked_) {
+            // **THE FIRST CLAUSE OF THE VENUE'S PROCEDURE — *drop what the
+            // snapshot already contains* — WHICH THIS FILE HAD ONLY EVER
+            // IMPLEMENTED FOR BUFFERED EVENTS** (`first_survivor_after`). A
+            // message that arrives AFTER a baseline and lies wholly inside it is
+            // the same statement at a different moment, and it is reachable
+            // whenever the body names an instant the socket has not reached —
+            // which is every fetch the venue answers from ahead of the stream.
+            //
+            // Without this the message fails the bracket below (`u <= L` makes
+            // `L + 1 <= u` false), and the answer to a failed bracket is
+            // `drop_book`. **Latent on the initial-seed path since B1**, where
+            // it costs a wasted seed over a panel that is already grey; on M5
+            // stage D-A4's re-seed path it would destroy a live, correct book,
+            // which is what makes it this stage's to close.
+            //
+            // Scoped to the unbracketed state deliberately. On a corroborated
+            // book a frame with `u <= last_u_` is a duplicate the venue should
+            // not have sent, and the strict check below is entitled to say so.
+            if (frame_.final_update_id <= last_u_) {
+                ++stats_.diffs_inside_baseline;
+                return false;
+            }
             // The first event after a seed with no surviving buffered event.
             // It plays the survivor's role: the venue's rule is about the first
             // event applied on top of the snapshot, not about where it came from.
@@ -948,18 +1402,19 @@ private:
                 // this returns — so the engine sees Snapshot then Delta, exactly
                 // as it did when the Snapshot left at seed time (M5 stage C).
                 publish_seed(sink);
-                return;
+                return true;
             }
             ++stats_.seed_bracket_failed;
             drop_book(GapReason::SeqGap, sink);
-            return;
+            return false;
         }
-        if (frame_.first_update_id == last_u_ + 1) { return; }
+        if (frame_.first_update_id == last_u_ + 1) { return true; }
         // THE TRANSPORT CHECK, and the only thing it is wired to. It caught the
         // deliberate reconnect's 2,204 missed updates; it has never caught a
         // book-correctness defect and must never be quoted as though it could.
         ++stats_.seq_breaks;
         drop_book(GapReason::SeqGap, sink);
+        return false;
     }
 
     template <typename Sink>
@@ -1067,10 +1522,11 @@ private:
     // NOTE ON PLACEMENT: the two helpers below take a `BufferedEvent&`, so they
     // must be declared after it. Member function BODIES are parsed as if at the
     // end of the class; parameter TYPES are not.
-
-    // THE TWO HALVES OF THE VENUE'S PROCEDURE, spelled once. A bracket written
-    // twice is a bracket that can disagree with itself, which is exactly the
-    // defect `apply_buffered`'s note below records one level down.
+    // THE TWO HALVES OF THE VENUE'S PROCEDURE, spelled once because BOTH
+    // adoption paths run them (M5 stage D-A4 gave `replay_buffer` a sibling in
+    // `adopt_reseed`, and a bracket implemented twice is a bracket that can
+    // disagree with itself — which is exactly the defect `apply_buffered`'s note
+    // records, one level down).
     //
     // The first held event a body does NOT already contain. Everything before it
     // is `u <= lastUpdateId` and is dropped.
@@ -1091,9 +1547,7 @@ private:
 
     template <typename Sink>
     void buffer_diff(Sink& sink) {
-        const std::uint32_t need = frame_.bid_count + frame_.ask_count;
-        if (buf_ == nullptr || buf_lvl_ == nullptr || buf_events_ >= kBinanceBufferEvents ||
-            buf_levels_ + need > kBinanceBufferLevels) {
+        if (!hold_has_room()) {
             // The connect outran the buffer. Not silent: the events held so far
             // can no longer be reconciled with a snapshot, so the whole attempt
             // restarts. Measured worst case is 15 events / 823 levels against
@@ -1118,20 +1572,7 @@ private:
             emit_gap(GapReason::Overflow, sink);
             return;
         }
-        BufferedEvent& ev = buf_[buf_events_++];
-        ev.first_id = frame_.first_update_id;
-        ev.final_id = frame_.final_update_id;
-        ev.bid_at = buf_levels_;
-        ev.bid_count = frame_.bid_count;
-        for (std::uint32_t i = 0; i < frame_.bid_count; ++i) {
-            buf_lvl_[buf_levels_++] = frame_.bids[i];
-        }
-        ev.ask_at = buf_levels_;
-        ev.ask_count = frame_.ask_count;
-        for (std::uint32_t i = 0; i < frame_.ask_count; ++i) {
-            buf_lvl_[buf_levels_++] = frame_.asks[i];
-        }
-        ++stats_.buffered_events;
+        append_held_event();
     }
 
     // ONE HELD EVENT, ONTO THE LADDER.
@@ -1142,8 +1583,9 @@ private:
     // `U <= L + 1 <= u`, and every event after that must satisfy
     // `U == prev_u + 1`. `replay_buffer` tests the first and then applied the
     // survivor through the second — so a body whose `lastUpdateId` fell strictly
-    // INSIDE a coalesced message passed the bracket, published its `Snapshot`,
-    // and was dropped by this line one statement later with `Gap{SeqGap}`.
+    // INSIDE a coalesced message (`U <= L < u`, which the bracket explicitly
+    // admits) passed the bracket, published its `Snapshot`, and was dropped by
+    // this line one statement later with `Gap{SeqGap}`.
     //
     // That is a ladder going live for the width of one event and then greying —
     // the exact output M5 stage C's deferred-Snapshot remedy exists to prevent,
@@ -1162,22 +1604,29 @@ private:
     // times as much, it does not — `binance_btcusdt_d1000ms_20260824.ndjson`
     // carries two bodies whose `lastUpdateId` falls 12 and 45 ids inside a
     // message. **So the case is not hypothetical: it is in the corpus**, and it
-    // has never run only because those two bodies arrive mid-stream, where every
-    // re-snapshot is declined unread.
+    // has never run only because those two bodies arrive mid-stream, where until
+    // this stage every re-snapshot was declined unread.
     //
-    // **THE POPULATION IS `kind:"rest"` RECORDS AND NOTHING ELSE**, which a
-    // first count of this got wrong (947 bodies, 881/881 aligned).
-    // `@depth20` partial-depth payloads also carry a `lastUpdateId`, so a scan
-    // keyed on that field sweeps 923 of them in as well — and not one can ever
-    // reach this code, because `on_frame` counts `FrameKind::PartialDepth` and
-    // breaks. The wrong population made the sample look 39x larger and the
-    // straddle rate 10x rarer than it is.
+    // **THE POPULATION IS `kind:"rest"` RECORDS AND NOTHING ELSE, which a first
+    // count of this got wrong** (947 bodies, 881/881 aligned — corrected at
+    // review). `@depth20` partial-depth payloads also carry a `lastUpdateId`, so
+    // a scan keyed on that field sweeps 923 of them in as well — and not one can
+    // ever reach this code, because `on_frame` counts `FrameKind::PartialDepth`
+    // and breaks. The wrong population made the sample look 39x larger and the
+    // straddle rate 10x rarer than it is. Measuring the right rows is the whole
+    // of the correction, and the conclusion got *stronger*: **2 of 6, not 2 of
+    // 66.**
     //
-    // That is the coincidence class (DESIGN card 29): a condition that holds
-    // because of something nobody chose — here the stream variant — reading as a
-    // condition that holds because it must. `kBinanceBufferEvents`'s own note
-    // already contemplates the switch to the 1,000 ms variant, which would make
-    // this the normal case rather than the rare one.
+    // That is the coincidence class in a fourth place (DESIGN card 29): a
+    // condition that holds because of something nobody chose — here the stream
+    // variant — reading as a condition that holds because it must.
+    // `kBinanceBufferEvents`'s own note already contemplates the switch
+    // (*"if the stream is ever switched to the 1,000 ms `@depth` variant"*),
+    // which would make this the normal case rather than the rare one.
+    //
+    // Fixed here rather than left for the venue to find, because M5 stage D-A4
+    // multiplies the exposure: a bracket used to run once per connect and now
+    // runs once per re-seed.
     template <typename Sink>
     void apply_buffered(const BufferedEvent& ev, Sink& sink, bool bracketing = false) {
         if (!bracketing && have_last_u_ && bracket_checked_ && ev.first_id != last_u_ + 1) {
@@ -1278,6 +1727,14 @@ private:
     bool have_last_u_ = false;
     bool bracket_checked_ = false;
     bool reseed_wanted_ = false;
+    // A RE-SEED FETCH IS OUTSTANDING AND THE INTERVAL IS BEING HELD (M5 stage
+    // D-A4). The whole internal-SRAM cost of candidate (a): one bool, landing in
+    // padding this object already carried between the flags above and the
+    // 8-aligned `seed_bid_floor_` below. The 8 KiB + 512 KiB the mechanism
+    // actually runs on is `buf_` / `buf_lvl_`, which D-A2 already allocated in
+    // PSRAM for the pre-seed path and which are idle for the whole life of a
+    // seeded book. Mutually exclusive with `seed_ == Unseeded` by construction.
+    bool reseed_holding_ = false;
 
     // The seeded range, and the trigger's two flags. `armed` is a property of
     // the seed (could it ever satisfy the margin); `latched` is a property of
