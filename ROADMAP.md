@@ -432,6 +432,22 @@ is untested.** *[B] — measured at M5 stage E; needs a bench sitting, not a cod
 page itself is scheduled work (MP) inside the portfolio repo and does **not** count toward
 the threshold.
 
+**D10 · The IDLE task on CPU 0 starves and the task watchdog aborts the board.** *[unowned — stage E
+declared it a separate stage; no brief, no branch, nobody on it as of 2026-09-06.]*
+
+- **What is measured.** Six aborts across D-C's 34.56 h in seven boots, then **one** in stage E's
+  32.25 h: the publish-boundary change reduced the rate and did not remove it. `c0` is still
+  **93% busy**. The abort is `abort()` at PC `0x4201c9f8`, which is `task_wdt_isr` at
+  `task_wdt.c:176` — **the watchdog's own abort site, identical across all six because that is
+  where the watchdog aborts.** The PC identifies nothing about the cause; the symptom is the 93%.
+- **Why it is not urgent, and why it must not be dropped.** Stage E cleared D-C §1 anyway at
+  27.81 h continuous, so no stage is blocked on it and **D-A4 is not gated on it**. But it is the
+  only known defect that reboots a shipped board, and the M5 row's *"Owed"* line does not name it,
+  so M5 closes without it unless it is carried here.
+- Evidence: `docs/briefs/M5-stage-E-the-publish-boundary.md` §8 for the separate-stage ruling and
+  the decoded backtrace; `hardware/bench-2026-08-30-D-C-soak.md`;
+  `hardware/bench-2026-09-04-E-soak.md` §4.
+
 ### Closed
 
 **~~D5 · Ping the venue instead of waiting on it — the liveness watchdog gets a clock.~~**

@@ -26,10 +26,11 @@ close-out list, and D-A4."* Strain 28 stays open until this lands.
 ctest 52/52, six arms)** for the ruling it records. **Blocks:** strain 28's closure and the M5
 close-out.
 
-**Coordinate before starting.** D-C's six task-watchdog aborts at PC `0x4201c9f8` are being chased in
-`firmware/` by another session, and D-C's re-run is gated on that fix. This stage touches
-`firmware/`. **Rebase onto the fix rather than racing it**, and say in the session log which commit
-you built on.
+**Nothing gates this stage.** An earlier draft of this line said D-C's task-watchdog aborts were
+*"being chased in `firmware/` by another session"* and told you to rebase onto that fix. **It was
+inherited from D-C's brief and was not true** — checked 2026-09-06: no branch, no brief, nobody on
+it. It is backlog **D10**, and stage E re-ran without it and cleared D-C §1 at 27.81 h continuous.
+Start when you like; say in the session log which commit you built on.
 
 ---
 
@@ -168,7 +169,7 @@ difference from `None` is inside `draw_header`. Grey is not used.
   and a track that cannot be run means the commit is unverified rather than green.**
 - **Read the soak records.** `bench-2026-08-30-D-C-soak.md` for the heap and re-seed picture,
   `bench-2026-09-04-E-soak.md` for the publish cadence. **Do not read D-C's *second* run** — it has
-  not happened, and it is gated on the crash fix, not on this stage.
+  not happened.
 
 ## 4 · Known unknowns — resolve and record
 
@@ -207,7 +208,7 @@ difference from `None` is inside `draw_header`. Grey is not used.
 - ☐ Any decision with architectural weight to `ARCHITECTURE.md` §9; `docs/DESIGN.html` updated where
       the card moves.
 - ☐ Per-commit verification per §3's corrected rule, **naming the track for each commit**; session
-      log · ROADMAP; **push to `m5/stage-d-a4`, rebased onto the crash fix**; split proposed;
+      log · ROADMAP; **push to `m5/stage-d-a4`**; split proposed;
       nothing committed until approved.
 
 ## 6 · Out of scope
@@ -215,7 +216,7 @@ difference from `None` is inside `draw_header`. Grey is not used.
 **The ping wire, the policy routing and the soak instrumentation — D-A3 ✅.** **The soak — D-C**,
 whose second run is gated on the firmware crash. Every rendering decision — **D-B**, closed;
 decision 2 is an input here and is not reopened by this stage. Reopening candidate (b) — the
-owner's, and it means reopening decision 2 first. **The task-watchdog crash** — another session's.
+owner's, and it means reopening decision 2 first. **The task-watchdog crash** — unowned, backlog **D10**.
 ROADMAP **D6**'s +8/+24 bytes and the price-axis window — not here; `sizeof` does not move.
 
 **To the M5 close-out:** the median convention (card 29) and strain 29's tripwire wording; the

@@ -29,6 +29,10 @@ pushed; `origin/m5/stage-e-publish-boundary` is at **`c664f20`**, so the branch 
 ref read out of a file rather than asked of git is the same species of error as a figure read out of
 a brief rather than from source, and it survived into a document whose subject is that error.
 
+**And the same shape once more, in §1's hazard.** *"It is being chased in `firmware/` by another
+session"* was carried over from D-C's brief and never checked. On 2026-09-06 there was no branch, no
+brief and nobody on it; it is now backlog **D10**. D-A4 is not gated on it.
+
 **The limit on the method is discharged (2026-09-06).** The first pass read the tree by staging
 files, because the Linux workspace on the box would not start, and could not say whether the working
 tree was clean. It has since been checked. `git status --porcelain=v1` reports **199 files modified,
