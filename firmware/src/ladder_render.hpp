@@ -38,13 +38,18 @@
 // THE ROW BUDGET — checked here, not on the panel
 // ============================================================================
 //
-//   row  0.. 4   header      (kGlyphHeight, one line of ladder_font.hpp)
-//   row      5   rule
-//   row  6..32   asks, worst at the top, asks[0] adjacent to the spread
+//   row  0.. 5   header      (kGlyphHeight, one line of ladder_font.hpp)
+//   row      6   rule
+//   row  7..32   asks, worst at the top, asks[0] adjacent to the spread
 //   row     33   the spread gap
-//   row 34..60   bids, bids[0] adjacent to the spread, worst at the bottom
-//   row     61   rule
-//   row 62..63   tape strip: last-price sparkline, and the render heartbeat
+//   row 34..59   bids, bids[0] adjacent to the spread, worst at the bottom
+//   row     60   rule
+//   row 61..63   tape strip: last-price sparkline, and the render heartbeat
+//
+// 6 + 1 + 26 + 1 + 26 + 1 + 3 = 64, and this block described the 3x5 font's
+// 5 + 1 + 27 + 1 + 27 + 1 + 2 until 2026-09-06. The header is what moved (M4
+// stage D, 3x5 -> 4x6 for a bench that could not read the old one) and the
+// ladder paid for it, exactly as the paragraph below says it should.
 //
 // kLevels falls out of that arithmetic rather than being stated, and is clamped
 // to kDisplayLevels. If the header ever needs a second line the ladder loses
@@ -283,21 +288,42 @@ inline constexpr int kSpreadRows = 1;
 inline constexpr int kMinStripRows = 2;  // the tape strip must survive the budget
 
 // How many levels a side the leftover rows can hold, then clamped to what the
-// book actually publishes. 27 today, from (64 - 5 - 2 - 1 - 2) / 2.
+// book actually publishes. **26 today**, from (64 - 6 - 2 - 1 - 2) / 2.
+//
+// **THAT SAID 27, FROM (64 - 5 - …), UNTIL 2026-09-06, AND THE 5 IS THE TELL:**
+// it is `kHeaderRows` for the 3x5 font, which M4 stage D replaced with the 4x6
+// the bench could actually read. `kGlyphHeight` went 5 -> 6, the budget fell to
+// 26, and every absolute number written down beside these lines stayed where it
+// was. The derivation is right and has always been right; only the arithmetic
+// spelled out beside it was stale.
 inline constexpr int kLevelBudget =
     (kPanelHeight - kHeaderRows - 2 * kRuleRows - kSpreadRows - kMinStripRows) / 2;
 inline constexpr int kLevels = kLevelBudget < static_cast<int>(kDisplayLevels)
                                    ? kLevelBudget
                                    : static_cast<int>(kDisplayLevels);
 
+// TODAY'S LAYOUT, FOR kGlyphHeight == 6. Every one of these is DERIVED — none is
+// a number anyone may set — and `test_ladder_render.cpp` pins all ten, so a font
+// change fails there rather than here. **That is deliberate and must stay so:** a
+// header that grows is supposed to cost the ladder levels and leave the build
+// green ("draw fewer levels; never change `kDisplayLevels`", §5), which is why
+// there is no `static_assert` on `kLevels` and why there must not be one.
+//
+// **AND WHY THE STALE SET SURVIVED THREE MILESTONES, which is the part worth
+// keeping:** of the seven numbers that were wrong, `kSpreadRow` and `kBidTop`
+// were **right**. The header gaining a row and the ladder losing one cancel
+// exactly at the spread — 6 + 27 and 7 + 26 are both 33 — so the two values a
+// reader checks first, the middle of the panel, agreed with the comments while
+// the four at the edges did not. A coincidence that makes a wrong set look
+// right is the same shape DESIGN card 29 names, arriving in a comment block.
 inline constexpr int kHeaderTop = 0;
-inline constexpr int kTopRuleRow = kHeaderTop + kHeaderRows;  // 5
-inline constexpr int kAskTop = kTopRuleRow + kRuleRows;       // 6
+inline constexpr int kTopRuleRow = kHeaderTop + kHeaderRows;  // 6
+inline constexpr int kAskTop = kTopRuleRow + kRuleRows;       // 7
 inline constexpr int kSpreadRow = kAskTop + kLevels;          // 33
 inline constexpr int kBidTop = kSpreadRow + kSpreadRows;      // 34
-inline constexpr int kBottomRuleRow = kBidTop + kLevels;      // 61
-inline constexpr int kStripTop = kBottomRuleRow + kRuleRows;  // 62
-inline constexpr int kStripRows = kPanelHeight - kStripTop;   // 2
+inline constexpr int kBottomRuleRow = kBidTop + kLevels;      // 60
+inline constexpr int kStripTop = kBottomRuleRow + kRuleRows;  // 61
+inline constexpr int kStripRows = kPanelHeight - kStripTop;   // 3
 
 static_assert(kLevels >= 1, "the row budget leaves no ladder at all");
 static_assert(kStripRows >= kMinStripRows,
