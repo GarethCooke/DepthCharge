@@ -203,6 +203,53 @@ TEST_CASE("a snapshot older than the first surviving event re-fetches rather tha
     CHECK(ev.v.back().reason == GapReason::SeqGap);
 }
 
+TEST_CASE("the bracketing event may STRADDLE the body, and the corpus contains one") {
+    // **THE CONTRADICTION `apply_buffered` CARRIED UNTIL M5 STAGE D-A4.** The
+    // venue's rule for the event after a snapshot is `U <= L + 1 <= u`; the rule
+    // for every event after that is `U == prev_u + 1`. `replay_buffer` tested
+    // the first and then applied the survivor through the second, so a body
+    // whose `lastUpdateId` fell strictly INSIDE a coalesced message passed the
+    // bracket, published its Snapshot, and was dropped one statement later with
+    // `Gap{SeqGap}` — a ladder live for the width of one event and then grey.
+    //
+    // It never fired because the board subscribes to `@depth@100ms`, where the
+    // venue's snapshot lands on a message boundary 18 times out of 18 across the
+    // committed corpus. At the 1000 ms cadence it does not:
+    // `binance_btcusdt_d1000ms_20260824.ndjson` carries two bodies whose
+    // `lastUpdateId` falls 12 and 45 ids inside a message.
+    SUBCASE("the initial seed, through replay_buffer") {
+        Adapter a = make();
+        Events ev;
+        // U = 18 <= L = 20 < u = 25. The old code took this to `drop_book`.
+        a->on_frame(diff(18, 25, level("100.00000000", "3.00000000"), ""), ev);
+        a->on_rest_body(seed_body(20, level("100.00000000", "9.00000000"), ""), ev);
+
+        CHECK(a->stats().seed_bracket_ok == 1);
+        CHECK(a->stats().seq_breaks == 0);
+        CHECK(a->has_baseline());
+        CHECK(a->last_update_id() == 25);
+        CHECK(ev.count(FeedEvent::Kind::Snapshot) == 1);
+        CHECK(ev.count(FeedEvent::Kind::Gap) == 0);
+        // The survivor's quantity won, not the body's.
+        REQUIRE(a->bid_count() == 1);
+        CHECK(a->bids()[0].qty == 300000000);
+    }
+
+    SUBCASE("a genuine hole is still refused") {
+        // The fix must not widen the bracket. U = 30 > L + 1 = 21 is a hole and
+        // the answer is unchanged: no Snapshot, a Gap, and fetch again.
+        Adapter a = make();
+        Events ev;
+        a->on_frame(diff(30, 35, level("100.00000000", "3.00000000"), ""), ev);
+        a->on_rest_body(seed_body(20, level("100.00000000", "9.00000000"), ""), ev);
+        CHECK(a->stats().seed_bracket_failed == 1);
+        CHECK(a->stats().seed_bracket_ok == 0);
+        CHECK_FALSE(a->has_baseline());
+        CHECK(ev.count(FeedEvent::Kind::Snapshot) == 0);
+        CHECK(ev.count(FeedEvent::Kind::Gap) == 1);
+    }
+}
+
 TEST_CASE("the OTHER bracket site answers the same way — no buffered event, first diff misses") {
     // **THE SAME EVENT REACHES `drop_book` DOWN TWO PATHS, AND THEY MUST NOT
     // DISAGREE.** The case above brackets against a surviving BUFFERED event, in

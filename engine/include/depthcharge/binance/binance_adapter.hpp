@@ -871,19 +871,14 @@ private:
     template <typename Sink>
     void replay_buffer(Sink& sink) {
         const std::uint32_t held = buf_events_;
-        std::uint32_t first_survivor = held;
-        for (std::uint32_t i = 0; i < held; ++i) {
-            if (buf_[i].final_id > last_u_) { first_survivor = i; break; }
-            ++stats_.buffered_dropped_by_seed;
-        }
+        const std::uint32_t first_survivor = first_survivor_after(last_u_);
+        // Counted in bulk rather than as the scan walks. Same total, and it
+        // keeps the scan a pure query.
+        stats_.buffered_dropped_by_seed += first_survivor;
 
         if (first_survivor < held) {
             const BufferedEvent& ev = buf_[first_survivor];
-            // U <= L + 1 <= u. If the snapshot is OLDER than the first surviving
-            // event's U there is a hole between them, and the answer is to fetch
-            // again rather than to proceed onto a book with a gap in its
-            // provenance.
-            if (ev.first_id <= last_u_ + 1 && last_u_ + 1 <= ev.final_id) {
+            if (brackets(ev, last_u_)) {
                 ++stats_.seed_bracket_ok;
                 bracket_checked_ = true;
                 // THE FEED HAS SPOKEN, so the seed may be published — before the
@@ -900,7 +895,10 @@ private:
         }
 
         for (std::uint32_t i = first_survivor; i < held; ++i) {
-            apply_buffered(buf_[i], sink);
+            // The bracketing event is exempt from the continuity check, which
+            // is a stricter condition than the bracket it just passed. See
+            // `apply_buffered` — this is the site where the two disagreed.
+            apply_buffered(buf_[i], sink, /*bracketing=*/i == first_survivor);
         }
         buf_events_ = 0;
         buf_levels_ = 0;
@@ -937,8 +935,12 @@ private:
             // gone uncounted, while the identical failure through
             // `replay_buffer` was counted. One event, two answers, depending on
             // which of the two bracket sites saw it.
-            if (frame_.first_update_id <= last_u_ + 1 &&
-                last_u_ + 1 <= frame_.final_update_id) {
+            // `brackets()` and not a third open-coding of `U <= L + 1 <= u`.
+            // The frame is not a `BufferedEvent`, so it is adapted rather than
+            // passed — which is the whole reason the helper takes the two ids
+            // it actually uses.
+            if (brackets(BufferedEvent{frame_.first_update_id, frame_.final_update_id, 0, 0, 0, 0},
+                         last_u_)) {
                 bracket_checked_ = true;
                 ++stats_.seed_bracket_ok;
                 // THE FEED HAS SPOKEN. The seed goes out here, and this frame's
@@ -1062,6 +1064,31 @@ private:
         std::uint32_t ask_count = 0;
     };
 
+    // NOTE ON PLACEMENT: the two helpers below take a `BufferedEvent&`, so they
+    // must be declared after it. Member function BODIES are parsed as if at the
+    // end of the class; parameter TYPES are not.
+
+    // THE TWO HALVES OF THE VENUE'S PROCEDURE, spelled once. A bracket written
+    // twice is a bracket that can disagree with itself, which is exactly the
+    // defect `apply_buffered`'s note below records one level down.
+    //
+    // The first held event a body does NOT already contain. Everything before it
+    // is `u <= lastUpdateId` and is dropped.
+    std::uint32_t first_survivor_after(std::int64_t body_id) const noexcept {
+        for (std::uint32_t i = 0; i < buf_events_; ++i) {
+            if (buf_[i].final_id > body_id) { return i; }
+        }
+        return buf_events_;
+    }
+
+    // `U <= L + 1 <= u`. If the body is OLDER than the survivor's `U` there is a
+    // hole between them, and the answer is to fetch again rather than to proceed
+    // onto a book with a gap in its provenance.
+    static bool brackets(const BufferedEvent& ev, std::int64_t body_id) noexcept {
+        return ev.first_id <= body_id + 1 && body_id + 1 <= ev.final_id;
+    }
+
+
     template <typename Sink>
     void buffer_diff(Sink& sink) {
         const std::uint32_t need = frame_.bid_count + frame_.ask_count;
@@ -1107,9 +1134,53 @@ private:
         ++stats_.buffered_events;
     }
 
+    // ONE HELD EVENT, ONTO THE LADDER.
+    //
+    // **`bracketing` EXISTS BECAUSE THE TWO CONDITIONS IN THIS FILE DISAGREE,
+    // AND UNTIL M5 STAGE D-A4 NOTHING SAID SO.** The venue's rule has two
+    // clauses, not one: the event that FOLLOWS a snapshot must satisfy
+    // `U <= L + 1 <= u`, and every event after that must satisfy
+    // `U == prev_u + 1`. `replay_buffer` tests the first and then applied the
+    // survivor through the second — so a body whose `lastUpdateId` fell strictly
+    // INSIDE a coalesced message passed the bracket, published its `Snapshot`,
+    // and was dropped by this line one statement later with `Gap{SeqGap}`.
+    //
+    // That is a ladder going live for the width of one event and then greying —
+    // the exact output M5 stage C's deferred-Snapshot remedy exists to prevent,
+    // reachable through a door that remedy did not cover.
+    //
+    // **IT HAS NEVER FIRED, AND THE REASON IS THE STREAM THIS BUILD SUBSCRIBES
+    // TO.** Measured over every committed Binance capture — every `kind:"rest"`
+    // body followed by a diff that brackets it, 24 of them:
+    //
+    //     stream                bodies   U == L+1   U < L+1 (straddle)
+    //     @depth@100ms  (ship)      18         18            0
+    //     @depth        (1000 ms)    6          4            2   <-- 1 in 3
+    //
+    // At the 100 ms cadence the venue's snapshot lands on a message boundary
+    // every single time; at the 1000 ms cadence, where one message coalesces ten
+    // times as much, it does not — `binance_btcusdt_d1000ms_20260824.ndjson`
+    // carries two bodies whose `lastUpdateId` falls 12 and 45 ids inside a
+    // message. **So the case is not hypothetical: it is in the corpus**, and it
+    // has never run only because those two bodies arrive mid-stream, where every
+    // re-snapshot is declined unread.
+    //
+    // **THE POPULATION IS `kind:"rest"` RECORDS AND NOTHING ELSE**, which a
+    // first count of this got wrong (947 bodies, 881/881 aligned).
+    // `@depth20` partial-depth payloads also carry a `lastUpdateId`, so a scan
+    // keyed on that field sweeps 923 of them in as well — and not one can ever
+    // reach this code, because `on_frame` counts `FrameKind::PartialDepth` and
+    // breaks. The wrong population made the sample look 39x larger and the
+    // straddle rate 10x rarer than it is.
+    //
+    // That is the coincidence class (DESIGN card 29): a condition that holds
+    // because of something nobody chose — here the stream variant — reading as a
+    // condition that holds because it must. `kBinanceBufferEvents`'s own note
+    // already contemplates the switch to the 1,000 ms variant, which would make
+    // this the normal case rather than the rare one.
     template <typename Sink>
-    void apply_buffered(const BufferedEvent& ev, Sink& sink) {
-        if (have_last_u_ && bracket_checked_ && ev.first_id != last_u_ + 1) {
+    void apply_buffered(const BufferedEvent& ev, Sink& sink, bool bracketing = false) {
+        if (!bracketing && have_last_u_ && bracket_checked_ && ev.first_id != last_u_ + 1) {
             ++stats_.seq_breaks;
             drop_book(GapReason::SeqGap, sink);
             return;
