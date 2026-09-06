@@ -55,9 +55,20 @@ from 2026-08-18:
 > until every commit has been shown green in isolation — and *green* means green for what the commit
 > TOUCHES.** The host suite proves `engine/`, `harness/`, `tools/`, and **a `firmware/src` header if
 > and only if some host test includes it** (`CMakeLists.txt:341` puts `firmware/src` on the test
-> targets' include path; sixteen headers are reached that way). It compiles **no `firmware/src/*.cpp`
-> and no `platformio.ini`, ever**. So the test is mechanical: *does a host test include this file?*
-> If not, the commit is unverified until `pio run -e <arm>` has built it **in that worktree**.
+> targets' include path). It compiles **no `firmware/src/*.cpp` and no `platformio.ini`, ever**.
+>
+> **THE COUNT OF REACHED HEADERS IS NOT RESTATED HERE, AND THAT IS DELIBERATE.** It has been written
+> down wrongly twice — *"sixteen"* stood in this file and in `ARCHITECTURE.md` §9's 2026-08-30 row
+> from the day that row was written, and it was already stale then. **The current figure, its
+> enumeration, and the list of headers the host does NOT reach live in that §9 row.** Read it there.
+> A number copied into a second file is a number that will disagree with the first.
+>
+> **AND THE TEST RUNS BOTH WAYS, which the one-line form of it did not say and which cost a wrong
+> track assignment at M5 stage D-A4.** *Does a host test include this file?* is only half: the
+> firmware compiles `engine/` headers too — `venue_build.hpp` includes the selected venue's adapter —
+> so an `engine/` commit is not automatically ctest-only. **Ask both, per file: does a host test
+> compile it, and does the firmware compile it? Run every track that answers yes.** Where a track
+> cannot be run the commit is unverified rather than green.
 > Running one track against a commit in the other is not a weak check — it is a **wave-through**, and
 > it reports green.
 

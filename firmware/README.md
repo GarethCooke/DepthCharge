@@ -261,17 +261,19 @@ Geometry stays, hue goes.
 ### The row budget
 
 ```text
-row  0.. 4   header      symbol left; last price right when live, stale reason when not
-row      5   rule
-row  6..32   asks         worst at the top, asks[0] hard against the spread
+row  0.. 5   header      value right; age left of it; symbol at the left edge
+row      6   rule
+row  7..32   asks         worst at the top, asks[0] hard against the spread
 row     33   the spread gap
-row 34..60   bids         bids[0] hard against the spread, worst at the bottom
-row     61   rule
-row 62..63   tape strip   last-price sparkline, and the render heartbeat at (63,63)
+row 34..59   bids         bids[0] hard against the spread, worst at the bottom
+row     60   rule
+row 61..63   tape strip   last-price sparkline, and the render heartbeat at (63,63)
 ```
 
-5 + 1 + 27 + 1 + 27 + 1 + 2 = **64 exactly**, with `kDisplayLevels` intact at 27
-a side. `kLevels` is *derived* from the leftover rows and clamped to
+6 + 1 + 26 + 1 + 26 + 1 + 3 = **64 exactly**, with `kDisplayLevels` intact at 27
+a side and **`kLevels` drawing 26 of them** — the 4x6 font's cost, taken in the
+sanctioned direction. (Every row constant above is pinned in
+`test_ladder_render.cpp`; this block described the 3x5 font until 2026-09-06.) `kLevels` is *derived* from the leftover rows and clamped to
 `kDisplayLevels`, so if the header ever needs a second line the ladder loses
 levels and the build stays green — which is the brief's instruction ("draw fewer
 levels; never change `kDisplayLevels`", that being a §5 change to `engine/`). It
@@ -283,6 +285,35 @@ ladder is one picture of the book; a level that exists is never invisible (one
 pixel floor), the same rule the M1 console ladder applies. Prices go through
 `depthcharge::format_scaled` into a stack buffer — no `String`, no `%f`, no
 `std::string` (invariants #3 and #7).
+
+### What the header holds, and the order it yields in
+
+Three claimants on 64 pixels and not room for all of them. The value is
+right-aligned and is never dropped; the others take what is left, with a column
+of air between each:
+
+| slot | holds |
+| --- | --- |
+| **value** (right) | the last price while live; the **stale reason** when not (`NO LINK`, `SEQ GAP`, `CHECKSUM`, `OVERFLOW`, `RESYNC`) |
+| **age** | queuing lag as `0.5s` / `1m05s` / `1h05m`, or `-` for **no reading yet**, which is a different statement from `0.0s` |
+| **symbol** (left edge) | the instrument id — **or `GET` while a re-seed fetch is in flight** |
+
+**The standing priority is VALUE > AGE > SYMBOL**, and **while a fetch is in
+flight it becomes VALUE > MARKER > AGE > SYMBOL**, reverting the moment the fetch
+ends. Those are the owner's fifth and sixth rendering decisions, taken at M5
+stage D-A4's split on 2026-09-06 (`ARCHITECTURE.md` §9); the marker itself is
+D-B's decision 2 — the symbol's slot, `Ink::Symbol`, at most eight characters.
+**A header too narrow drops a claimant rather than overlapping it**; nothing here
+is ever drawn on top of anything else.
+
+**The value is trimmed of trailing fractional zeros** (`TextField::price`), and
+that is what makes the other two reachable at a venue whose declared scale
+exceeds its tick. Binance quotes a uniform 8 decimals, so an untrimmed BTCUSDT
+price is `108234.56000000` — fifteen characters, **74 px on a 64 px panel** — and
+the value alone consumed the whole header, taking the age and the symbol with it.
+Trimmed it is 44. **`format_scaled` itself is unchanged**: it still emits exactly
+`decimals` fractional digits for every other caller, one of which builds the
+string Kraken's CRC32 is computed over.
 
 **The heartbeat pixel** at (63,63) toggles on every drawn frame. Invariant #5
 covers the *feed* going quiet; nothing covers the *renderer* dying, and a dead
