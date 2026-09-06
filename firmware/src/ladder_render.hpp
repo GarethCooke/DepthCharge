@@ -402,6 +402,35 @@ constexpr const char* reason_text(GapReason r) noexcept {
     return "STALE";
 }
 
+// WHAT A RE-SEED IN FLIGHT PUTS IN THE SYMBOL'S SLOT (M5 stage D-A4,
+// implementing D-B decision 2 — the text is the one thing D-B left open).
+//
+// **THREE CHARACTERS, AND THE THREE IS ARITHMETIC RATHER THAN TASTE.** D-B's
+// bound is eight; the panel's is tighter. After the fifth decision the value is
+// 44 px, so `value_x` is 20, and a marker of `n` characters needs `5n + 4`
+// pixels to clear the yield test — `n <= 3`. `"RESEED"` was 29 px and could
+// never draw; this is 14.
+//
+// **WHY "GET", AND WHY NOT A SHORTER FORM OF "RESEED".** `"RSD"` would be three
+// characters a reader has to be told the meaning of. `GET` is what is actually
+// outstanding: the board is inside `GET /api/v3/depth`, and the serial line it
+// correlates with says `rest: fetch OK(...) HTTP 200`. So the panel and the log
+// name the same event.
+//
+// **AND IT DELIBERATELY DOES NOT JOIN `reason_text`'s VOCABULARY, which is the
+// one thing it must not be mistaken for.** Every word in the value slot —
+// `SEQ GAP`, `CHECKSUM`, `NO LINK`, `OVERFLOW`, `RESYNC` — says something is
+// wrong. D-B decision 2's whole premise is that a re-seed fires on a book that
+// has **not** gone wrong, so a marker that read like a fault word would state
+// the opposite of the decision that put it there. `GET` reads as an action.
+//
+// A FUNCTION RATHER THAN A CONSTANT, so it sits beside `reason_text` and is
+// found by anyone reading that one. There is one state to name today; `Wanted`
+// deliberately draws nothing, because the marker is what an outstanding FETCH
+// looks like and a request nobody has acted on yet is already visible as the
+// grey panel that raised it.
+constexpr const char* reseed_marker() noexcept { return "GET"; }
+
 // DROP FRACTIONAL ZEROS THAT CARRY NO INFORMATION (the owner's decision,
 // 2026-09-06 — M5's FIFTH rendering decision, taken at D-A4's split).
 //
@@ -625,25 +654,87 @@ private:
         // The age lands between: more useful than the id, never at the value's
         // expense.
         //
+        // ===================================================================
+        // THE ORDER THE HEADER IS ALLOCATED IN, AND IT CHANGES DURING A FETCH
+        // (the owner's SIXTH rendering decision, 2026-09-06)
+        // ===================================================================
+        //
+        // Standing priority is **VALUE > AGE > SYMBOL** and has been since M4
+        // stage D. **While a re-seed fetch is in flight it becomes
+        // VALUE > MARKER > AGE > SYMBOL**, and reverts the moment the fetch
+        // ends. The value is untouchable in both; what moves is one step.
+        //
+        // **WHY A RE-RANK AND NOT A SHORTER MARKER — the arithmetic is the
+        // argument.** After the fifth decision `value_x` is 20 px on a live
+        // BTCUSDT header, and the age takes its bite first, so an `n`-character
+        // marker allocated LAST sees:
+        //
+        //     age >= 4 chars ("0.5s", 19 px)  the age yields  -> left_limit 20
+        //     age  = 3 chars                  the age draws   -> left_limit  1
+        //     no reading ("-", 4 px)          the dash draws  -> left_limit 11
+        //
+        // So a marker short enough to fit would appear **only when the age was
+        // too wide to draw itself** — its presence would encode the age's
+        // width rather than a re-seed, which is worse than not drawing at all.
+        // The slot was never the problem; the order was.
+        //
+        // **AND `AgeText` HAS NO THREE-CHARACTER FORM**, so the middle row is
+        // unreachable: `"%u.%us"` is four characters at its shortest (`0.0s`)
+        // and the minute and hour forms are five. A real reading therefore
+        // never fits a live Binance header, before or after this decision —
+        // only the 4 px `-` does, which is what the fifth decision bought.
+        //
+        // **THE INTERACTION WORTH KNOWING, because someone will meet it.** That
+        // dash is what the panel shows for the whole of the age estimator's
+        // baseline window — **639 s, ~11 minutes, on every Binance connection**
+        // (32 intervals at the ~20 s ping cadence). Under the OLD order the dash
+        // cost 9 px and pushed the marker out at exactly the time a re-seed is
+        // most likely: the first eleven minutes of a connection, when the book
+        // is youngest and the seed most recently taken. Under this order the
+        // marker takes its 19 px first and the dash yields instead — which is
+        // the decision doing precisely what it was taken for.
+        const bool reseed_in_flight = snap.reseed == ReseedState::InFlight;
+        const TextField sym = TextField::scaled(static_cast<std::int64_t>(snap.symbol.id), 0);
+        const char* slot = reseed_in_flight ? reseed_marker() : sym.buf;
+        const int slot_w = text_width(slot);
+
+        int left_limit = value_x;
+        // How far left the age may reach. Zero unless the marker has taken the
+        // low end of the header, and the `+ kGlyphAdvance` is the column of air
+        // the two must keep between them — the same gap every other pair in this
+        // header keeps.
+        int slot_floor = 0;
+
+        // THE MARKER, ALLOCATED BEFORE THE AGE and only while a fetch is in
+        // flight. It still yields: too narrow a header drops it rather than
+        // overlapping the value, which is D-B's third constraint and the same
+        // test on the same `left_limit`.
+        if (reseed_in_flight && slot_w + kGlyphAdvance <= left_limit) {
+            draw_text(c, 0, kHeaderTop, slot, Ink::Symbol);
+            slot_floor = slot_w + kGlyphAdvance;
+        }
+
         // `-` when there is no reading, which is a different statement from 0.0s
         // and is `AgeText::unknown()`'s whole reason for existing. It is what the
-        // panel shows for the first 16 s of an Anvil connection and 32 s of a
-        // Kraken one, while the baseline latches.
+        // panel shows for the first 16 s of an Anvil connection, 32 s of a
+        // Kraken one and ~11 minutes of a Binance one, while the baseline
+        // latches.
         const AgeText age = snap.has_age ? AgeText(snap.age_ms) : AgeText::unknown();
         const int age_w = text_width(age.buf);
-        int left_limit = value_x;
-        if (age_w + kGlyphAdvance <= left_limit) {
+        if (age_w + kGlyphAdvance <= left_limit &&
+            left_limit - kGlyphAdvance - age_w >= slot_floor) {
             const int age_x = left_limit - kGlyphAdvance - age_w;
             draw_text(c, age_x, kHeaderTop, age.buf, Ink::Symbol);
             left_limit = age_x;
         }
 
-        // The symbol is the anchor, but it yields, and it now yields to two
-        // things instead of one.
-        const TextField sym = TextField::scaled(static_cast<std::int64_t>(snap.symbol.id), 0);
-        const int sym_w = text_width(sym.buf);
-        if (sym_w + kGlyphAdvance <= left_limit) {
-            draw_text(c, 0, kHeaderTop, sym.buf, Ink::Symbol);
+        // The symbol is the anchor and it still yields to everything. It is
+        // allocated last, as it always was — and NOT at all while a fetch is in
+        // flight, because the slot is the marker's for the duration: D-B pinned
+        // the marker to the symbol's pixels, so a header too narrow for the
+        // marker shows nothing there rather than falling back to an id.
+        if (!reseed_in_flight && slot_w + kGlyphAdvance <= left_limit) {
+            draw_text(c, 0, kHeaderTop, slot, Ink::Symbol);
         }
     }
 

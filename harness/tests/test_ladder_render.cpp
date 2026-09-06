@@ -523,6 +523,72 @@ TEST_CASE("the header shows the last price when live and the reason when not") {
     }
 }
 
+TEST_CASE("the symbol yields to the value rather than overlapping it") {
+    // A header that overlaps is worse than one missing an id this object only
+    // ever shows one of. The value is right-aligned first; the symbol draws only
+    // if it fits with a column of air between them.
+    DisplaySnapshot s = make_book(4);
+    s.symbol.id = 999999999;          // absurdly wide on purpose
+    s.symbol.price_decimals = 8;
+    s.last_px = 123456789012345678LL;  // 18 digits + '.' — wider than the panel
+
+    LadderView view;
+    GridCanvas c;
+    view.observe(s);
+    view.draw(s, c);
+    CHECK(c.out_of_bounds == 0);
+    CHECK(c.every_pixel_written());
+
+    // The symbol was dropped: column 0 of the header carries no symbol ink.
+    int symbol_pixels = 0;
+    for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+        symbol_pixels += c.count_in_row(y, Ink::Symbol);
+    }
+    CHECK(symbol_pixels == 0);
+}
+
+// ---------------------------------------------------------------------------
+// THE RE-SEED MARKER (M5 stage D-A4, implementing D-B decision 2)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Lit pixels of one ink across the header band.
+//
+// The header-only comparison the marker cases need: `header_pixels` in the
+// reason test counts everything that is not bed, which cannot separate the
+// symbol slot from the value. **File-scope rather than another lambda** — the
+// age test 200 lines below had an identical one, and now uses this.
+// The header's VALUE slot, as `draw_header` computes it: the trimmed price
+// while live, the stale reason otherwise. Spelled once so the width arithmetic
+// below cannot drift from the renderer's.
+struct ValueSlot {
+    std::string text;
+    int width;
+};
+
+ValueSlot value_of(const DisplaySnapshot& s) {
+    const depthcharge::fw::TextField p =
+        depthcharge::fw::TextField::price(s.last_px, s.symbol.price_decimals);
+    const char* v = s.live() ? (s.has_last ? p.buf : "-")
+                             : depthcharge::fw::reason_text(s.stale_reason);
+    return ValueSlot{std::string(v), text_width(v)};
+}
+
+int header_ink_count(const DisplaySnapshot& s, Ink want) {
+    LadderView v;
+    GridCanvas c;
+    v.observe(s);
+    v.draw(s, c);
+    int lit = 0;
+    for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+        lit += c.count_in_row(y, want);
+    }
+    return lit;
+}
+
+}  // namespace
+
 TEST_CASE("the header trims trailing zeros, and never a significant digit") {
     // **THE OWNER'S FIFTH RENDERING DECISION (2026-09-06).** Binance declares a
     // uniform 8 decimals and `tickSize` is a validator rather than the scale
@@ -595,28 +661,319 @@ TEST_CASE("the header trims trailing zeros, and never a significant digit") {
     CHECK(trimmed(1000000, 0) == "1000000");
 }
 
-TEST_CASE("the symbol yields to the value rather than overlapping it") {
-    // A header that overlaps is worse than one missing an id this object only
-    // ever shows one of. The value is right-aligned first; the symbol draws only
-    // if it fits with a column of air between them.
-    DisplaySnapshot s = make_book(4);
-    s.symbol.id = 999999999;          // absurdly wide on purpose
-    s.symbol.price_decimals = 8;
-    s.last_px = 123456789012345678LL;  // 18 digits + '.' — wider than the panel
+TEST_CASE("the re-seed marker fits beside a four-digit value, exactly as every reason does") {
+    // D-B decision 2's second constraint, and the shape is copied from the
+    // `reason_text` loop above rather than invented: *"the marker is at most
+    // eight characters and is asserted against the real header width in
+    // test_ladder_render.cpp, the way every reason_text string already is — that
+    // test is what stops a longer word being added without the desk saying so."*
+    using depthcharge::fw::reseed_marker;
 
-    LadderView view;
-    GridCanvas c;
-    view.observe(s);
-    view.draw(s, c);
-    CHECK(c.out_of_bounds == 0);
-    CHECK(c.every_pixel_written());
+    CHECK(reseed_marker() != nullptr);
+    CHECK(text_width(reseed_marker()) > 0);
+    CHECK(text_width("9999") + kGlyphAdvance + text_width(reseed_marker()) <= kPanelWidth);
 
-    // The symbol was dropped: column 0 of the header carries no symbol ink.
-    int symbol_pixels = 0;
-    for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
-        symbol_pixels += c.count_in_row(y, Ink::Symbol);
+    // AND THE EIGHT-CHARACTER BOUND ITSELF, stated as the width it comes from.
+    // Eight characters is 39 px and 19 + 5 + 39 = 63; nine is 44 and 68, which
+    // does not fit. So the cap is not a preference — it is the last count that
+    // clears the panel beside a four-digit value, and this line is what says so
+    // if anyone edits the marker without re-deriving it.
+    CHECK(text_width("01234567") == 39);
+    CHECK(text_width("9999") + kGlyphAdvance + text_width("01234567") == 63);
+    CHECK(text_width("9999") + kGlyphAdvance + text_width("012345678") > kPanelWidth);
+
+    // Every glyph in the marker is a real one. A character the font has no entry
+    // for renders as '?', which would pass every width check above and be wrong
+    // on the panel — the one failure this family of assertions cannot see.
+    // '?' IS the fallback index, so "does not render as '?'" is exactly this
+    // comparison — and it stays right if the table is ever reordered.
+    for (const char* p = reseed_marker(); *p != '\0'; ++p) {
+        CHECK(depthcharge::fw::glyph_index(*p) != depthcharge::fw::glyph_index('?'));
     }
-    CHECK(symbol_pixels == 0);
+}
+
+TEST_CASE("InFlight puts the marker in the symbol's slot and changes nothing else") {
+    // D-B decision 2: *"on ReseedState::InFlight the live palette stays selected
+    // and every ladder Ink is unchanged — the only difference from None is
+    // inside draw_header."* Both halves are asserted, because the second is the
+    // one a later change would break silently.
+    // A DELIBERATELY NARROW VALUE, and the reason is measured rather than
+    // stylistic. The marker is 29 px and `draw_header` draws it only when
+    // `marker_w + kGlyphAdvance <= left_limit`, so it needs `left_limit >= 34`.
+    // `left_limit` is what the value and the age leave: with no reading the age
+    // is "-" (4 px) and takes 9, so the value must end by x=43, i.e. be at most
+    // FOUR characters. `make_book`'s own "10.0001" is seven and leaves 21 — so
+    // the marker does not fit even in the comfortable Kraken-shaped header the
+    // age test calls the case worth having a picture of. That is the subject of
+    // the next case; this one needs a header where the slot exists at all.
+    DisplaySnapshot none = make_book(4);
+    none.symbol.id = 7;              // one digit, so the slot has room to spare
+    none.symbol.price_decimals = 0;
+    none.last_px = 12;               // "12" — two characters, 9 px
+    REQUIRE(none.reseed == depthcharge::ReseedState::None);
+
+    DisplaySnapshot flight = none;
+    flight.reseed = depthcharge::ReseedState::InFlight;
+
+    // The slot's ink is spent differently — six characters where there was one
+    // digit — and it is still `Ink::Symbol`, not a new one.
+    CHECK(header_ink_count(flight, Ink::Symbol) > header_ink_count(none, Ink::Symbol));
+
+    // THE LADDER IS UNTOUCHED. Every row below the header renders identically,
+    // which is what "the only difference is inside draw_header" means in pixels.
+    LadderView va, vb;
+    GridCanvas ca, cb;
+    va.observe(none);   va.draw(none, ca);
+    vb.observe(flight); vb.draw(flight, cb);
+    CHECK(ca.out_of_bounds == 0);
+    CHECK(cb.out_of_bounds == 0);
+    CHECK(ca.every_pixel_written());
+    CHECK(cb.every_pixel_written());
+    int ladder_differences = 0;
+    for (int y = kHeaderTop + kHeaderRows; y < kPanelHeight; ++y) {
+        for (int x = 0; x < kPanelWidth; ++x) {
+            if (ca.ink[y][x] != cb.ink[y][x]) { ++ladder_differences; }
+        }
+    }
+    CHECK(ladder_differences == 0);
+
+    // AND IT YIELDS EXACTLY AS THE SYMBOL YIELDS — the third constraint. The
+    // same absurd price that drops the symbol in the case above drops the
+    // marker, rather than overlapping the value.
+    DisplaySnapshot narrow = flight;
+    narrow.symbol.price_decimals = 8;
+    narrow.last_px = 123456789012345678LL;
+    CHECK(header_ink_count(narrow, Ink::Symbol) == 0);
+}
+
+TEST_CASE("what the fifth decision bought was the DASH, not a reading") {
+    // **A CLAIM NARROWED TO WHAT WAS MEASURED (owner, at the split).** This
+    // stage first reported that trimming the value "bought back the age", which
+    // its own table contradicted: the live BTCUSDT row read `left_limit == 20`,
+    // and by `draw_header` that means the age YIELDED — had it drawn,
+    // `left_limit` would be `age_x`, strictly below `value_x`.
+    //
+    // What the trim actually bought is the **`-` placeholder**: 9 px spent
+    // saying NO READING, where before the value clamped `value_x` to 0 and
+    // nothing left of it could draw at all.
+    //
+    // **AND A REAL READING NEVER FITS, which is sharper than "only at three
+    // characters".** `AgeText` has no three-character form: `"%u.%us"` is four
+    // at its shortest (`0.0s`) and the minute and hour forms are five. So a
+    // reading needs at least 19 + 5 = 24 px against the 20 the live Binance
+    // header offers — it cannot draw there, before or after the fifth decision.
+    using depthcharge::AgeText;
+
+    CHECK(text_width(AgeText(0).buf) == 19);          // "0.0s" — the shortest there is
+    CHECK(text_width(AgeText(500).buf) == 19);        // "0.5s"
+    CHECK(text_width(AgeText(21400).buf) == 24);      // "21.4s"
+    CHECK(text_width(AgeText(65000).buf) == 24);      // "1m05s"
+    CHECK(text_width(AgeText::unknown().buf) == 4);   // "-", and it is the only one that fits
+
+    DisplaySnapshot btc = make_book(4);
+    btc.symbol.id = 11;
+    btc.symbol.price_decimals = 8;
+    btc.last_px = 10823456000000LL;                   // 108234.56 -> 44 px, value_x 20
+    CHECK(value_of(btc).width == 44);
+    CHECK(kPanelWidth - value_of(btc).width == 20);
+    CHECK(text_width(AgeText(500).buf) + kGlyphAdvance > 20);   // the reading yields
+    CHECK(text_width(AgeText::unknown().buf) + kGlyphAdvance <= 20);  // the dash does not
+
+    // **THE INTERACTION WORTH STATING WHERE SOMEONE MEETS IT.** That dash is
+    // what the panel shows for the whole of the age estimator's baseline window
+    // — 639 s, ~11 minutes, on every Binance connection (32 intervals at the
+    // ~20 s ping cadence, pinned in `test_binance_adapter.cpp`). Under the
+    // pre-sixth-decision order the dash cost 9 px and pushed the marker out at
+    // exactly the time a re-seed is most likely: the first eleven minutes of a
+    // connection. That is what the sixth decision re-ranks away, and the case
+    // below is where it is asserted.
+}
+
+TEST_CASE("during a fetch the marker outranks the age, and only during a fetch") {
+    // **THE OWNER'S SIXTH RENDERING DECISION, 2026-09-06.** Standing priority is
+    // VALUE > AGE > SYMBOL and has been since M4 stage D; while a re-seed fetch
+    // is in flight it becomes **VALUE > MARKER > AGE > SYMBOL**, and reverts the
+    // moment the fetch ends.
+    //
+    // Why a re-rank rather than a shorter marker: allocated LAST, a marker short
+    // enough to fit would appear only when the age was too wide to draw itself,
+    // so its presence would encode the age's width rather than a re-seed. The
+    // slot was never the problem; the order was.
+    using depthcharge::fw::reseed_marker;
+
+    // Three characters, and the three is arithmetic: `value_x` is 20 on the
+    // widest live Binance header after the fifth decision, and an n-character
+    // marker needs 5n + 4.
+    CHECK(text_width(reseed_marker()) == 14);
+    CHECK(text_width(reseed_marker()) + kGlyphAdvance == 19);
+    // D-B's eight-character bound still holds, and still against a 4-digit value.
+    CHECK(text_width("9999") + kGlyphAdvance + text_width(reseed_marker()) <= kPanelWidth);
+
+    // **THE TWO SLOTS ARE SEPARATED BY GEOMETRY, not by ink** — the marker, the
+    // symbol and the age all draw in `Ink::Symbol`. The marker and the symbol
+    // both start at x = 0, so the symbol is made too wide to fit (999999 is
+    // 29 px, needing 34) in every case below; then anything lit in the marker's
+    // own columns is the marker, and the age is right-aligned beyond them.
+    const int mw = text_width(reseed_marker());
+    const auto lit_in = [](const DisplaySnapshot& s, int x0, int x1) {
+        LadderView v;
+        GridCanvas c;
+        v.observe(s);
+        v.draw(s, c);
+        int lit = 0;
+        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
+            for (int x = x0; x < x1 && x < kPanelWidth; ++x) {
+                if (c.ink[y][x] == Ink::Symbol) { ++lit; }
+            }
+        }
+        return lit;
+    };
+    // THE MARKER'S FIRST GLYPH CELL, and only that. The marker always starts at
+    // x = 0; the age is right-aligned and can land anywhere, including inside the
+    // marker's later columns — at `value_x` 20 with no reading the dash sits at
+    // x = 11. Four columns is the one window the age cannot reach in any case
+    // here, so it is the one that means "the marker drew".
+    const auto marker_px = [&](const DisplaySnapshot& s) {
+        return lit_in(s, 0, kGlyphWidth);
+    };
+    const auto age_px = [&](const DisplaySnapshot& s) {
+        return lit_in(s, mw + kGlyphAdvance, kPanelWidth);
+    };
+
+    DisplaySnapshot base = make_book(4);
+    base.symbol.id = 999999;                  // 29 px — never fits, so x=0 is the marker's alone
+    base.symbol.price_decimals = 8;
+
+    // ---- the case where the age HAS room, so the yield is visible ----------
+    DisplaySnapshot live = base;
+    live.last_px = 432100000LL;               // 4.321 -> 24 px, value_x 40
+    live.has_age = true;
+    live.age_ms = 500;                        // "0.5s" -> 19 px, age_x 16
+
+    DisplaySnapshot fetching = live;
+    fetching.reseed = depthcharge::ReseedState::InFlight;
+
+    // Not fetching: no marker, and the age has the room.
+    CHECK(marker_px(live) == 0);
+    CHECK(age_px(live) > 0);
+
+    // Fetching: the marker draws and the age yields to it — `age_x` would be 16,
+    // below the 19 the marker has reserved. **This is the whole decision in two
+    // assertions.**
+    CHECK(marker_px(fetching) > 0);
+    CHECK(age_px(fetching) == 0);
+
+    // AND IT REVERTS. `Wanted` and `None` are the standing order — the re-rank
+    // is scoped to a fetch in flight and to nothing else.
+    DisplaySnapshot wanted = live;
+    wanted.reseed = depthcharge::ReseedState::Wanted;
+    CHECK(marker_px(wanted) == 0);
+    CHECK(age_px(wanted) == age_px(live));
+
+    // ---- the case that CLOSES ROADMAP D11 ---------------------------------
+    // The widest live header this build renders: BTCUSDT at 108234.56, 44 px,
+    // `value_x` 20. The marker needs 19 and draws with a pixel to spare, where
+    // "RESEED" needed 34 and never could.
+    DisplaySnapshot widest = base;
+    widest.last_px = 10823456000000LL;
+    widest.has_age = true;
+    widest.age_ms = 500;
+    CHECK(value_of(widest).width == 44);
+    DisplaySnapshot widest_fetch = widest;
+    widest_fetch.reseed = depthcharge::ReseedState::InFlight;
+    CHECK(marker_px(widest_fetch) > 0);
+    CHECK(marker_px(widest) == 0);
+
+    // ---- the ~11 minute window, which is what the re-rank was FOR ----------
+    // No reading, so the age is the 4 px dash. Under the old order that dash
+    // cost 9 px and pushed the marker out for the first 639 s of every Binance
+    // connection — the time a re-seed is most likely. Now the marker takes its
+    // 19 px first and the dash yields instead.
+    DisplaySnapshot window = base;
+    window.last_px = 10823456000000LL;
+    window.has_age = false;
+    DisplaySnapshot window_fetch = window;
+    window_fetch.reseed = depthcharge::ReseedState::InFlight;
+    CHECK(marker_px(window) == 0);             // before: no marker, dash only
+    CHECK(marker_px(window_fetch) > 0);         // after: the marker has the slot
+    // The dash's own fate in THIS configuration is not asserted here, and the
+    // reason is geometry rather than doubt: at `value_x` 20 the dash draws at
+    // x = 11, inside the marker's later columns, so no fixed window separates
+    // the two. It is asserted in the wide-header case above, where `age_x` is 16
+    // and the slots do not overlap — same rule, measurable there.
+
+    // The ladder is still untouched by any of it (D-B decision 2).
+    LadderView va, vb;
+    GridCanvas ca, cb;
+    va.observe(live);     va.draw(live, ca);
+    vb.observe(fetching); vb.draw(fetching, cb);
+    CHECK(ca.every_pixel_written());
+    CHECK(cb.every_pixel_written());
+    int ladder_differences = 0;
+    for (int y = kHeaderTop + kHeaderRows; y < kPanelHeight; ++y) {
+        for (int x = 0; x < kPanelWidth; ++x) {
+            if (ca.ink[y][x] != cb.ink[y][x]) { ++ladder_differences; }
+        }
+    }
+    CHECK(ladder_differences == 0);
+}
+
+TEST_CASE("RETIRED as a tripwire: the pre-decision header, kept as the reason for the fifth") {
+    // **THIS CASE WAS WRITTEN TO FAIL WHEN THE VALUE SLOT WAS FIXED. IT DID NOT
+    // FIRE, AND SAYING SO IS THE POINT OF RETIRING IT DELIBERATELY.**
+    //
+    // The owner took the fifth rendering decision on 2026-09-06 and the value
+    // slot IS fixed — and every assertion here still passed, for two reasons
+    // worth having written down:
+    //
+    //   * four of them asserted `format_scaled`'s OUTPUT, and the decision
+    //     deliberately does not touch `format_scaled` (it is shared with
+    //     `kraken_checksum.hpp`, which formats the string a CRC32 is computed
+    //     over). They were pinning the venue's scale, not the header;
+    //   * the fifth asserted that the marker is invisible, and it still is.
+    //
+    // **So it was never the tripwire it claimed to be**, and a test that
+    // announces it will fail and then cannot is worse than no tripwire — it is
+    // the reassuring-instrument failure ARCHITECTURE §9 keeps recording. The
+    // real signal now lives in the case above, which asserts `left_limit < 34`
+    // over six widths and fails the moment a marker that fits is chosen.
+    //
+    // What is KEPT here is the arithmetic that justified the decision, because
+    // the decision has to be re-derivable from the record: at Binance's uniform
+    // 8 decimals the formatter emits fifteen characters, 74 px on a 64 px panel,
+    // and `value_x` clamped to 0 — which took the age and the symbol with it.
+    using depthcharge::format_scaled;
+
+    char buf[32]{};
+    const std::size_t n = format_scaled(10823456000000LL, 8, buf, sizeof buf - 1);
+    REQUIRE(n == 15);
+    CHECK(std::string(buf) == "108234.56000000");
+    CHECK(text_width(buf) == 74);
+    CHECK(text_width(buf) > kPanelWidth);
+
+    // ...and this is what the fifth decision made of it. The header no longer
+    // asks the formatter for those six zeros.
+    DisplaySnapshot btc = make_book(4);
+    btc.symbol.id = 11;
+    btc.symbol.price_decimals = 8;
+    btc.last_px = 10823456000000LL;
+    CHECK(value_of(btc).text == "108234.56");
+    CHECK(value_of(btc).width == 44);
+    CHECK(value_of(btc).width < kPanelWidth);
+
+    // AND THE SLOT IS REACHABLE AGAIN, which is the gain the decision actually
+    // delivered: with the value at 44 px the SYMBOL fits where nothing did
+    // before. It is only the six-character marker that still does not.
+    btc.has_age = true;
+    btc.age_ms = 500;
+    DisplaySnapshot with_symbol = btc;
+    with_symbol.reseed = depthcharge::ReseedState::None;
+    DisplaySnapshot with_marker = btc;
+    with_marker.reseed = depthcharge::ReseedState::InFlight;
+    CHECK(header_ink_count(with_symbol, Ink::Symbol) > 0);      // was 0 before the decision
+    // ...and since the SIXTH decision the marker draws there too, allocated
+    // ahead of the age. Both slots are reachable; neither was before.
+    CHECK(header_ink_count(with_marker, Ink::Symbol) > 0);
 }
 
 TEST_CASE("the age is drawn, and it yields to the value exactly as the symbol does") {
@@ -629,17 +986,10 @@ TEST_CASE("the age is drawn, and it yields to the value exactly as the symbol do
     // value is the only field that may never be dropped.
     using depthcharge::AgeText;
 
-    const auto header_ink = [](const DisplaySnapshot& s, Ink want) {
-        LadderView v;
-        GridCanvas c;
-        v.observe(s);
-        v.draw(s, c);
-        int lit = 0;
-        for (int y = kHeaderTop; y < kHeaderTop + kHeaderRows; ++y) {
-            lit += c.count_in_row(y, want);
-        }
-        return lit;
-    };
+    // `header_ink_count` (above) rather than a second copy of it: this lambda
+    // and that function had identical bodies, which review found when the
+    // function was added 200 lines earlier.
+    const auto& header_ink = header_ink_count;
 
     // A Kraken-shaped header: a four-decimal price, a one-digit symbol id, and a
     // reading. All three fit, which is the case worth having a picture of —
