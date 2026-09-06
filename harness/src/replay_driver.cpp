@@ -135,6 +135,11 @@ public:
             // THE MESSAGE BOUNDARY, AND IT NEEDED NO NEW SEAM (M5 stage E): it
             // is the return of the decode call, and it always was.
             publish_message();
+            // AFTER the publish, so the frame that carried the request is drawn
+            // with `Wanted` and the fetch shows as `InFlight` from the next one.
+            // That is the board's order too: `FeedTask` services the seed once
+            // per loop pass, outside the message it just handled.
+            service_reseed();
         }
 
         // The trace ended. If the caller told us how long the stream stayed
@@ -300,9 +305,19 @@ private:
     // `FeedTask` on the board. So the request is `Wanted` here and can only
     // become `InFlight` where a fetch is actually issued.
     //
-    // **NOTHING IN THIS BUILD PRODUCES `InFlight`, AND THAT IS STRAIN 28 STATED
-    // AS A PUBLISHED STATE** rather than as a counter on a report nobody reads
-    // at a bench. When D builds the adoption, this is the field it advances.
+    // **`InFlight` IS REACHED SINCE M5 STAGE D-A4, AND IT IS THE ADAPTER'S HOLD
+    // THAT SAYS SO — not a fetch this object models.** That is the whole reason
+    // the state is reachable on a desk with no socket: `reseed_holding()` is a
+    // fact about the adapter (it is keeping the interval a body will be rolled
+    // forward across), so the host and the board answer the same question with
+    // the same expression. `FeedTask::publish_current` carries the identical
+    // three-way choice, and a divergence between them would be a state no golden
+    // could pin.
+    //
+    // The ORDER matters and is not arbitrary: a hold is open only after
+    // `on_reseed_issued()` cleared `reseed_wanted_`, so the two are already
+    // mutually exclusive — testing `InFlight` first states the precedence
+    // rather than relying on it.
     //
     // BINANCE ONLY, DELIBERATELY. Kraken latches `resync_wanted()` too, and it
     // is NOT the same question: that is a re-SUBSCRIBE, it is already served by
@@ -312,11 +327,46 @@ private:
     // exists to record.
     void stamp_reseed(DisplaySnapshot& snap) noexcept {
         if constexpr (Decoder::kVenue == Venue::Binance) {
-            snap.reseed = decoder_.adapter().reseed_wanted()
-                              ? depthcharge::ReseedState::Wanted
-                              : depthcharge::ReseedState::None;
+            // `reseed_state_for` (display_snapshot.hpp) and not a second copy of
+            // the ternary: `FeedTask::publish_current` calls the identical
+            // function, so the board and this driver cannot drift apart on what
+            // a given adapter state publishes.
+            snap.reseed = depthcharge::reseed_state_for(decoder_.adapter().reseed_holding(),
+                                                        decoder_.adapter().reseed_wanted());
         } else {
             snap.reseed = depthcharge::ReseedState::None;
+        }
+    }
+
+    // ISSUE THE FETCH THE TRACE CANNOT ISSUE FOR ITSELF (M5 stage D-A4).
+    //
+    // On the board `SeedSchedule` decides when to ask and `SeedTask` asks; this
+    // object has neither, and it must not grow them — the schedule is arithmetic
+    // that is already host-tested on its own (`test_seed_schedule.cpp`), and a
+    // second copy of it here would be a second answer to the same question.
+    //
+    // **OFF BY DEFAULT, AND THE DEFAULT IS WHAT KEEPS EVERY EXISTING GOLDEN
+    // STILL.** A captured trace's REST bodies were fetched by
+    // `tools/capture_binance.py` on its own 15 s cadence, not in answer to
+    // anything this adapter wanted, so a driver that opened a hold on every
+    // capture would be modelling a fetch that did not happen and re-baselining
+    // books off bodies that had no relationship to the request. With the flag
+    // clear, a mid-stream body is declined exactly as it was before this stage
+    // and the eleven committed Binance replay tests do not move.
+    //
+    // With it set, this reproduces the board's rule and nothing more: the
+    // adapter wants a re-seed, the book is live, no fetch is outstanding — so
+    // one is issued. The synthesised trace that exercises the mechanism turns it
+    // on; see `reseed_trace()` in `test_binance_adapter.cpp`, which builds it in
+    // memory rather than committing a file — what is pinned is the transition,
+    // not a capture.
+    void service_reseed() noexcept {
+        if constexpr (Decoder::kVenue == Venue::Binance) {
+            if (!opts_.issue_reseed_fetch) { return; }
+            auto& a = decoder_.adapter();
+            if (a.reseed_wanted() && a.has_baseline() && !a.reseed_holding()) {
+                a.on_reseed_issued();
+            }
         }
     }
 

@@ -1476,18 +1476,137 @@ TEST_CASE("a re-seed the adapter asked for and no layer served is PUBLISHED, not
     CHECK(r.final_snapshot.reseed == depthcharge::ReseedState::Wanted);
 
     // **AND `InFlight` IS NOT REACHED HERE, WHICH IS NOW A STATEMENT ABOUT THE
-    // DRIVER RATHER THAN ABOUT THE ADAPTER.** Stage C wrote *"nothing in this
+    // OPTIONS RATHER THAN ABOUT THE BUILD.** Stage C wrote *"nothing in this
     // build issues a fetch, so the request is published and never progresses …
     // when D builds the adoption this line is what has to change"*. M5 stage
-    // D-A4 built the adoption; what has not changed yet is that this driver
-    // still issues no fetch, so the request stands unanswered — which is
-    // exactly the state a board with no REST client publishes, and exactly what
-    // this case is for. The next commit gives the driver a fetch to issue.
+    // D-A4 built it, and what changed is the reason: this replay leaves
+    // `ReplayOptions::issue_reseed_fetch` clear, so no fetch is issued and the
+    // request still stands unanswered — which is exactly the state a board with
+    // no REST client publishes, and exactly what this case is for.
+    //
+    // The case below it is the same trace shape with the fetch modelled, and it
+    // is where `InFlight` is now reached.
     for (const depthcharge::ReseedState s : seen) {
         CHECK(s != depthcharge::ReseedState::InFlight);
     }
 }
 
+namespace {
+
+// A SYNTHESISED TRACE THAT REACHES `InFlight`, and it has to be synthesised.
+//
+// **No committed capture fires the coverage trigger.** Replayed with the fetch
+// modelled, `cover_triggers` is 0 on all six BTCUSDT captures — the two
+// `limit=1000` deep seeds included — because the trigger needs the touch to
+// consume 192 levels of margin and the longest capture is 90 s. So the corpus
+// agrees with the code everywhere, which is precisely the condition
+// ARCHITECTURE §9 (2026-08-18) says to answer by synthesising the input that
+// discriminates. Stage C's case above did the same, for the same card.
+//
+// The seed is `kBinanceReseedCoverLevels` deep exactly, so the trigger is ARMED
+// (`worst_seed_cover >= 448`) and one retired level takes coverage to 447 and
+// fires it. That is the smallest honest input: a 1,000-level seed would need 553
+// retirements to say the same thing.
+std::string reseed_trace() {
+    const std::int64_t top = kTopCents;
+    const int n = static_cast<int>(depthcharge::binance::kBinanceReseedCoverLevels);
+
+    const auto body = [&](std::int64_t rx, std::int64_t last_id, int skip_best) {
+        std::string bids, asks;
+        for (int i = skip_best; i < n + skip_best; ++i) {
+            if (!bids.empty()) { bids += ","; }
+            bids += level(px_at(top - i).c_str(), "1.00000000");
+        }
+        for (int i = 0; i < n; ++i) {
+            if (!asks.empty()) { asks += ","; }
+            asks += level(px_at(top + 1 + i).c_str(), "1.00000000");
+        }
+        return R"({"rx_ns":)" + std::to_string(rx) +
+               R"(,"kind":"rest","req":{"method":"GET","url":"https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=1000","limit":1000,"weight":50,"sent_ns":0,"status":200,"recv_ns":)" +
+               std::to_string(rx) + R"(},"frame":)" +
+               seed_body(last_id, bids, asks) + "}";
+    };
+
+    const auto wire_diff = [&](std::int64_t rx, std::int64_t U, std::int64_t u,
+                               const std::string& bids, const std::string& asks) {
+        return R"({"rx_ns":)" + std::to_string(rx) + R"(,"frame":)" +
+               diff(U, u, bids, asks) + "}";
+    };
+
+    std::string t =
+        R"({"captured_at":"2026-09-06T00:00:00Z","url":"wss://data-stream.binance.vision/ws/btcusdt@depth@100ms","venue":"binance","symbol":"BTCUSDT","tool_version":"0.1.0","clock":"perf_counter_ns"})"
+        "\n";
+    t += body(1'000'000, 1000, 0) + "\n";
+    // Brackets L + 1 = 1001, so the seed is published and the book goes live.
+    t += wire_diff(2'000'000, 1001, 1002, level(px_at(top - 1).c_str(), "2.00000000"), "") + "\n";
+    // Retires the best bid: held depth is unchanged but seeded COVERAGE falls to
+    // 447, below the 448 trigger. `note_depth` latches the request.
+    t += wire_diff(3'000'000, 1003, 1004, level(px_at(top).c_str(), "0.00000000"), "") + "\n";
+    // The driver has issued by now, so this one is applied AND held.
+    t += wire_diff(4'000'000, 1005, 1006, level(px_at(top - 2).c_str(), "3.00000000"), "") + "\n";
+    // The body names 1005 — strictly inside the message above, so the survivor
+    // straddles it, which is the case the corpus only carries at the 1000 ms
+    // cadence and which this mechanism now meets on every fetch.
+    t += body(5'000'000, 1005, 1) + "\n";
+    // ...and the stream carries on across the adoption.
+    t += wire_diff(6'000'000, 1007, 1008, level(px_at(top - 3).c_str(), "4.00000000"), "") + "\n";
+    return t;
+}
+
+}  // namespace
+
+TEST_CASE("a re-seed in flight is PUBLISHED as InFlight, and the book never greys") {
+    // DESIGN strain 28's D-half, end to end on the desk: the trigger fires, the
+    // fetch is issued, the diffs spanning it are held, the body is rolled
+    // forward onto them, and the panel keeps its colour the whole way.
+    std::vector<depthcharge::ReseedState> seen;
+    std::vector<depthcharge::FeedStatus> status;
+
+    dc::harness::ReplayOptions opts;
+    opts.issue_reseed_fetch = true;
+    const dc::harness::ReplayResult r = dc::harness::run_replay_text(
+        reseed_trace(), kBinanceBtcUsdt.spec, opts,
+        [&seen, &status](const dc::harness::ReplayStep&,
+                         const depthcharge::DisplaySnapshot& s) {
+            seen.push_back(s.reseed);
+            status.push_back(s.status);
+            return true;
+        });
+
+    // The trigger fired once, and exactly once — it latches per seed epoch.
+    CHECK(r.binance.cover_triggers == 1);
+    // The mechanism ran: one body reconciled onto a live book, none refused.
+    CHECK(r.binance.reseeds_adopted == 1);
+    CHECK(r.binance.reseeds_unbracketed == 0);
+    CHECK(r.binance.reseed_holds_overflowed == 0);
+    // ...and it is NOT the declining path B2 built, which stays at zero.
+    CHECK(r.binance.resnapshots_declined == 0);
+
+    // THE TRANSITION, ASSERTED IN ORDER rather than at the end. Four publishes:
+    // the seed's release, the frame that fired the trigger, the frame held under
+    // the fetch, and the adoption. (The REST records themselves publish only
+    // when they emit — the first does not, the second does.)
+    REQUIRE(seen.size() >= 4);
+    CHECK(seen[0] == depthcharge::ReseedState::None);      // live, nothing asked
+    CHECK(seen[1] == depthcharge::ReseedState::Wanted);    // the trigger latched
+    CHECK(seen[2] == depthcharge::ReseedState::InFlight);  // <-- the card's state
+    CHECK(seen.back() == depthcharge::ReseedState::None);  // reconciled, and done
+
+    // **AND EVERY ONE OF THEM IS LIVE.** This is D-B decision 2 as an assertion:
+    // the ladder keeps its colour for the whole of the fetch, so `InFlight` is a
+    // live-palette state by construction rather than by assumption — which is
+    // what lets the marker use `Ink::Symbol` and no stale-palette entry.
+    for (const depthcharge::FeedStatus s : status) {
+        CHECK(s == depthcharge::FeedStatus::Live);
+    }
+    CHECK(r.episodes.empty());        // no stale window was ever opened
+    CHECK(r.binance.seq_breaks == 0);
+    CHECK(r.binance.transport_gaps == 0);
+
+    // The book is the one the diffs built, rolled through the adoption.
+    CHECK(r.final_snapshot.live());
+    CHECK(r.final_snapshot.reseed == depthcharge::ReseedState::None);
+}
 
 TEST_CASE("the report's median and the clock's median are two conventions, and they differ here") {
     // **PINS A DIVERGENCE, NOT A CONTRACT, AND IS EXPECTED TO INVERT.** Same

@@ -141,6 +141,26 @@ struct ReplayOptions {
     // the goldens that compare them could only be produced by rebuilding.
     depthcharge::window::Policy window_policy = depthcharge::window::kWindowPolicy;
 
+    // MODEL THE BOARD'S RE-SEED FETCH (M5 stage D-A4, Binance only).
+    //
+    // The adapter latches a request it cannot serve; on the board `SeedSchedule`
+    // and `SeedTask` answer it. With this set the driver plays that part — when
+    // the adapter wants a re-seed on a live book and none is outstanding, it
+    // issues one, so the adapter holds the diffs spanning the fetch and the next
+    // REST body in the trace is rolled forward onto them instead of declined.
+    // It is what makes `ReseedState::InFlight` and the whole re-seed mechanism
+    // reachable on a desk with no socket.
+    //
+    // **0/false is the default and that is deliberate, not caution.** A captured
+    // trace's REST bodies were fetched by `tools/capture_binance.py` on its own
+    // fixed cadence and answer no request this adapter made, so adopting one as
+    // though it did would be modelling a fetch that never happened. Every
+    // committed Binance golden therefore keeps the declining behaviour B2 built,
+    // and the flag is set only by the synthesised trace written to exercise the
+    // mechanism — the same split, and the same reason, as
+    // `end_of_trace_silence_ms` above.
+    bool issue_reseed_fetch = false;
+
     // The M1 constant, for a caller that deliberately wants the pre-ruling
     // behaviour — the committed goldens do, so that what they pin is a fixed
     // rule rather than a calibration that could drift with a re-capture.
