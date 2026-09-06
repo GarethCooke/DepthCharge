@@ -2,13 +2,16 @@
 
 **Track:** Bench [owner-driven, wall-clock] · **Status:** **Started and not done — one run taken
 2026-08-30/09-01 and read; §1's > 24 h is NOT met (7 boots, longest 9.84 h), so a second run is
-owed. §2's four gaps are closed by D-A3 and confirmed from the capture; see the session log** ·
+owed. §2's four gaps are closed by D-A3 and confirmed from the capture; see the session log. AND
+THE SECOND RUN NOW CARRIES D-A4's BOARD BOX — that stage landed 2026-09-06 with its mechanism
+proven on the host and unflashed, and §4's check 7 is the reading it is owed** ·
 **Size:** a desk sitting, then a run longer than a day, then a reading
 **Written:** 2026-08-30 by the desk seat at D-B's close.
 
 **This is the one definition-of-done clause only wall-clock can close.** Everything else in M5 has
-been settled by a host test, a measurement, or an evening at the panel. Six checks have collected
-here across five stages, each deferred because the thing it tests only happens over hours.
+been settled by a host test, a measurement, or an evening at the panel. **Seven** checks have
+collected here across six stages, each deferred because the thing it tests only happens over hours.
+The seventh arrived last, on 2026-09-06, when D-A4 finished a mechanism it could not put on a board.
 
 **And the first thing this brief has to say is that none of them can be read today.** Three of the
 six need an instrument that does not exist, one needs a policy the firmware never receives, and the
@@ -34,7 +37,15 @@ be re-asked**, so the instrument work is the first half of this stage and the ru
 ## 1 · The one hard constraint
 
 **The run must exceed 24 hours.** Binance closes the connection at 24 h by policy, so a shorter run
-has not observed the one disconnect the venue guarantees. **M3's 23.6-hour soak would have missed it
+has not observed the one disconnect the venue guarantees.
+
+> **THE PREMISE IN THAT SENTENCE IS REFUTED AND THE REQUIREMENT SURVIVES IT.** Stage E's soak ran
+> **27.59 h on ONE connection with no close of any kind** — `hardware/bench-2026-09-04-E-soak.md` §4,
+> carried as backlog **D9** — so the venue's documented 24 h close was **not** observed on a
+> connection that outlived it by 3.6 h, on this host and on one sample. The bar stays at > 24 h
+> because everything else here needs the hours anyway, but **it is no longer "the disconnect the
+> venue guarantees" that justifies it**, and a run that sees no scheduled close is not a run that
+> failed. Recorded rather than rewritten: this is D9's to settle, not this section's. **M3's 23.6-hour soak would have missed it
 by twenty-four minutes.** The supervisor already reconnects, so this is probably benign — but it is
 the first *scheduled* disconnect this project has met, and "probably benign" is what a soak is for.
 M4 stage D's B3 is the comparison bar: 25.39 h, no reboots, `live=1` at the end.
@@ -79,8 +90,19 @@ one.
 **The four gaps in §2 are NOT this stage's work — they are D-A3's**, per D-A2's *Out of scope*
 (*"the liveness ping wire, and the soak instrumentation — D-A3"*) and now
 `M5-stage-D-A3-the-wire-and-the-instruments.md`, which carries all four as its deliverables 1-4
-(the re-seed mechanism and the marker split off to **D-A4**, which does not block this stage). **This stage starts when they land**, and its own deliverables are the run and
-the reading:
+(the re-seed mechanism and the marker split off to **D-A4**). **This stage starts when they land**,
+and its own deliverables are the run and the reading.
+
+> **THAT CLAUSE SAID *"D-A4 … does not block this stage"*, AND IT IS NOW THE OTHER WAY ROUND.** It
+> was written on 2026-08-30, when D-A4 was unstarted and the dependency ran one way: D-C did not
+> need the mechanism in order to soak. **D-A4 landed 2026-09-06** with everything provable on a desk
+> proven — ctest 52/52, `pio` green on three arms, the whole `None → Wanted → InFlight → None`
+> transition asserted against a synthesised trace — and **one Definition-of-done box it could not
+> close: `DisplaySnapshot::reseed` reaching `InFlight` ON THE BOARD.** There is no bench stage left
+> in M5 to carry it, and it must not become a close-out item, because what it needs is not a sitting
+> but *hours*: **§4's check 7 derives that the coverage trigger fires only in the tail of the
+> live-stretch distribution.** So it comes here. **D-A4 does not block this stage; this stage now
+> closes D-A4.**
 
 1. **Confirm the four gaps are closed before flashing for the run.** `-- age` shows a non-zero
    median and a threshold near **39,927.94 ms**; a ping-interval maximum prints; a largest-block
@@ -89,9 +111,21 @@ the reading:
    spent producing a fiction**, and this list is the whole of the pre-flight.
 2. **The run: > 24 hours**, one board, `log2file` as always, flashed from a known commit with the
    SHA recorded in the log by hand (the shipping image carries no build tag - see §6).
-3. **The six checks read and recorded**, each with its number.
+3. **The seven checks read and recorded**, each with its number.
 4. **`hardware/bench-2026-08-<dd>-m5-soak.md`** plus the capture gzipped beside it, following
    `bench-2026-08-30-D-B-silent-stream-*.log.gz`.
+5. **D-A4's board box, read off `-- reseed :` — check 7.** Inherited 2026-09-06 and the only
+   deliverable here this stage did not write for itself. **It is a READING, not a pass/fail**, and
+   check 7 is explicit about which outcomes are verdicts on the mechanism and which are verdicts on
+   the run's length. A `triggers=0` is a result and must be written down as one.
+   **TAKE THE LAST `-- reseed :` OF EVERY BOOT, NOT THE LAST OF THE RUN.** `BinanceAdapter::Stats`
+   is a plain member (`binance_adapter.hpp:1723`) and **nothing anywhere resets it**, so every
+   figure on that line is per-boot and dies at reboot — and the first D-C run took **seven boots**.
+   "The line at the end of the run" would silently discard six of them, including any boot in which
+   the trigger fired. **`tools/soak_report.py` does not own this line** (`grep -i reseed` returns
+   nothing), so deliverable 1's pre-flight — *"non-zero counts on every regex it owns"* — passes
+   without covering it. Until the tool is taught it, this one is read by hand, per boot; teaching it
+   is owed and is named in check 7.
 
 ## 4 · The checks, in order of what they can invalidate
 
@@ -157,6 +191,71 @@ different quantities over different windows** — `kMinSamples = 8` calibrates t
 **not** the test for the middle sentence: it never goes live, so it exercises the pre-seed path
 rather than a subscription dying under a live book.
 
+**7 · D-A4's re-seed mechanism, and the four-case reading that stops `adopted=0` meaning nothing.**
+**Inherited from D-A4 on 2026-09-06** — its mechanism is proven on the host and has never run on a
+board. This is the box it could not close, and the reason it is a SOAK check rather than a sitting
+is derived rather than assumed.
+
+> **The only route to a re-seed on a LIVE book is the coverage trigger.** Every other writer of
+> `reseed_wanted_` either needs a hold already open or has just left the book `Unseeded`. So the
+> board must arm the trigger (a `limit=1000` seed returning ≥ 448 levels on **both** sides), then
+> consume **~552 levels of seeded coverage**, with **no `drop_book` anywhere in between**.
+
+**That last condition is the binding one, and stage E is what made it reachable at all.** Consuming
+552 levels takes ~50 s at B2's worst observed burst and ~375 s at BTCUSDT's mean walk. Mean live
+stretch on the D-C capture was **6.6 s** — unreachable, and `adopted=0` on that board would have
+confirmed nothing. After stage E's publish boundary it is **67.2 s**: median 40 s, p90 180 s, and
+**52 stretches over 375 s in 32.25 h**, max 1,592 s. **It is a tail phenomenon — a short run sees
+nothing and a long one has dozens of chances**, which is precisely why it belongs to this stage.
+
+**THE LINE, AND IT IS READ RIGHT TO LEFT.** `cover=` and `below=` first, `triggers=` next, and
+`adopted=` last — because the first two decide whether `adopted` is a verdict at all:
+
+```
+-- reseed : adopted=6 unbracketed=0 hold-overflow=0 | declined(no-hold)=0 adoptable=0 | triggers=6 below=0 cover=441/468 of 448
+```
+
+`cover=B/A` is the **low-water** seeded coverage per side **of that boot**, against the 448 the
+trigger fires below.
+
+> **READ IT PER BOOT, AND KNOW WHY.** `BinanceAdapter::Stats` is a plain member and nothing resets
+> it, so every field here is cumulative within a boot and **gone at the next one**. The first D-C
+> run took seven boots; a reading taken only at the end of the run would have shown one of them.
+> **And `tools/soak_report.py` does not own this line** — so it survives deliverable 1's pre-flight
+> (*"every regex it owns"*) without being covered by it, which is the wave-through shape §9 keeps
+> recording. **Read it by hand, once per boot, until the tool is taught it.** Teaching it is owed
+> and is the cheapest thing on this list.
+
+The outcomes, with what each line actually looks like:
+
+| what happened | the line | verdict? |
+| --- | --- | --- |
+| **the seed arrived under its own margin** — never armed, so re-fetching at that depth changes nothing | `… triggers=0 below=3 cover=100/100 of 448` | **no** — a configuration reading, not the mechanism |
+| **armed, never approached** — the book did not live long enough, or the market did not walk | `… triggers=0 below=0 cover=947/961 of 448` | **NO. This is a verdict on the RUN, not the mechanism** |
+| **came close and did not fire** — a longer run would do it | `… triggers=0 below=0 cover=455/471 of 448` | **no**, and it is the one that says to run again |
+| **fired and adopted** | `… adopted=6 … triggers=6 below=0 cover=441/468 of 448` | **YES — the stage's claim, confirmed** |
+| **fired and could not bracket** | `… adopted=0 unbracketed=4 … triggers=4 …` | **YES — and a defect.** Report it |
+
+`cover=-/- ` means no seed ever latched bounds at all (a side came back empty) and is a fault in the
+fetch, not a reading. `hold-overflow=` is documented as *"sized not to happen"* and any non-zero is
+worth a line of its own. `declined(no-hold)=` counts bodies that arrived with no fetch outstanding —
+on a board that should be 0, and a non-zero one means the transport issued without telling the
+adapter.
+
+**AND THE CLAIM TO READ IT AGAINST IS `adopted` CLIMBING WHILE `greys` STAYS FLAT.** That is the
+whole of D-A4: a re-seed that lands on a live book rather than after a `drop_book`. **On a board in
+the D-C capture's state it will read 0 either way**, because every re-seed there followed a
+`drop_book` — `resync_req=643`, `grey_n=642`, `seqbreak=641`, `no_slot=4708`. That is the pipe's
+four slots, **DESIGN card 28's other half**, and it is not a defect in D-A4's mechanism. If check 3
+shows `no_slot` still climbing, check 7's `triggers=0` is explained by check 3 and says nothing
+about the re-seed.
+
+**Also worth recording while the line is in front of you:** `worst_parse_fetch_us` against
+`worst_parse_quiet_us` on the `-- frame` line. D-A4's frame-path argument is that the hold's PSRAM
+writes are negligible beside everything else on that path, and the falsifier is those two
+converging. D-C's capture had them at **59,280 µs during a fetch against 1,499,017 µs quiet** — the
+fetch window was the *fast* one by 25×. If that inverts, D-A4's §9 row is wrong and says so.
+
 ## 5 · Two readings that will look like the check and are not
 
 **The fetch is not the reconnect.** A seed fetch takes the largest block to a few KB, so *"below
@@ -218,8 +317,8 @@ over 25.39 h. The event is a mid-run dip.
   told to watch them: `age=-`, `worst_age=0.0s`, `baseline=0ms` and `wd=0` are all downstream of the
   unwired liveness signal, and `crc_rows=0 (0.0%)` is inert because `kValidatedDepth = 0`. Several
   become live the moment D-A3 lands — re-read this line then.
-- **Deliverables 1–3 touch `firmware/` and `tools/` only.** If a reading argues for an engine
-  change, it argues for it at the close-out.
+- **Deliverables 1–3 touch `firmware/` and `tools/` only**, and 4 and 5 are records rather than
+  code. If a reading argues for an engine change, it argues for it at the close-out.
 - **Per `ARCHITECTURE.md` §9 (2026-08-30), a commit touching `firmware/` is not verified by ctest.**
   Deliverables 1 and 2 need `pio run -e depthcharge-binance` in the worktree.
 
@@ -230,7 +329,12 @@ over 25.39 h. The event is a mid-run dip.
       printing, a largest-block reading at reconnect, and `tools/soak_report.py` parsing a current
       capture with non-zero counts on every regex it owns.
 - ☐ A single run **exceeding 24 hours**, captured and gzipped into `hardware/`.
-- ☐ All six checks read and recorded with their numbers.
+- ☐ All **seven** checks read and recorded with their numbers.
+- ☐ **D-A4's board box, inherited 2026-09-06**: `DisplaySnapshot::reseed` reaching `InFlight` on the
+      board, and check 7's line recorded **whatever it says** — including a `triggers=0`, which is a
+      result about the run's length and must be written down as one rather than left out.
+      **Once per BOOT**: the counters are per-boot and nothing resets them, so an end-of-run reading
+      discards every boot but the last.
 - ☐ `kReserveInternalBytes` confirmed or moved on the evidence, with the **current** steady-state
       largest block re-established first and the stale remedy sentence corrected.
 - ☐ `k` confirmed at 2.0 or raised alone, with the interval that raised it quoted.
@@ -240,9 +344,13 @@ over 25.39 h. The event is a mid-run dip.
 
 ## 9 · Out of scope
 
-The re-seed **mechanism** and its memory, the **liveness ping wire**, and **routing the per-venue
-policy** — all **D-A3**, and this stage is blocked on the last two. Every rendering decision —
-**D-B**, closed. `worst_frame` — closed 2026-08-29 as the wrong instrument; do **not** carry D-A2's
+The **liveness ping wire** and **routing the per-venue policy** — both **D-A3**, and this stage was
+blocked on them. The re-seed **mechanism** and its memory were listed here as D-A3's and were
+**D-A4's**; that stage **landed 2026-09-06** and this stage now inherits its board box, so the
+mechanism is no longer out of scope — **reading it is check 7**. Building or changing it still is. Every rendering decision — **D-B**, and **the owner's fifth and sixth, taken at D-A4's split on
+2026-09-06** (the header trims trailing zeros; during a fetch the marker outranks the age, so the
+standing priority becomes **VALUE > MARKER > AGE > SYMBOL** while one is in flight). **Six, not
+four**, and all closed; the sixth is why check 7 has anything to look at on the panel at all. `worst_frame` — closed 2026-08-29 as the wrong instrument; do **not** carry D-A2's
 "wants rooting out before the soak" into this stage, only the PSRAM slab residue survives.
 `kFrameCapacity` **sizing** — closed by D-A2; this stage confirms the margin, it does not re-open it.
 The median convention (card 29), strain 29's tripwire wording, the `CLAUDE.md` prose-versus-ordinal
