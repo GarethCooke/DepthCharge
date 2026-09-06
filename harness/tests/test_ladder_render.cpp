@@ -523,6 +523,78 @@ TEST_CASE("the header shows the last price when live and the reason when not") {
     }
 }
 
+TEST_CASE("the header trims trailing zeros, and never a significant digit") {
+    // **THE OWNER'S FIFTH RENDERING DECISION (2026-09-06).** Binance declares a
+    // uniform 8 decimals and `tickSize` is a validator rather than the scale
+    // (M5 stage 0), so BTCUSDT's last six digits are always zero and the value
+    // alone was 74 px on a 64 px panel.
+    //
+    // THE CONSTRAINT THE DECISION CAME WITH, and it is the one that could have
+    // been got wrong quietly: `format_scaled` is shared — nine call sites, one
+    // of them `kraken_checksum.hpp`, which formats the string the venue's CRC32
+    // is computed over. So the trim is at the display edge, and what has to be
+    // proved is that it removes only what a re-parse restores.
+    using depthcharge::fw::trim_trailing_zeros;
+    using depthcharge::format_scaled;
+    using depthcharge::parse_scaled;
+
+    const auto trimmed = [](std::int64_t v, int decimals) {
+        char buf[depthcharge::kMaxFormattedChars + 1]{};
+        const std::size_t n = format_scaled(v, decimals, buf, sizeof buf - 1);
+        REQUIRE(n > 0);
+        buf[n] = '\0';
+        trim_trailing_zeros(buf);
+        return std::string(buf);
+    };
+
+    // The decision's own worked example.
+    CHECK(trimmed(10823456000000LL, 8) == "108234.56");
+    CHECK(text_width("108234.56") == 44);
+    CHECK(text_width("108234.56000000") == 74);
+
+    // **THE PROPERTY, and it IS the constraint: trimming removes only characters
+    // a re-parse at the same scale puts back.** Swept over scales and shapes
+    // rather than asserted on one string, because "never a significant digit" is
+    // a statement about every value, not about the one in the example.
+    const std::int64_t values[] = {
+        0, 1, 9, 10, 100, 100000, 100001, 150000000LL, 10823456000000LL,
+        999999999999LL, -1, -150000000LL, -10823456000000LL, 123456789012345678LL,
+    };
+    for (int decimals = 0; decimals <= 8; ++decimals) {
+        for (const std::int64_t v : values) {
+            char raw[depthcharge::kMaxFormattedChars + 1]{};
+            const std::size_t n = format_scaled(v, decimals, raw, sizeof raw - 1);
+            if (n == 0) { continue; }          // does not fit at this scale
+            raw[n] = '\0';
+            const std::string t = trimmed(v, decimals);
+            INFO("value=" << v << " decimals=" << decimals << " raw=" << raw << " trimmed=" << t);
+            // Round-trips exactly: no significant digit was lost.
+            const depthcharge::DecimalParse back = parse_scaled(t, decimals);
+            CHECK(back.ok());
+            CHECK(back.value == v);
+            // ...and it never GREW, and never lost a non-zero character.
+            CHECK(t.size() <= std::string(raw).size());
+        }
+    }
+
+    // A VENUE WHOSE DECIMALS ARE MEANINGFUL IS UNAFFECTED, in the ordinary case
+    // and byte for byte: Anvil's 4-decimal prices carry non-zero low digits, so
+    // there is nothing to trim and the string does not move. `make_book` uses
+    // exactly this scale and value.
+    CHECK(trimmed(100001, 4) == "10.0001");
+    CHECK(trimmed(99972, 4) == "9.9972");
+    // A round price does shorten, and that is the decision rather than a defect:
+    // the value is exact either way and the panel gains the pixels.
+    CHECK(trimmed(100000, 4) == "10");
+    CHECK(trimmed(0, 8) == "0");
+    CHECK(trimmed(-150000000LL, 8) == "-1.5");
+
+    // An INTEGER's trailing zeros are significant and must survive — this is the
+    // symbol id's path (`decimals == 0`), which shares the formatter.
+    CHECK(trimmed(100, 0) == "100");
+    CHECK(trimmed(1000000, 0) == "1000000");
+}
+
 TEST_CASE("the symbol yields to the value rather than overlapping it") {
     // A header that overlaps is worse than one missing an id this object only
     // ever shows one of. The value is right-aligned first; the symbol draws only

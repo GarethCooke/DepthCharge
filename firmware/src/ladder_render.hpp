@@ -402,6 +402,45 @@ constexpr const char* reason_text(GapReason r) noexcept {
     return "STALE";
 }
 
+// DROP FRACTIONAL ZEROS THAT CARRY NO INFORMATION (the owner's decision,
+// 2026-09-06 — M5's FIFTH rendering decision, taken at D-A4's split).
+//
+// **WHY THE HEADER AND NOT `format_scaled`.** `format_scaled` promises *"always
+// exactly `decimals` fractional digits ('10.0000'), which is what a price ladder
+// wants: the column lines up"*, and that promise has nine call sites. One of
+// them is `kraken_checksum.hpp`, which formats levels to build the very string
+// **the venue's CRC32 is computed over** — trimming there would not misalign a
+// column, it would silently break Kraken's only external oracle, on a venue
+// whose decimals are meaningful in the strongest possible sense. So the
+// formatter's contract is untouched and the trim happens once, here, at the
+// display edge, on the one field the decision is about.
+//
+// **WHY IT IS SAFE AT EVERY VENUE, stated as the property the test asserts:**
+// trimming removes only characters that a re-parse at the same scale restores.
+// `parse_scaled(trim(format_scaled(v, d)), d) == v` for every value and every
+// scale — that is "trailing zeros only, never significant digits" written
+// mechanically rather than promised in prose.
+//
+// Anvil at 4 decimals and Kraken at its own are unaffected in the ordinary case
+// because their low digits are not always zero: `10.0001` has nothing to trim
+// and comes back byte-identical. A round price like `10.0000` does shorten to
+// `10`, and that is the decision working rather than a venue being caught by it
+// — the value is exact either way, and the panel gains the pixels.
+constexpr void trim_trailing_zeros(char* buf) noexcept {
+    if (buf == nullptr) { return; }
+    std::size_t n = 0;
+    bool has_point = false;
+    for (; buf[n] != '\0'; ++n) {
+        if (buf[n] == '.') { has_point = true; }
+    }
+    // No point, nothing to trim: an integer's trailing zeros are significant,
+    // and this is the guard that says so. `decimals == 0` renders the symbol id.
+    if (!has_point) { return; }
+    while (n > 0 && buf[n - 1] == '0') { buf[--n] = '\0'; }
+    // ...and the point itself, once nothing is left to its right.
+    if (n > 0 && buf[n - 1] == '.') { buf[--n] = '\0'; }
+}
+
 // A fixed stack buffer for one header field. kMaxFormattedChars is
 // format_scaled's own worst case, so this cannot be outgrown by a wider price.
 struct TextField {
@@ -420,6 +459,15 @@ struct TextField {
         } else {
             t.buf[n] = '\0';
         }
+        return t;
+    }
+
+    // The same, trimmed — the header's VALUE slot and nothing else. A separate
+    // factory rather than a flag on `scaled`, so the symbol id cannot acquire
+    // the behaviour by being one argument away from it.
+    static TextField price(std::int64_t value, int decimals) noexcept {
+        TextField t = scaled(value, decimals);
+        trim_trailing_zeros(t.buf);
         return t;
     }
 };
@@ -535,7 +583,13 @@ private:
         // last price while the book is live, and why it is not while it is not.
         // A stale panel showing a price it cannot vouch for and no reason would
         // be the wrong half of the payload on screen.
-        const TextField last = TextField::scaled(snap.last_px, snap.symbol.price_decimals);
+        // `price` rather than `scaled`: trailing fractional zeros are dropped
+        // (the owner's fifth rendering decision, 2026-09-06). At Binance the
+        // scale is a uniform 8 decimals and `tickSize` is only a validator
+        // (M5 stage 0), so BTCUSDT's last six digits are ALWAYS zero and
+        // "108234.56000000" was 74 px on a 64 px panel — the value alone
+        // overflowed the header, taking the age and the symbol slot with it.
+        const TextField last = TextField::price(snap.last_px, snap.symbol.price_decimals);
         const char* value =
             snap.live() ? (snap.has_last ? last.buf : "-") : reason_text(snap.stale_reason);
         const int value_w = text_width(value);
