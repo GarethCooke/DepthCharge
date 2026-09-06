@@ -233,9 +233,11 @@ difference from `None` is inside `draw_header`. Grey is not used.
 - ☒ Any decision with architectural weight to `ARCHITECTURE.md` §9; `docs/DESIGN.html` updated where
       the card moves. *Three new §9 rows, plus a correction appended to the 2026-08-30 D-B/D-A3 row
       (the "sixteen headers" count is 17 direct / 22 transitive, and was wrong when written).*
-- ☐ Per-commit verification per §3's corrected rule, **naming the track for each commit**; session
+- ☒ Per-commit verification per §3's corrected rule, **naming the track for each commit**; session
       log · ROADMAP; **push to `m5/stage-d-a4`**; split proposed;
       nothing committed until approved.
+      *Split approved 2026-09-06 and executed as eight commits; the ladder's per-commit table is
+      §8. `origin/m5/stage-d-a4` = `ec80ec4`; `master` unmoved at `25510ec`.*
 
 ## 6 · Out of scope
 
@@ -632,12 +634,46 @@ Both tracks were run on the whole tree; the per-commit ladder runs when the spli
   "sixteen headers" figure is also wrong: **17 direct / 22 transitive**, and it was wrong when written
   (it missed `rx_budget.hpp`, included by relative path since 2026-08-15).
 
+#### 8 · The ladder, and the commit it found red
+
+Eight commits, each verified in its own **detached worktree** with `secrets.h` copied in and
+`CMAKE_HOME_DIRECTORY` read back from `build/host/CMakeCache.txt` before any pass was believed.
+`n/a` below is a track that compiles nothing the commit touches — not a track skipped.
+
+| # | commit | ctest | `pio -e depthcharge-binance` | home dir |
+| --- | --- | --- | --- | --- |
+| 1 | `8c2df4a` engine: the bracketing event is not the continuity check's business | 52/52 | SUCCESS | confirmed |
+| 2 | `e9f15fe` engine: hold the fetch's interval and roll the body forward across it | 52/52 | SUCCESS | confirmed |
+| 3 | `1a7cf0c` harness: the driver issues the fetch a trace cannot | 52/52 | n/a | confirmed |
+| 4 | `d8490b8` firmware: the re-seed ledger the panel cannot show | n/a | SUCCESS | n/a |
+| 4b | `224efc7` firmware: the header trims trailing zeros — the fifth decision | 52/52 | SUCCESS | confirmed |
+| 5 | `e944158` firmware: the marker, and the sixth decision that makes it visible | 52/52 | SUCCESS | confirmed |
+| 6 | `c61de28` firmware: pin the venue headroom | n/a | SUCCESS | n/a |
+| 7 | `ec80ec4` docs: strain 28 closes, D11 opens and closes, five §9 rows | 52/52 | SUCCESS | confirmed |
+
+**AND IT CAUGHT ONE, WHICH IS THE ONLY REASON THIS SECTION IS WORTH READING.** Commit 2's first
+form was **RED in isolation — 10 of 52** — on
+`test_binance_adapter.cpp: 'struct dc::harness::ReplayOptions' has no member named
+'issue_reseed_fetch'`. The synthesised-trace test had been put in the commit that builds the
+mechanism, and the field it needs is born in the commit after it. **Green in the main tree, red
+alone**: exactly the shape §9's 2026-08-30 row is about. The split was **amended** — the test moved
+to commit 3, whose message records why — rather than the verification being waved through.
+
+**Three record defects were found the same way, by re-reading rather than by any test.** The marker
+comment in `ladder_render.hpp` carried both the superseded `"RESEED"` rationale and the new one;
+ROADMAP **D11** said CLOSED in its heading and *"STAYS OPEN"* in a bullet, still quoting `"RESEED"`
+and 34 px; and this log still listed D11 as an open next step. All three are the same species as the
+defects §5c records — a document that has been half-updated reads as though it were whole — and
+they cost commits 5–7 being rebuilt and re-laddered. **Prose has no compiler, which is the argument
+for putting the arithmetic in a test wherever it can go.**
+
 #### 7 · Exact next step
 
-1. **Review the split below and approve or amend it.** Nothing is committed.
-2. On approval: create the commits, verify each in a **detached worktree** with `CMAKE_HOME_DIRECTORY`
-   confirmed, `secrets.h` copied in for the `pio` ones, then push `m5/stage-d-a4`. `master` is not
-   fast-forwarded until the ladder closes.
+1. ~~Review the split and approve or amend it.~~ **Done 2026-09-06** — approved as re-proposed with
+   4b inserted, and amended once during execution when the ladder found commit 2 red (§8).
+2. ~~Create the commits, verify each in a detached worktree, push.~~ **Done** — eight commits,
+   `origin/m5/stage-d-a4` = `ec80ec4`. **`master` is NOT fast-forwarded** and stays at `25510ec`
+   until the owner publishes it, which is a separate deliberate act.
 3. **The one thing this session could not do: flash it.** `DisplaySnapshot::reseed` reaching
    `InFlight` *on the board* is unverified, and so is the `-- reseed :` line. The bench reading that
    settles it is `adopted` climbing while `greys` stays flat. Note that on the D-C capture **every**
