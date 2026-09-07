@@ -221,6 +221,37 @@ figure 19,963.97 — within 60 ms at the extremes and within 40 ms of it on five
 threshold ran **39,830–40,043 ms** against stage C's **39,927.94 ms**. The policy reaches the
 firmware: gap (b) is closed, and the board is no longer running multiple 4.0 / ceiling 30,000 ms.
 
+> **CORRECTED 2026-09-06 (M5 close-out): the median range is 19,915–20,021 ms, not 19,961–20,021.**
+> The two figures in that sentence cannot both be right, and the sentence says so itself: the
+> threshold is 2× the median, so a stated floor of **39,830** implies a median of **19,915**.
+> `tools/soak_report.py`, taught per-boot segmentation and gzip at the close-out, reads the seven
+> final `-- signal` lines as
+>
+> ```
+> B1 696/19989   B2 1238/19961   B3 762/19915   B4 265/20021
+> B5 653/19975   B6 1770/19995   B7 799/20003        (n / median ms)
+> ```
+>
+> so B3's 19,915 is the floor and 19,961 is B2's. Nothing else in the section moves — the
+> threshold range was right, the corpus comparison is unaffected at 49 ms rather than 3 ms, and
+> check 2's verdict does not depend on it. **What it illustrates is why the tool needed teaching:**
+> every figure in this section was derived by hand from seven per-boot readings because the tool
+> reported the run as its last boot, and a hand-derived range is exactly where one endpoint gets
+> transcribed from the wrong row. The whole reading now reproduces from
+>
+> ```
+> python tools/soak_report.py hardware/bench-2026-08-30-D-C-soak.log.gz
+> ```
+>
+> — seven boots, 34.55 h, 6,183 intervals, worst healthy 39,061 ms in B5, `oversize` 1 in B1,
+> `max_held` 4 of 4 in all seven, 1,188,879 frames published.
+>
+> **The command names the `.gz` because the tool now reads it, and until the close-out it did
+> not.** The committed artefact is the gzip; run against it, the tool exited 1 with *"NO SOAK
+> LINES PARSED — the grammar has drifted from the firmware"*, which is a grammar verdict on a
+> compression format. Every write-up citing "reproduces from `soak_report.py`" was citing a
+> command that failed on the only input in the tree.
+
 Every server ping was answered in every boot (`ping N/N`, N = 580, 2351, 1447, 471, 1214, 3389,
 1537). No unanswered ping occurred, so none of the 25–40 s intervals is a dropped beat — they are
 the server's own cadence jitter.

@@ -321,7 +321,12 @@ approval, per the brief's last constraint.
    pinned 4,000 ms. *Why 2.0 is derived rather than chosen:* `liveness_clock.hpp` already states the
    rule that produced Anvil's 4.0 — worst healthy as a multiple of the venue's own median, times ~2
    of margin — and this signal measures **1.005×** over B2's ten intervals, so the same rule gives
-   2.0 at 1.99× margin. *Why the ceiling is 60,000:* it must clear 39,927.94 or the clamp is the
+   2.0 at 1.99× margin. *[**SUPERSEDED 2026-09-06, M5 close-out: the margin is 1.024×.** D-C's
+   check 2 measured the worst healthy multiple at **1.9529×** over **6,183** intervals, not 1.005×
+   over ten — same quantity, a population 618× larger, and the smaller one spanned 111 ms. The
+   derivation of k = 2.0 is untouched and k does not move; what is superseded is the margin
+   claimed for it. See `NOTES-binance.md` § the per-venue multiplier table, and ROADMAP **D12**.]*
+   *Why the ceiling is 60,000:* it must clear 39,927.94 or the clamp is the
    threshold again, and it admits a cadence 50% slower than measured before it binds.
    **The cost is stated rather than left to be found:** the uncalibrated default IS the ceiling, so
    Binance's pre-calibration threshold goes **30 s → 60 s**, for the 159.7 s `kMinSamples` takes at
@@ -538,6 +543,19 @@ table and on the §9 per-venue-policy row, with the falsifier and the k ≤ 3.00
 **k stays at 2.0**: moving it on desk evidence would change the constant and the venue in one step,
 which is the trap the §9 row this stage wrote exists to name. It is D's, on the soak.
 
+> **THE SOAK RAN, AND THIS PARAGRAPH'S OWN ARGUMENT IS WHAT IT CONFIRMED (M5 close-out,
+> 2026-09-06).** *"Ten intervals spanning 111 ms cannot contain a missed-tick event"* was right,
+> and D-C's check 2 put a number on what it could not contain: over **6,183** healthy intervals
+> the worst is **39,061 ms = 1.9529 × median**, **943 ms** short of greying a healthy socket, with
+> **39** intervals in the 25–40 s band that the ten-interval capture had none of. **The jitter
+> clearance is 1.024×, not 1.99× — the same ratio over a population 618× larger, superseded rather
+> than corrected.** The falsifier did not fire on that capture (`>=2x med` = 0 on all 12,417
+> samples) — **but it HAS fired on the stage E capture, read for the first time on 2026-09-07**:
+> `>=2x med=4` over 4,977 healthy intervals on the 27.81 h connection, worst 53,163 ms against a
+> 39,978 ms bar. **k still stays at 2.0 here**, because a documentation stage may not move a
+> threshold on a soak it did not run; the remedy the rule itself prescribes is carried to the owner
+> in ROADMAP **D12**.
+
 **§2 · Card 26 → 30 executed, and *Owed by stage D* written.** The M4 card moves and carries the
 reasoning; its one inbound citation — `ROADMAP.md`'s M4 row — is repointed, and the M5 card's
 paragraph changes from a recommendation to a record. The follows-the-reason-not-the-letter sentence
@@ -564,7 +582,7 @@ diagnosis without the practice. Same two-column shape.
 | --- | --- | --- |
 | 1 | **The four panel questions C deliberately did not take**: what a silent feed renders, what a re-seed in flight renders, whether remedy (a)'s grey *reads* right, and strain 24's unvalidated-levels question. **Do not re-argue whether they are D's** — this brief's *scoping ruling* settled it from M4 twice (the triage's engine-state-vs-rendering split, and stage D item A1's *true of the BEHAVIOUR and not of the POLICY*), and item 4 leaving C is the only reason C fitted in an evening. | This brief, § *The scoping ruling*; `M4-triage-of-the-twelve.md`; `M4-stage-D-the-bench.md` item A1. C records the number per policy; D decides knowing it. |
 | 2 | **The re-seed mechanism and its memory** — strain 28's D-half. Three candidates, priced: **(a)** a ~128 KiB deferred buffer (no gap, no grey, and it more than doubles the adapter's ~96 KiB of fixed state); **(b)** drop-gap-reseed (free in memory, greys the panel for the length of a fetch on a book that was still correct); **(c)** merge below the touch (cheapest, least proven, nothing in the corpus exercises it). **The engine state to render during a fetch already exists** — `DisplaySnapshot::reseed`, and D advances it to `InFlight`. | DESIGN strain 28; §9 2026-08-26. B2's adoptability measurement is unchanged and decides between them: **0 of 7 adoptable at `limit=1000` on the liquid pair, 19 of 19 everywhere else** — the deeper the seed the older it lands, because the venue snapshots ~¾ of the way through the round trip and spends the rest shipping ~120 KB. |
-| 3 | **The multiplier's bound, and it is the soak's FIRST named check.** `k = 2.0` clears this signal's jitter by 1.99× and a **dropped ping by 1.000×**. **Falsifier: record the ping-interval distribution across the soak; any interval reaching 2 × median on a healthy socket raises k.** If it fires, **k rises alone** — the 60,000 ms ceiling already admits k ≤ 3.005 (3.0 → 59,891.91 ms), so the remedy is one value in one row, with no ceiling change and no second attribution problem. | §9 2026-08-26 (the per-venue-policy row); `NOTES-binance.md` M5 stage C addendum §1. The comparison that sizes it: the same Anvil signal read **1.094× over 62 idle frames and 1.937× over 1,191 intervals**. |
+| 3 | **The multiplier's bound, and it is the soak's FIRST named check.** `k = 2.0` clears this signal's jitter by 1.99× and a **dropped ping by 1.000×**. *[**SUPERSEDED at the M5 close-out: 1.024×**, measured over 6,183 intervals against these ten. Same ratio, larger population. k unchanged; the rule's future is ROADMAP D12.]* **Falsifier: record the ping-interval distribution across the soak; any interval reaching 2 × median on a healthy socket raises k.** If it fires, **k rises alone** — the 60,000 ms ceiling already admits k ≤ 3.005 (3.0 → 59,891.91 ms), so the remedy is one value in one row, with no ceiling change and no second attribution problem. | §9 2026-08-26 (the per-venue-policy row); `NOTES-binance.md` M5 stage C addendum §1. The comparison that sizes it: the same Anvil signal read **1.094× over 62 idle frames and 1.937× over 1,191 intervals**. |
 | 4 | **The uncalibrated-default window.** `kUncalibratedThresholdMs` **is** the ceiling, so Binance's pre-calibration threshold is **60 s** where it used to be 30 s, for the **159.7 s** `kMinSamples = 8` takes at this cadence — on *every* connection, and the board reconnects. Decoupling the two was deliberately not done at C: it would be a fourth number with no measurement behind it, in a stage whose argument is that the multiplier was derived. **State whether that window matters on the board.** That is a soak observation and not a desk one. | §9 2026-08-26; `NOTES-binance.md` §C.1's *cost, stated*. M4 stage D's B3 is the precedent for what a reconnect-heavy night looks like: 2 half-open outages in 25.39 h, and 21 reconnects in 86 minutes at M3. |
 | 5 | **Parity: NO, and D is where the reduced claim is TESTED rather than asserted.** *The panel greys within the calibrated liveness threshold of the **socket** falling silent — 39.9 s — and refuses to colour a ladder the feed has never confirmed. It does not detect a subscription that stops server-side while the socket stays up. `age_ms` is a lag estimate for a socket backlog only, and reads nothing for the first ~11 minutes of every connection.* Both halves are narrower than M4's from **one cause**. | `NOTES-binance.md` §C.6; §9 2026-08-26. The three per-venue `age_ms` limits are B2's and need no re-measuring: **tracks a socket backlog 1.00×, BLIND to a feed backlog, 638.8 s with no reading, 85.2 min supremum window.** |
 | 6 | **M4's card 30 (opened as 26) is a LIVE DEPENDENCY, not a residue.** Remedy (b) — *the ping does not stamp liveness until the bracket is satisfied* — is **not wrong in principle; it is blocked by that card being open.** `LivenessWatchdog::expired()` is `armed_ && now >= deadline_ns()` and `armed_` has exactly one setter, so withholding liveness leaves the watchdog never armed and the lie permanent. **If `armed_` ever gains a second setter, (b) becomes available and its trade against (a) reopens.** Written down here so the next stage does not re-derive the rejection from scratch. | DESIGN cards 26 and 30; §9 2026-08-26 (the remedy row); `binance_adapter.hpp`'s *WHY (a) AND NOT (b), (c) OR (d)*. |

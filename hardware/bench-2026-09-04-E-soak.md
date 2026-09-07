@@ -202,6 +202,39 @@ that legitimately greyed rather than healthy ones that nearly did — but separa
 the multiplier rule, exactly as D-C said of itself. It belongs to the M5 close-out with these two
 numbers beside D-C's.
 
+> **RESOLVED AT THE M5 CLOSE-OUT, 2026-09-07, AND AGAINST THE READING ABOVE. The four are healthy
+> intervals, the two counters are disjoint sets, and `wd=4` beside `>=2x med=4` is a coincidence
+> this section read as an identity.**
+>
+> **The firmware guarantees the disjointness.** `LivenessWatchdog::note_fired` sets
+> `armed_ = false` (`liveness_watchdog.hpp:286`), and `on_liveness` adds to the histogram only
+> `if (armed_)` (`:218`) — so **an interval that caused a firing cannot appear in the `>=40s`
+> bucket at all**. That gate is not incidental; it is the paragraph above it, which says in as many
+> words that ungated *"the first reconnect of any run would park a ~300 s interval in the `>=40s`
+> bucket and the falsifier would read as permanently tripped"*.
+>
+> **And it is measured as well as argued.** The four histogram entries appear at panel ticks
+> **368,417 / 418,534 / 659,082 / 709,183**; the four watchdog firings at **187,810 / 247,946 /
+> 318,112 / 769,140**. Not one coincides. `sock` stayed **0** across all of them, so no socket
+> dropped either.
+>
+> **So the falsifier fired.** 2 × the settled median is 39,978 ms and the `>=40s` bucket admits
+> nothing below 40,000. **Nothing greyed only because all four fell in the connection's first
+> ~12 minutes, while the clock was uncalibrated and the threshold clamped at the 60,000 ms
+> ceiling** — above the 53,163 ms worst. Calibrated at 39,979 ms, an interval that size greys a
+> healthy socket. The uncalibrated window that D-C's check 5 treats as a cost is what stood between
+> this run and a false grey.
+>
+> **Nothing in this record's own scoreboard moves** — the publish boundary, the 27.81 h stretch and
+> the crossed-line count are untouched. What moves is the multiplier's standing: ROADMAP **D12**,
+> rewritten, with the remedy left to the owner because a stage that did not run the soak may not
+> move a threshold on it — which is this section's own rule, applied to the stage that read it.
+>
+> **Why it took until 2026-09-07:** `tools/soak_report.py` could not open a `.gz`, and this capture
+> is committed only as one. The count in this section was read by hand off the last `-- signal`
+> line; the tick-level disjointness needed the tool, and the tool could not be pointed at the
+> artefact.
+
 ## What this run does not entitle anyone to claim
 
 - **That the watchdog crash is fixed.** One reset in 32.25 h against six in 34.56 h. `c0` is still

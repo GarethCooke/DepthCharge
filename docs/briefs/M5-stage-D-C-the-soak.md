@@ -149,6 +149,14 @@ multiple of **1.005×**, over **ten intervals spanning 111 ms** in B2's 221 s ca
 It clears the signal's jitter by **1.99×** and a **dropped ping by exactly 1.000×** — one missed
 ping equals the threshold, which is why this is worth a day.
 
+> **RULED AT THE M5 CLOSE-OUT (2026-09-06): the jitter clearance is 1.024×, and the 1.99× is
+> superseded rather than wrong.** Both are k over the worst healthy multiple — 2.0/1.005 and
+> 2.0/1.9529 — so they are one quantity over two populations, ten intervals spanning 111 ms
+> against the 6,183 this run admitted. The run answered its own check. `k` does not move here — but
+> **the falsifier has since fired on the stage E capture** (`>=2x med=4`, read 2026-09-07 once the
+> tool could open a `.gz`), so the open question is no longer whether the rule is right but who
+> applies the remedy it prescribes: ROADMAP **D12**.
+
 > **Falsifier: any interval reaching 2 × median on a healthy socket raises k.**
 
 **k rises alone**: the 60,000 ms ceiling already admits **k ≤ 3.005** (3.0 → 59,891.91 ms), so the

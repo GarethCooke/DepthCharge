@@ -508,6 +508,46 @@ real, and the reason D-B could not have seen it is worth more than the fix.]*
   session log §4, §5d.
 
 
+**D12 · THE MULTIPLIER'S FALSIFIER HAS FIRED. `k = 2.0` is falsified by the corpus, and the only
+reason no healthy socket greyed is that all four crossings landed inside the uncalibrated window.**
+*[A/B — opened 2026-09-06 at the M5 close-out out of D-C's check 2; **rewritten 2026-09-07 when the
+gzip audit read the stage E capture for the first time.** The remedy is one value in one row and it
+is the owner's, not a documentation stage's.]*
+
+- **What fires it.** `hardware/bench-2026-09-04-E-soak.log.gz`, boot 2 — the 27.81 h continuous
+  connection — ends at `-- signal : server-ping n=4977 max=53163 ms **>=2x med=4** | median 19989 ms
+  threshold 39979 ms CALIBRATED`. Four intervals reached the `>=40s` bucket against a settled
+  median of 19,989 ms, so 2 × median is **39,978 ms** and every one of the four clears it. Stage C's
+  rule is *any interval reaching 2 × median on a healthy socket raises k*. **It has been reached,
+  four times, on a socket that never dropped** (`sock` stayed 0 throughout).
+- **THE FOUR ARE HEALTHY BY CONSTRUCTION, AND THE STAGE E RECORD'S DOUBT IS RESOLVED AGAINST
+  ITSELF.** That record wondered whether the four were *"intervals that legitimately greyed rather
+  than healthy ones that nearly did"*, on the grounds that the run also has `wd=4`. **They are
+  disjoint sets and the firmware guarantees it**: `LivenessWatchdog::note_fired` sets
+  `armed_ = false`, and `on_liveness` adds to the histogram only `if (armed_)`, so an interval that
+  caused a firing **cannot** be in that bucket. Measured as well as argued — the four histogram
+  entries land at ticks 368,417 / 418,534 / 659,082 / 709,183 and the four firings at 187,810 /
+  247,946 / 318,112 / 769,140. Not one coincides. **Two counters both reading 4, read as the same
+  four events.**
+- **Why nothing greyed, and it is not the multiplier's doing.** All four fell in the connection's
+  first ~12 minutes, while `kMinSamples = 8` had not yet calibrated and the threshold was clamped at
+  the **60,000 ms** uncalibrated ceiling — above the 53,163 ms worst. **Once calibrated at
+  39,979 ms, an interval of that size greys a healthy socket.** The 60 s window that D-C's check 5
+  treats as a cost is the only thing that stood between this run and a false grey.
+- **What D-C measured is unchanged and is now the second data point, not the whole case.** Over its
+  6,183 healthy intervals `>=2x med` is 0, the worst is 39,061 ms = 1.9529 × median, **943 ms**
+  short — so the jitter clearance stage C stated as 1.99× measures **1.024×**. Two runs: one within
+  943 ms of the bar, one four times over it.
+- **The candidates.** Raise `k` — the ceiling already admits `k ≤ 3.005` (3.0 → 59,891.91 ms), so it
+  is one value in one row with no ceiling change and no second attribution problem, at the price of
+  grey latency the panel pays for. Or decouple the uncalibrated window from the ceiling, since that
+  window is what actually saved this run. Or re-word the falsifier against a percentile. **The first
+  is what stage C's own rule prescribes and the close-out did not take it**, for the reason D-C and
+  stage E both gave of themselves: a stage that did not run the soak may not move a threshold on it.
+- Evidence: `hardware/bench-2026-09-04-E-soak.md` §7 (which recorded the count and handed it here);
+  `hardware/bench-2026-08-30-D-C-soak.md` §4; `firmware/src/liveness_watchdog.hpp:283` and `:218`
+  for the disjointness; ARCHITECTURE §9 2026-09-07.
+
 **D13 · The report prints a threshold and a median that are not derived from each other, and says
 nothing about it.** *[A — opened 2026-09-06 at the M5 close-out, found by review of the median
 convention fix. Latent: it misleads a reader, it does not misinform the board.]*

@@ -1484,6 +1484,46 @@ STATE UNTIL THE OWNER ASKED FOR IT.** Read the *binding case* column rather than
 > 2 × median on a healthy socket raises k.** The 60,000 ms ceiling already admits k ≤ 3.005, so the
 > remedy is one value and moves nothing else.
 
+> **THE FALSIFIER WAS RUN AND DID NOT FIRE — BUT THE CLEARANCE IT WAS PROTECTING DID.**
+> Ruled at the M5 close-out on D-C's check 2 (`hardware/bench-2026-08-30-D-C-soak.md` §4).
+>
+> `>=2x med` is **0 on all 12,417 samples** across seven boots, so k is not raised by the rule as
+> written. What moved is the **basis**: **6,183 healthy intervals** against the ten above, **39 of
+> them in the 25–40 s band**, and a worst healthy interval of **39,061 ms = 1.9529 × median**,
+> **943 ms** short of that boot's 40,004 ms threshold. So the clearance stage C stated as
+> **1.99×** measures **1.024×**.
+>
+> **SAME QUANTITY, AND THAT IS THE RULING.** Both are k divided by the worst healthy multiple —
+> 2.0 / 1.005 = 1.990 and 2.0 / 1.9529 = 1.024. Not a projection against a measurement, and not
+> two different measures sharing a name: one ratio over two populations, the smaller of which
+> spanned **111 ms** and could not have contained a 39 s interval. The 1.99× is therefore
+> **superseded, not corrected** — it was right about its ten intervals and wrong about the venue.
+>
+> The *binding case* column above already said this in another form: **10** intervals, in a table
+> whose whole argument is that Anvil's 1,191 are what made its binding case visible. What the
+> close-out adds is that the number is now measured rather than foreseen, and that the same shape
+> has been found three times in this milestone — check 4's 2.29× → 1.060×, and the median
+> convention's *"agree to 0.1 ms at Kraken"*. **A margin computed over a population that could
+> not contain its own worst case.**
+>
+> **THE FALSIFIER HAS SINCE FIRED, ON A CAPTURE THAT WAS ALREADY IN THE TREE (2026-09-07).** The
+> paragraph above said *"the falsifier as worded did not fire"*, which was true of the D-C capture
+> and false of the corpus. `bench-2026-09-04-E-soak.log.gz`, boot 2 — the 27.81 h connection — ends
+> at `>=2x med=4` over 4,977 healthy intervals, worst **53,163 ms** against a settled median of
+> 19,989 (2 × median = 39,978). **Four crossings, on a socket that never dropped.**
+>
+> The four are healthy **by construction**: `note_fired` clears `armed_` and the histogram is gated
+> on it, so an interval that greyed the panel cannot be in that bucket — and the tick stamps are
+> disjoint from the four watchdog firings, which is what the stage E record had read them as.
+> **Nothing greyed only because all four landed inside the uncalibrated window**, where the
+> threshold is clamped at 60,000 ms rather than 39,979.
+>
+> **k is still not changed here**, for the reason D-C and stage E each gave of themselves: a stage
+> that did not run the soak may not move a threshold on it. But the question is no longer *"is the
+> falsifier still the right rule"* — the rule has fired and prescribes its own remedy, `k` rising
+> alone under the 60,000 ms ceiling that admits `k ≤ 3.005`. ROADMAP **D12** carries it to the
+> owner with both runs' numbers. ARCHITECTURE §9, 2026-09-07.
+
 The arithmetic is exact rather than approximate: one missed ping is 2 × 19,963.97 = **39,927.94 ms**,
 the new threshold is 2.0 × 19,963.97 = **39,927.94 ms**, and `LivenessWatchdog::expired()` is
 `armed_ && now >= deadline_ns()` — so **a single dropped ping greys the panel**, at the margin Anvil
