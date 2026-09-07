@@ -109,8 +109,70 @@ and its own deliverables are the run and the reading.
    reading is taken at reconnect; `tools/soak_report.py` parses a current short capture with
    non-zero counts on every regex it owns. **A soak begun against an unproven reader is a day
    spent producing a fiction**, and this list is the whole of the pre-flight.
+   **IT IS RUN AGAINST TONIGHT'S IMAGE, EVERY TIME.** The first run's log recorded the reader half
+   *"confirmed retroactively"* off its own capture, and that licence has expired: the census has
+   grown since, so a pre-D-A4 capture can no longer confirm it. **The capture is taken from the
+   image about to soak, and nothing earlier substitutes.**
+
+   **AND *NON-ZERO COUNTS ON EVERY REGEX IT OWNS* NOW REACHES CHECK 7's LINE, WHICH IS NEW AND IS
+   WHAT THIS SITTING BUYS.** `-- reseed :` is one line of `print_stats()`'s fixed block on a 10 s
+   timer (`render_task.cpp:23`, `:90`; **`:315` is the format string the grammar is checked
+   against**), so it prints whatever the counters say and a two-minute capture carries roughly a
+   dozen of them with no re-seed occurring at all. And **that grammar has never met a real board
+   line** — `tools/soak_report.py`'s `RE_RESEED` comment says which captures and why, and names
+   this run as its first. So everything the tool believes about this line is checked against a
+   format string and synthetic text. **Two minutes now settles what only the 24-hour capture could
+   discover before.**
+
+   Four things the sitting must do, none of which the census does on its own:
+
+   - **`--selfcheck` IS NOT THIS CHECK.** It exercises `RE_RESEED` against synthetic text and
+     passes today. That is the evidence this paragraph is calling insufficient. The pre-flight is
+     the **census over tonight's capture from tonight's image**, and nothing else.
+   - **Take it on `depthcharge-binance` — not `depthcharge-binance-silent`**, which `extends` it
+     (`platformio.ini:384`) and so prints the line too, passing this census on a board whose book
+     never goes live. Any non-Binance arm scores 0 for a build-selection reason; §7 already pins
+     the arm for the worktree verification.
+   - **Know what a single-boot capture does NOT prove, and do not hold the run for it.** With one
+     boot, *the boot's last line* and *the last line of the file* are the same rule, so the sitting
+     proves the parse and says nothing about the segmentation that replaced the hand reading.
+     Segmentation itself is already proven on real board output — re-run over the first D-C
+     capture it reports **7 boots by panel clock, 7 by ROM** — so what a second boot would add is
+     only the combination: a `-- reseed` line placed in the right boot. **Backlog D10 will most
+     likely supply one** (one watchdog reset per ~32 h on this image), and a run that never reboots
+     is the better outcome, not a failed check. Take it opportunistically; the run does not wait
+     for it. *(A reset is not a hand operation either: opening COM7 asserts DTR/RTS and reboots the
+     board — which is why it cannot be done mid-capture without dropping the port and ending the
+     log.)*
+   - **Read one raw `-- reseed :` line beside its `(b3)` row, once.** A count proves the regex
+     matched, not that its groups landed on the right counters — two transposed fields still match
+     and still count.
+
+   **A zero is DRIFT, and the tool's own message will talk you out of it**: it offers *"predates
+   M5 stage D-A4"* and *"not a Binance build"*, and neither is drift on an image flashed today.
+   **Absent is not zero, either** — if there is no `-- reseed` row at all, the SOAK grammar aborted
+   first (`soak_report.py:452-462` returns before the enrolment at `:910`); fix that and re-run
+   before reading anything into this line. **IF IT IS ZERO, DO NOT EDIT THE REGEX AT THE BENCH.**
+   Diff the emitted line against `render_task.cpp:315`, record the difference in the log as a
+   `###` marker, and **run the soak anyway**, reading check 7 by hand off §4's worked example, once
+   per boot, exactly as the pre-D-A4 order said. A grammar fix is a `tools/` commit for the
+   close-out, with `--selfcheck` and a review; a night of board time is not recoverable.
+
+   **This settles the parse and the segmentation, and nothing else.** Whether the mechanism ran is
+   check 7, and check 7 is a tail phenomenon. **And it settles nothing about check 1** — see there.
 2. **The run: > 24 hours**, one board, `log2file` as always, flashed from a known commit with the
    SHA recorded in the log by hand (the shipping image carries no build tag - see §6).
+   **AND *BY HAND* CANNOT MEAN *APPENDED TO THE LIVE LOG*, WHICH COST A MARKER ON 2026-09-07.**
+   `log2file` holds its own file handle and its own position; a `###` line appended from another
+   process lands at the current end of file and **the filter's next flush writes straight over
+   it** — no error, and `grep -c '^###'` returns 0 a minute later. The marker was gone before
+   anyone looked for it, which is the wave-through shape with the instrument on the other foot.
+   **Write it to a sidecar `<capture>.marker` at the moment the run starts** — crash-safe, and it
+   survives the monitor dying — **and concatenate it into the capture when the run ends, before
+   gzipping.** `RE_MARKER` is line-anchored and position-independent, so the front of the file is
+   a convention rather than a requirement, and a `###` line is out-of-band annotation by
+   definition: the grammar's other users (`PORT OPEN`, `PORT LOST`, `GAP`) are all tool-written and
+   none of them are board output. Tooling rather than architecture, so no §9 row.
 3. **The seven checks read and recorded**, each with its number.
 4. **`hardware/bench-2026-08-<dd>-m5-soak.md`** plus the capture gzipped beside it, following
    `bench-2026-08-30-D-B-silent-stream-*.log.gz`.
@@ -118,14 +180,14 @@ and its own deliverables are the run and the reading.
    deliverable here this stage did not write for itself. **It is a READING, not a pass/fail**, and
    check 7 is explicit about which outcomes are verdicts on the mechanism and which are verdicts on
    the run's length. A `triggers=0` is a result and must be written down as one.
-   **TAKE THE LAST `-- reseed :` OF EVERY BOOT, NOT THE LAST OF THE RUN.** `BinanceAdapter::Stats`
-   is a plain member (`binance_adapter.hpp:1723`) and **nothing anywhere resets it**, so every
-   figure on that line is per-boot and dies at reboot — and the first D-C run took **seven boots**.
-   "The line at the end of the run" would silently discard six of them, including any boot in which
-   the trigger fired. **`tools/soak_report.py` does not own this line** (`grep -i reseed` returns
-   nothing), so deliverable 1's pre-flight — *"non-zero counts on every regex it owns"* — passes
-   without covering it. Until the tool is taught it, this one is read by hand, per boot; teaching it
-   is owed and is named in check 7.
+   **THE HAND READING THIS PARAGRAPH ORDERED IS NOW THE TOOL'S, AND THE ORDER IS WITHDRAWN.** It
+   read *"`tools/soak_report.py` does not own this line … until the tool is taught it, this one is
+   read by hand, per boot; teaching it is owed"*, and the M5 close-out taught it, in
+   `tools: soak_report reads the re-seed ledger and segments per boot`. The tool has the grammar,
+   enrols it in the census, and takes **the last ledger line of every boot** rather than the last
+   of the run. **Superseded, not wrong**: the wave-through that sentence named was real until that
+   commit. **Run the tool over the capture; do not transcribe the line** — check 7 carries the one
+   exception and the residue that is still yours.
 
 ## 4 · The checks, in order of what they can invalidate
 
@@ -143,6 +205,18 @@ D-A1 build, with an 80 KiB reserve and FramePipe in `.bss`. D-A2 raised the rese
 FramePipe's slabs to PSRAM, and the board now reports `largest=51188`. And **the stated remedy is
 backwards**: `panel.hpp:265` is `104u * 1024u` today, so *"`kReserveInternalBytes` goes back to
 96 KiB"* is a **reduction**. The threshold itself — 16,717 B — is unaffected and stands.
+
+> **AND THIS ONE IS STILL READ BY HAND, WHICH IS THE OPPOSITE OF CHECK 7 AND MATTERS MORE.** The
+> board does print the reading now — `ws_transport.cpp:667` carries `largest internal before=…
+> after=…` on every `socket up:` line, which is D-A3 closing §2(c). **`tools/soak_report.py` does
+> not extract it.** `RE_SOCK_UP` stops at `rssi`, so the report's reconnect table has columns for
+> `dns_ms`, `conn+upg_ms` and `rssi` and none for the two numbers this check exists to read — while
+> the census prints `socket up: N`, which reads as coverage. **And the section headed *LARGEST FREE
+> BLOCK — full series* is the SOAK line's periodic sampler, which §5 says in terms is not this
+> check.** A reader who takes that section for check 1 has read the fetch-scoped dips, not the
+> reconnects. **Grep the raw capture for `socket up:` and read the pair off every one**, per §5's
+> half-open case. Teaching the tool this line is owed and is now the cheapest thing on the list —
+> it is the same shape check 7 just had fixed, one grammar over.
 
 **2 · The multiplier falsifier.** `k = 2.0`, derived from this signal's measured worst-healthy
 multiple of **1.005×**, over **ten intervals spanning 111 ms** in B2's 221 s calibration capture.
@@ -241,13 +315,27 @@ nothing and a long one has dozens of chances**, which is precisely why it belong
 `cover=B/A` is the **low-water** seeded coverage per side **of that boot**, against the 448 the
 trigger fires below.
 
-> **READ IT PER BOOT, AND KNOW WHY.** `BinanceAdapter::Stats` is a plain member and nothing resets
-> it, so every field here is cumulative within a boot and **gone at the next one**. The first D-C
-> run took seven boots; a reading taken only at the end of the run would have shown one of them.
-> **And `tools/soak_report.py` does not own this line** — so it survives deliverable 1's pre-flight
-> (*"every regex it owns"*) without being covered by it, which is the wave-through shape §9 keeps
-> recording. **Read it by hand, once per boot, until the tool is taught it.** Teaching it is owed
-> and is the cheapest thing on this list.
+> **READ IT PER BOOT, AND KNOW WHY.** `BinanceAdapter::Stats` is a plain member
+> (`binance_adapter.hpp:1723`) and nothing resets it, so every field here is cumulative within a
+> boot and **gone at the next one**. The first D-C run took seven boots; a reading taken only at
+> the end of the run would have shown one of them.
+>
+> **`tools/soak_report.py` owns this line now and does the per-boot half for you** — section
+> *(b3) THE RE-SEED LEDGER*, one row per boot built from that boot's last ledger line — **on a
+> grammar that has never met a real board line. So if `(b3)` says *no `-- reseed` lines* on a
+> Binance image flashed today, that is DRIFT, not absence**: read the line by eye this once, off
+> the worked example above, and say so in the record rather than reporting nothing.
+>
+> **WHAT IT DOES NOT DO IS DECIDE PER BOOT.** The verdict under the table is computed from run-wide
+> aggregates only — six of its seven branches read the totals, the seventh a run-wide minimum of
+> the per-boot cover marks — and the first branch short-circuits: **if any boot adopted, that is
+> the whole verdict**, and `below`, `triggers`, `adoptable`, `unbracketed` and `declined(no-hold)`
+> go unmentioned. **`hold-overflow` appears in no branch at all.** So a run that adopted in one
+> boot and failed to bracket in another prints as one clean verdict, and the three findings this
+> section names below — `unbracketed` is *"a defect, report it"*, `hold-overflow` is *"sized not to
+> happen"*, `declined(no-hold)` *"should be 0 on a board"* — are yours to spot in the table.
+> **Record the table row by row and the verdict verbatim, and say which boot each non-zero came
+> out of.**
 
 The outcomes, with what each line actually looks like:
 
@@ -347,14 +435,17 @@ over 25.39 h. The event is a mid-run dip.
 
 ## 8 · Definition of done
 
-- ☐ **D-A3 landed and confirmed on the board**: the ping wire and the policy routing both
-      (`-- age` shows a non-zero median and a threshold near 39,927.94 ms), a ping-interval maximum
-      printing, a largest-block reading at reconnect, and `tools/soak_report.py` parsing a current
-      capture with non-zero counts on every regex it owns.
+- ☑ **D-A3 landed and confirmed on the board**, by **deliverable 1's pre-flight run in full, on
+      the `depthcharge-binance` arm and on the image that then soaked**. §3.1 is the list; this box
+      does not repeat it, because the list has grown once already and a second copy is a copy that
+      drifts. **Met 2026-09-07 — `hardware/bench-2026-09-07-D-C-preflight.md`**, capture committed
+      beside it, inflated sha256 `61f0a0f2…`. All four gaps closed off the board's own output, and
+      **`RE_RESEED` met a real board line for the first time: 1,473 of 1,473, including the
+      `cover=-/-` sentinel.** One boot, so the parse is proven and the per-boot placement is not.
 - ☐ A single run **exceeding 24 hours**, captured and gzipped into `hardware/`.
 - ☐ All **seven** checks read and recorded with their numbers.
 - ☐ **D-A4's board box, inherited 2026-09-06**: `DisplaySnapshot::reseed` reaching `InFlight` on the
-      board, and check 7's line recorded **whatever it says** — including a `triggers=0`, which is a
+      board, and check 7's reading recorded **whatever it says** — including a `triggers=0`, which is a
       result about the run's length and must be written down as one rather than left out.
       **Once per BOOT**: the counters are per-boot and nothing resets them, so an end-of-run reading
       discards every boot but the last.
@@ -500,3 +591,97 @@ board is stable: flash from a known commit, **write the SHA into the log by hand
 before starting** (the one thing this run cannot supply about itself), and repeat the run. Every
 non-duration check above will then be re-read on a single-boot capture, and checks 2 and 4 are the
 two whose margins moved.
+
+### 2026-09-07 · Opus 5 · the note corrected, the pre-flight passed, and run 2 started
+
+**Done.** The check-7 note is corrected, deliverable 1 is **met and ticked**, and the >24 h run is
+running from `dab312b` on `depthcharge-binance`.
+
+**The note was wrong in the direction of more work, and it was not the only one.** Check 7 ordered
+the `-- reseed :` line read by hand, once per boot, *"until the tool is taught it"* — and the M5
+close-out had taught it, in `tools: soak_report reads the re-seed ledger and segments per boot`
+(the gzip reader is a **second** commit, `tools: soak_report opens the committed captures, which
+are all gzip`, so this is two commits and not one). Withdrawn at §3.5 and §4.7. Three further stale
+operator instructions were found while confirming it, and are corrected in the same pass:
+
+- **`hardware/bench-2026-08-30-D-C-soak.md` §12** is headed *"what the next run needs"* — tonight
+  **is** the next run — and three of its five items were false of HEAD: the crash as a gate
+  (superseded by stage E's D10 ruling and its 27.81 h continuous), per-boot segmentation as owed
+  (done), and the five-grammar census (grown). Annotated in place, dated; **no measurement in that
+  record was touched.**
+- **Deliverable 2's *"SHA recorded in the log by hand"* is impossible as written**, discovered by
+  doing it. See decision 3.
+- **§8's D-A3 box restated deliverable 1's list verbatim.** Replaced with a pointer; the list had
+  already grown once, which is the drift CLAUDE.md's *state-it-once* rule predicts.
+
+**Decisions, with why.**
+
+1. **The hand reading moved to check 1; it did not disappear — and that is the more serious half.**
+   `RE_SOCK_UP` stops at `rssi` and never captures `largest internal before=/after=`
+   (`ws_transport.cpp:667`), so the report's reconnect table has no column for the two numbers the
+   **most load-bearing** check reads, while the census prints `socket up: N` and reads as coverage.
+   Worse, the section headed *LARGEST FREE BLOCK — full series* is the SOAK line's **periodic**
+   sampler, which §5 says in terms is not check 1 — so a reader who takes it for check 1 has read
+   the fetch-scoped dips. Recorded at check 1. **Teaching the tool that line is now the cheapest
+   thing on the list**, and it is `tools/` work for the close-out, not a change made mid-run.
+2. **The correction was independently reviewed before it was written, and the review changed it.**
+   Three adversarial lenses (factual / operator / wave-through) all returned *revise*: the first
+   draft withdrew the hand order **and deleted the only fallback**, leaving an operator who meets a
+   grammar mismatch at 20:00 with no compliant action but to abandon the run. The remedy — *if it
+   is zero, do not edit the regex at the bench; diff, mark, and soak anyway* — is theirs, not mine.
+   Per CLAUDE.md's 2026-09-06 rule, a self-review would not have substituted for it.
+3. **The marker cannot be appended to a live capture, and this cost one.** `log2file` holds its own
+   file handle and position; the `###` line appended from another process was **silently
+   overwritten by the filter's next flush** — `grep -c '^###'` returned 0 a minute later, no error.
+   The marker now lives in a crash-safe sidecar, `firmware/logs/<capture>.marker`, to be
+   concatenated into the capture before gzipping. Deliverable 2 rewritten to say so.
+4. **The marker's text is reproduced verbatim below because its sidecar is in an ignored
+   directory.** `.gitignore:27` ignores `/firmware/logs/`, correctly — the raw captures do not
+   belong in the tree. But that left a 48 h run's entire identity resting on one untracked file and
+   a session that had already crashed once today. **A provenance line that exists only in an
+   ignored directory is a note, not provenance.** Owner's call, and the fix is here rather than in
+   `.gitignore`:
+
+   ```text
+   ### dab312b M5 D-C run 2 - depthcharge-binance, flashed 2026-09-07 09:20; carries D-C §1 (>24 h continuous), D-A4's board box via check 7, and D12's reading (do >=2x med crossings occur after calibration); banner at main.cpp:114 still reads "DepthCharge M4 stage D" and is not this image
+   ### dab312b-attach The 10 `rst:0x..` lines in this capture's first six seconds (14:49:16-14:49:22, TG0WDT_SYS_RST and RTCWDT_RTC_RST) are the monitor's DTR/RTS auto-reset chatter at attach, NOT board instability: the panel clock restarts once, uptime is monotonic from up=10s, and connects=1. soak_report correctly flags "the two boot witnesses DISAGREE: 1 by panel clock, 10 by ROM" and does not mis-segment; its message names the mid-boot case (ROM < clock) and not this one (ROM > clock, monitor attach) -- a close-out note for the tool, not a defect in the run.
+   ```
+
+   If the sidecar is lost, retype it from here. The capture it belongs to is
+   `firmware/logs/device-monitor-260907-144913.log`.
+5. **The banner was NOT fixed first, and that is the owner's trade.** `main.cpp:114` still reads
+   *"DepthCharge M4 stage D"*. Rebuilding for a cosmetic string would have started a 48 h soak on a
+   binary with **no shake-out**, discarding the 4.10 h of continuous single-boot running that is
+   the only reason to trust the image already on the board. Opened as **ROADMAP D13**, with the
+   note that the fix is not only the string: §6 leaves the build-identifier question open and
+   §9's 2026-08-29 rule makes it a new decision rather than part of the bug.
+6. **The pre-flight capture is committed, because a deliverable met from evidence nobody keeps is
+   not met.** `hardware/bench-2026-09-07-D-C-preflight.log.gz` plus its record; round trip verified
+   byte-identical before the source was left behind. It is the **only hardware proof `RE_RESEED`
+   has** — 1,473 of 1,473, including the `cover=-/-` sentinel — and every previously committed
+   capture predates D-A4 and contains none.
+
+**The pre-flight, and it was an accident worth keeping.** Started as a two-minute confidence check;
+the workstation crashed and the monitor ran on until it died, giving **4.10 h, one boot, no
+watchdog reset**. All four of §2's gaps confirmed off the board: `-- age` reads `median 19992 ms,
+grey at 39985 ms after 32 sample(s)`; `-- ping : rtt 245 ms (worst 2973 ms)`; `socket up: … largest
+internal before=102388 after=51188`; and the census is non-zero on every owned grammar. **The
+39,985 ms threshold is not drift from the brief's 39,927.94** — both are `2.0 × median`, over the
+board's rolling median and the harness corpus respectively.
+
+**Run 2's shape, stated so the reading is not surprised by it.** Ten `rst:0x..` lines in the first
+six seconds are the monitor's DTR/RTS auto-reset chatter, not instability; `soak_report` flags the
+disagreement (*1 by panel clock, 10 by ROM*) and does **not** mis-segment. Its message names the
+mid-boot case (ROM < clock) and not this one — a close-out note for the tool.
+
+**Nothing about §4's seven checks is answered by any of this.** The pre-flight closes deliverable 1
+and nothing else.
+
+**Exact next step.** **Let it run, and stop on the reading rather than the clock.** Target 48 h,
+not 24: §1 needs one continuous stretch over 24 h and stage E took a watchdog reset at 32.25 h, so
+a single 24 h attempt has no second chance. `cover=` and `triggers=` say whether it ran long
+enough; `below>0` says more hours will not help. When it ends: concatenate the `.marker` sidecar
+into the capture, gzip it beside the others in `hardware/`, and read the seven checks — **check 1
+by hand off `socket up:`, check 7 off `(b3)`'s per-boot table**, recording `hold-overflow`,
+`unbracketed` and `declined(no-hold)` yourself, since the `adopted>0` branch short-circuits past
+all three.

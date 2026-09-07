@@ -518,12 +518,23 @@ which is the reason the constraint exists.
    nothing and this capture cannot name its own image.
 2. **The crash must land first.** Six task-watchdog aborts at a fixed PC make a 24 h stretch
    impossible, and every hour of soak spent before that is an hour that cannot close the box.
+   > **SUPERSEDED 2026-09-07 — it is not a gate, and the premise it rested on is refuted.** Stage E
+   > ruled the crash a separate stage and carried it as backlog **D10** (`ROADMAP.md`), then went
+   > **27.81 h continuous in one boot** with **one** reset in 32.25 h against six here. So a 24 h
+   > stretch is demonstrably reachable on the current image and the second run is not blocked. The
+   > defect is real and unowned; it is no longer this item's to hold the run for.
 3. **`tools/soak_report.py` reads the file as one series and this file was seven.** Its
    `THE RUN` section reports `board uptime 10s -> 16014s (4.45 h)` — the *last boot* — and its
    grey-percentage and watchdog-versus-socket sections silently mix boots. It correctly prints
    `REBOOTS` with all six transitions, so nothing is hidden, but a reader taking the header at face
    value would understate the run by 30 h. **Per-boot segmentation is a tool change for the
    close-out, not a reading**; every per-boot figure in this record was produced outside the tool.
+   > **DONE 2026-09-06 — the close-out made the change**, in `tools: soak_report reads the re-seed
+   > ledger and segments per boot`. The tool segments on the panel clock (chosen over `up=` because
+   > a `-- reseed` or `-- pipe` line carries no `up=`), cross-checks the count against the ROM's
+   > `rst:` lines, and prints a per-boot table in every section that has one. Re-run over this
+   > capture it reports **7 boots by panel clock, 7 by ROM**. The next run does not produce these
+   > figures by hand.
 4. **`soak_report.py`'s census enrols five grammars; the report uses nine.** `owned()` is called
    for `SOAK`, `-- pipe`, `-- signal`, `-- age` and `autopsy assoc=`. `RE_STALE`, `RE_LIVE`,
    `RE_GREYFOR` and `RE_SOCK_UP` are read and printed but never enrolled, so if one of them drifts
@@ -531,4 +542,9 @@ which is the reason the constraint exists.
    the four grammars it does not cover. All four matched here (5,343 / 5,343 / 5,343 / 8), so
    nothing is wrong with **this** report; the gap is in the guard, not the reading. Five `owned()`
    calls at `tools/soak_report.py:175, 328, 380, 381, 428`.
+   > **CLOSED 2026-09-06 at the M5 close-out.** All four are enrolled, and so is a grammar that did
+   > not exist when this was written — `-- reseed`, check 7's line — which had been surviving the
+   > pre-flight by not being owned by anything. The census now names its exceptions and says why
+   > each is one. **Read the count in `tools/soak_report.py`, not here**; a number copied into a
+   > second file is a number that will disagree with the first, and this one already has.
 5. **Check 5's wording should follow the firmware**: per boot, not per connection.
