@@ -72,19 +72,30 @@ inline constexpr std::uint8_t kPanelBrightness = 224;
 // is in panel_budget.hpp and pinned against that run's numbers in
 // test_panel_budget.cpp.
 //
-// Below 3 the two-tone grey ramp the stale state depends on starts to band, and
-// at that point the second buffer is the better thing to keep.
+// The bounds `Panel::begin()`'s ladder walks between — what the panel may TRY.
 inline constexpr int kMaxColourDepth = 6;
-inline constexpr int kMinDoubleBufferedDepth = 3;
 inline constexpr int kMinColourDepth = 2;
 
-// Internal DMA-capable heap held back from the panel, taken BEFORE the WebSocket
-// client exists. The panel's colour depth is cosmetic and the feed is not, so
-// this errs toward a dimmer ladder rather than a TLS handshake that cannot
-// allocate. It has to cover two esp_websocket_client handles' buffers (~10 KiB
-// each — the spare-handle reconnect, ARCHITECTURE §9 2026-08-10), one live
-// mbedTLS context, the client task's stack, and working slack for a reconnect's
-// handshake on a warm heap.
+// `kMinDoubleBufferedDepth` moved to `panel_budget.hpp` at the M5 close-out and
+// is included from there, WITH the sentence that justified it (*"below 3 the
+// two-tone grey ramp the stale state depends on starts to band"*) — which used
+// to sit above this line and would otherwise have been left here reading as
+// documentation for the two bounds it contradicts. It is the rung
+// `venue_budget.hpp` derives its bound against, and that header could not be
+// host-compiled while it lived here; see the account in `panel_budget.hpp`.
+// The two bounds above stay: what the panel may try is a different question
+// from what the budget assumes it will get.
+
+// ===========================================================================
+// THE RESERVE'S DERIVATION. The VALUE is `kReserveInternalBytes` in
+// `panel_budget.hpp`; this is the evidence for it and does not move.
+// ===========================================================================
+//
+// Held back from the panel and taken BEFORE the WebSocket client exists,
+// because the panel's colour depth is cosmetic and the feed is not. What it has
+// to cover, and what each item measured, is below. **Changing the constant means
+// re-reading this block** — the header that holds the value says so and points
+// back here, which is the one thing that must stay true of the split.
 //
 // NOW MEASURED, AND THE GUESS WAS NEARLY EXACT — which is luck, and is written
 // down so nobody mistakes it for judgement. On the 2026-08-10 run the network
@@ -262,16 +273,18 @@ inline constexpr int kMinColourDepth = 2;
 // replaces it with the measured two-session draw**, printed at every fetch, and
 // if that exceeds 104 KiB this number moves again and the panel loses a rung —
 // which is the honest outcome, not a failure.
-inline constexpr std::uint32_t kReserveInternalBytes = 104u * 1024u;
-
-// What begin() will really take: framebuffer + DMA descriptors + the allocator's
-// own bookkeeping. The arithmetic lives in panel_budget.hpp, ESP-IDF-free and
-// host-tested against the numbers this board printed, because the first version
-// of it counted the framebuffer alone and was wrong by 44% — predicted 65,536
-// against 94,468 measured, an error only a conservative reserve concealed.
-constexpr std::uint32_t panel_cost_bytes(int depth, bool double_buffered) noexcept {
-    return panel_total_bytes(kPanelWidth, kPanelHeight, depth, double_buffered);
-}
+//
+// **THE VALUE ITSELF MOVED TO `panel_budget.hpp` AT THE M5 CLOSE-OUT, AND THIS
+// DERIVATION DID NOT.** `venue_budget.hpp` subtracts this constant and could not
+// be compiled on the host while it lived behind the HUB75 driver, so the two
+// assertions it carries were checked only by whichever arm `pio` selected. The
+// reasoning above is the evidence for the number and belongs where the panel is
+// described; the number is an input to an arithmetic bound and belongs where
+// that bound can be compiled. Changing it still means re-reading everything
+// above — the header there says so and points back here.
+//
+// `panel_cost_bytes` moved with it, for the same reason and to the file its
+// arithmetic already lived in.
 
 // Everything the bench needs to close stage D's "known unknowns" in one line.
 struct PanelReport {

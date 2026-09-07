@@ -1,4 +1,12 @@
-// firmware/src/panel_budget.hpp — what the HUB75 driver will really cost, before it takes it.
+// firmware/src/panel_budget.hpp — what the HUB75 driver will really cost before
+// it takes it, what is held back from it, and the panel it is all about.
+//
+// The second and third clauses arrived at the M5 close-out and the file's title
+// changed with them, because a reader grepping for `kReserveInternalBytes` — the
+// heap held back FROM the driver, which is the opposite of what it costs — would
+// not otherwise look here. The reason they are here at all is coverage rather
+// than tidiness: `venue_budget.hpp` needs them and cannot reach `panel.hpp`
+// without the driver. See that header's own note.
 //
 // The colour depth has to be chosen BEFORE begin(), because a failed begin()
 // leaks (panel.cpp says why). That makes this arithmetic load-bearing: get it
@@ -184,6 +192,76 @@ constexpr int panel_actual_refresh_hz(int width, int height, int depth) noexcept
                                          panel_transition_bit(width, height, depth));
     return static_cast<int>((static_cast<std::int64_t>(nominal) * panel_actual_clock_hz()) /
                             kI2sClockHz);
+}
+
+// ===========================================================================
+// THIS PANEL, AND WHAT IT COSTS AT THE RUNG THE VENUE BUDGET IS DERIVED AGAINST
+// ===========================================================================
+//
+// MOVED HERE FROM `panel.hpp` AND `ladder_render.hpp` AT THE M5 CLOSE-OUT
+// (2026-09-06), AND THE REASON IS COVERAGE RATHER THAN TIDINESS.
+// `venue_budget.hpp` holds two `static_assert`s that bound what an adapter may
+// take out of internal SRAM, and it could not be compiled on the host at all,
+// because it needed these four names and they lived behind `panel.hpp` — which
+// includes the HUB75 driver. So its assertions were checked only by `pio run`,
+// and then only for the one arm that build selects: **a commit changing the
+// venue budget was green on all 52 ctest tests whatever it said.** That is the
+// same shape M5 stage D-A3 found in `venue_build.hpp` (ARCHITECTURE §9,
+// 2026-08-30), one file further along, and the fix is the same one: make the
+// header reachable from a host test and let the three venue arms compile it.
+//
+// This file is the right home rather than a convenient one. It is already
+// ESP-IDF-free by design and already host-tested (`test_panel_budget.cpp`), and
+// every name below is an INPUT to the arithmetic above it: the panel's physical
+// geometry, and the rung the double-buffer floor is measured at.
+// `panel.hpp` still includes this header, so nothing that used these names has
+// to change; what changes is that `venue_budget.hpp` no longer needs the driver
+// to reach them.
+
+// The physical panel. One HUB75 module, and every derived row and column count
+// in `ladder_render.hpp` comes from these two.
+inline constexpr int kPanelWidth = 64;
+inline constexpr int kPanelHeight = 64;
+
+// THE RUNG THE VENUE BUDGET IS DERIVED AGAINST, and it is a panel decision
+// carried here because the budget is what reads it.
+//
+// Below 3 the two-tone grey ramp the stale state depends on starts to band, and
+// at that point the second buffer is the better thing to keep. `panel.hpp`'s
+// ladder still owns the SEARCH — `kMaxColourDepth` and `kMinColourDepth` are the
+// bounds `Panel::begin()` walks between and they stay there, because they are
+// about what the panel may try; this one is about what the budget assumes it
+// will get, which is a different question and the one `venue_budget.hpp` asks.
+inline constexpr int kMinDoubleBufferedDepth = 3;
+
+// Internal DMA-capable heap held back from the panel, taken BEFORE the WebSocket
+// client exists — the value only. **THE DERIVATION IS IN `panel.hpp` AND IS NOT
+// REPEATED HERE**, because two copies of a paragraph is what this project keeps
+// deleting: the first draft of this move duplicated its opening sentence and the
+// two had already drifted in wording on the day they were written.
+//
+// What is here is the number, because `venue_budget.hpp` subtracts it and a
+// bound that cannot be compiled is not a bound. What is there is why it is that
+// number: what the reserve has to cover, the 2026-08-10 measurement, the three
+// routes out of the mbedTLS fragment size that were checked and closed, and the
+// forecast the 24 KiB raise was made against — flagged there as a forecast.
+//
+// **104 KiB and not 96**: M5 stage D-A2 raised it to cover a CONCURRENT second
+// TLS session, the REST seed fetch running while the WebSocket is up.
+// **Changing this value means reading `panel.hpp`'s block first.**
+//
+// D-C's first run measured the outcome: `largest internal before=53236` at the
+// one genuine mid-session reconnect, 3.18× the 16,717 B a session needs, so the
+// reserve is CONFIRMED at 104 KiB rather than moved.
+inline constexpr std::uint32_t kReserveInternalBytes = 104u * 1024u;
+
+// What begin() will really take on THIS panel: framebuffer + DMA descriptors +
+// the allocator's own bookkeeping, at a given depth. The general arithmetic is
+// above and is pinned against the numbers the board printed, because the first
+// version of it counted the framebuffer alone and was wrong by 44% — predicted
+// 65,536 against 94,468 measured, an error only a conservative reserve concealed.
+constexpr std::uint32_t panel_cost_bytes(int depth, bool double_buffered) noexcept {
+    return panel_total_bytes(kPanelWidth, kPanelHeight, depth, double_buffered);
 }
 
 }  // namespace depthcharge::fw

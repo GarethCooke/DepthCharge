@@ -74,6 +74,7 @@
 #include <depthcharge/display_snapshot.hpp>
 
 #include "ladder_font.hpp"
+#include "panel_budget.hpp"  // kPanelWidth / kPanelHeight — ESP-IDF-free
 
 namespace depthcharge::fw {
 
@@ -279,8 +280,11 @@ constexpr Palette palette_for(FeedStatus status) noexcept {
 // Geometry — derived, asserted, and clamped to what engine/ publishes
 // ---------------------------------------------------------------------------
 
-inline constexpr int kPanelWidth = 64;
-inline constexpr int kPanelHeight = 64;
+// `kPanelWidth` / `kPanelHeight` moved to `panel_budget.hpp` at the M5 close-out
+// — same namespace, same values, and included below, so every use in this file
+// is unchanged. They went where the cost arithmetic is because `venue_budget.hpp`
+// needs them and could not reach them without pulling in the HUB75 driver; the
+// full account is in that header.
 
 inline constexpr int kHeaderRows = kGlyphHeight;  // one line of ladder_font
 inline constexpr int kRuleRows = 1;
