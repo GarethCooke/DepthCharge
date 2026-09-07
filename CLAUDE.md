@@ -130,6 +130,36 @@ because it has cost an hour more than once. (This desk is configured with the **
 presets — `build/host` holds a *MinGW Makefiles* cache, so `cmake --preset host` fails with a
 generator mismatch. Use `--preset host-mingw` for configure and ctest.)
 
+**A split's prose must name a commit by its message, never by its ordinal.** An ordinal restates a
+fact the table already owns, and it goes stale silently the moment a commit is inserted — which is
+how M5 stage C's *exact next step* came to instruct an executor to build the wrong commit with the
+wrong rows. A message is the same string the table holds, so there is nothing left to drift. Same
+family as B2's *"the headline count did not survive its own table"*: **the fix for a fact stated
+twice is to state it once, not to check it twice.** Note what this rule is NOT: the first draft of
+it ended *"when the commit count changes, re-read the prose"*, and that is the species the paragraph
+about sentinel guards above already refuses — *a check that depends on the right person reading the
+right document at the right moment is not a check*. Proposed at M5 stage C and applied to that
+brief's own prose before it was proposed, so it arrived as a rule with an instance rather than a
+suggestion; adopted here at the M5 close-out. Tooling rather than architecture, so no §9 row.
+
+**A self-review does not substitute for a failed independent one.** If the review a change is owed
+does not run — the fan-out fails, an agent limit is hit, the pass is abandoned — the change waits
+for it rather than proceeding on a substitute. Reviewing your own work and recording that as *the
+review* is the reassuring-instrument shape in its hardest form, because the instrument's scope is
+the reviewer's own attention: it reports coverage and supplies none.
+
+**M5 stage D-A4 is the worked example, and the evidence is what happened when the review did not
+run.** Every substantive defect that stage produced was found by something adversarial — the
+independent review, the per-commit ladder, or the owner at the split — and none by the author
+re-reading its own work. So the sharp form of the lesson is not *"review works"*. On D-A4's first
+attempt the fan-out failed, an inline self-review stood in, and that pass found one real defect
+**and missed a bracket/continuity conflation the same session had reintroduced at a second site
+hours earlier**. Only the re-run independent review caught it. A self-review is not weaker in
+proportion to effort; it is blind in exactly the places the author is, which is where the defects
+are. **This IS architecture and it has a §9 row (2026-09-06)** — by the 2026-08-18 precedent, what
+is wrong is not the command but the belief the command licenses, and "reviewed" is a claim about
+coverage in the same way "verified" is.
+
 ## Hand-off protocol (end of every session)
 
 1. Append to the brief's **Session log**: date · model · done · decisions **with why** ·
