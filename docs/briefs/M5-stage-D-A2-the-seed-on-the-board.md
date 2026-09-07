@@ -218,7 +218,11 @@ two… deliberately the only two”* amended rather than quietly falsified.
 ever non-zero on the bench, raise this constant”* — it was (`oversize=4` within 90 s), so it is.
 **And the paragraph above it is Anvil's reasoning, false at a diff venue:** *“a dropped frame costs one
 refresh”* holds only where frames are idempotent full replaces. Here a dropped diff drops the whole
-book. **64 KiB is 2.29× the largest observed message on this venue's stream (28,639 B)**, deliberately
+book. **64 KiB is 2.29× the largest observed message on this venue's stream (28,639 B)** *[**SUPERSEDED
+2026-09-06, M5 close-out: 1.060×.** A day on the wire put the largest accepted message at 61,823 B of
+65,536 over 1,188,879 messages. Same quantity — capacity over the largest observed — with "observed"
+meaning 3,119 corpus messages here and a day's population there. The sizing decision is not reopened
+and is vindicated 5,000-fold; see `frame_pipe.hpp`.]*, deliberately
 near the 1.9× this constant was originally sized at for Anvil. Affordable only because the slabs are
 in PSRAM: +196,608 B would have taken the D-A1 board past no-panel by a factor of five; internal cost
 is now zero.

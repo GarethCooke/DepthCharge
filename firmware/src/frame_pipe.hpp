@@ -124,6 +124,42 @@ namespace depthcharge::fw {
 // 8,726 B (7.5x) and Kraken's is 1,970 B (33x), so 64 KiB is generous there and
 // costs them nothing that matters — see the cost note below.
 //
+// ===========================================================================
+// **THE MARGIN IS 1.060x, NOT 2.29x** (D-C's check 4, ruled at the M5 close-out)
+// ===========================================================================
+//
+// A day's population moved it. The 2026-08-30 soak accepted **1,188,879**
+// messages through this pipe and the largest was **61,823 B of 65,536** — 94.3%
+// of the cap — with per-boot maxima of 47,234 / 52,799 / 61,823 / 44,000 /
+// 57,218 / 56,607 / 52,959 B. One message was declined outright (`oversize`
+// reached 1, in B1). `hardware/bench-2026-08-30-D-C-soak.md` §6.
+//
+// **THE RULING, AND IT IS THE ONE THE CLOSE-OUT WAS ASKED FOR: the two figures
+// are the SAME QUANTITY, and the measurement supersedes.** 2.29x was not a
+// projection and it was not a different measure — it is `kFrameCapacity` over
+// the largest observed message, exactly as 1.060x is. What differs is the
+// population: 3,119 messages from the committed corpus against 1,188,879 from a
+// day on the wire, and **the smaller one could not have contained the tail it
+// was being used to bound.** So neither figure was wrong when it was written and
+// the earlier one is not corrected; it is SUPERSEDED, and the sentence it
+// supported — *"2.29x the largest ever observed"* — is now false because "ever
+// observed" moved.
+//
+// This is the same species as the two other bounds this milestone re-ruled:
+// D-C's check 2 (jitter clearance 1.99x -> 1.024x, ten intervals against 6,183)
+// and the median convention's *"agree to 0.1 ms at Kraken"* (four slices, three
+// of them incapable of disagreeing). Three bounds, one shape — **a margin
+// computed over a population that could not contain its own worst case.**
+// ARCHITECTURE §9, 2026-09-06.
+//
+// **WHAT DOES NOT FOLLOW: the sizing is not reopened.** 64 KiB took the overflow
+// rate from 13 of 3,119 (0.417%) to **1 of 1,188,879 (0.000084%)**, a
+// 5,000-fold improvement, so the decision is vindicated in the direction it was
+// made — and §9 keeps the sizing question closed to a reading. What the reading
+// changes is what may be CLAIMED for the constant. A 1.060x margin against a
+// message maximum that has moved once is a headroom statement, not a guarantee,
+// and the next stage that wants to treat it as one has to measure again.
+//
 // WHY IT IS AFFORDABLE NOW AND WAS NOT BEFORE. 4 x 64 KiB is 262,144 B, against
 // 65,536 B at the old size. In `.bss` that was unthinkable: D-A1 measured the
 // Binance build reaching `Panel::begin()` with a 35,628 B budget, so +196,608 B

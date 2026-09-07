@@ -170,6 +170,14 @@ messages (0.417%) overflowed — one every ~23 s. 64 KiB is **2.29×** the large
 D-A1's 70 s window saw `oversize=0` where ~2.4 were expected, so it neither confirms nor refutes.
 A day's population does. **The sizing question is closed**; this is confirmation, not re-opening.
 
+> **RULED AT THE M5 CLOSE-OUT (2026-09-06): a day's population put the margin at 1.060×, and the
+> 2.29× is superseded rather than wrong.** Largest accepted **61,823 B of 65,536** over 1,188,879
+> messages, one declined. Same quantity — capacity over the largest observed message — with
+> "observed" meaning 3,119 corpus messages in one case and a day on the wire in the other.
+> **The sizing stays closed and is vindicated**: 0.417% overflow → 0.000084%. What the reading
+> changes is what may be claimed for the constant. `frame_pipe.hpp` carries the ruling beside
+> the number.
+
 **5 · The uncalibrated-default window.** `kUncalibratedThresholdMs` **is** the ceiling, so the
 pre-calibration threshold is **60 s** under the Binance policy, for the **159.7 s** `kMinSamples = 8`
 takes at a 20 s cadence — **on every connection, and the board reconnects**. Record how many

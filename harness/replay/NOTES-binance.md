@@ -1955,6 +1955,27 @@ Raised to **64 KiB = 2.29× the largest observed**, deliberately near the 1.9× 
 originally sized at, so the venues are held to one standard. Affordable only because the slabs are in
 PSRAM: +196,608 B of `.bss` would have taken the D-A1 board past no-panel by a factor of five.
 
+> **SUPERSEDED 2026-09-06 (M5 close-out, ruling on D-C's check 4): the margin is 1.060×.** The
+> 2026-08-30 soak put **1,188,879** messages through the pipe and the largest accepted was
+> **61,823 B of 65,536** — 94.3% of the cap — with one message declined outright (`oversize`
+> reached 1). `hardware/bench-2026-08-30-D-C-soak.md` §6.
+>
+> **Same quantity, different population, and that is the ruling.** 2.29× is `kFrameCapacity` over
+> the largest observed message and so is 1.060×; neither is a projection and neither is a
+> different measure. What changed is what "observed" means — 3,119 messages of committed corpus
+> against a day on the wire — so the earlier figure is **not corrected, it is superseded**, and
+> the phrase *"the largest ever observed"* is what went stale rather than the arithmetic.
+>
+> **The sizing decision is not reopened and is vindicated in the direction it was made:** the
+> overflow rate went from 13 of 3,119 (0.417%) to 1 of 1,188,879 (0.000084%), a 5,000-fold
+> improvement. What the reading changes is what may be claimed for the constant — 1.060× against
+> a maximum that has already moved once is headroom, not a guarantee.
+>
+> Third of three bounds this milestone re-ruled for the same reason, and the family is the point:
+> **a margin computed over a population that could not contain its own worst case.** The others
+> are check 2's jitter clearance (1.99× over ten intervals → 1.024× over 6,183) and the median
+> convention's *"agree to 0.1 ms at Kraken"*. ARCHITECTURE §9, 2026-09-06.
+
 **Before → after, same board, same evening:**
 
 | | 16 KiB slot | 64 KiB slot |
