@@ -25,6 +25,7 @@ rather than joined.
 
 Usage:  python tools/soak_report.py firmware/logs/FROZEN-kraken-b3-soak-20260822.log
 """
+import gzip
 import hashlib
 import math
 import re
@@ -369,8 +370,40 @@ def per_boot_table(per, header, row_of, total_of=None, absent='(no lines)'):
         print(f'  TOTAL {total_of(per)}')
 
 
-def main(path):
+def read_capture(path):
+    """The capture's bytes, gzipped or not, with the sha256 of what is ON DISK.
+
+    THE COMMITTED CAPTURES ARE `.gz` AND THIS TOOL COULD NOT READ THEM, which is
+    a gap between the instrument and the evidence rather than a convenience:
+    `hardware/bench-2026-08-30-D-C-soak.log.gz` is the artefact in the tree, and
+    running the tool on it exited 1 with *"NO SOAK LINES PARSED - the grammar has
+    drifted from the firmware"* — a grammar verdict on a compression format.
+    That is a false diagnosis of exactly the kind this file exists to remove, and
+    it meant every write-up citing "reproduces from `python tools/soak_report.py
+    <capture>`" was citing a command that fails on the committed input.
+
+    The sha256 stays the sha256 of the FILE, not of the inflated bytes, so it
+    still matches what a bench record pins and what `git` stores.
+    """
     blob = open(path, 'rb').read()
+    digest = hashlib.sha256(blob).hexdigest()
+    if blob[:2] == b'\x1f\x8b':
+        # BOTH DIGESTS, because the bench records pin the INFLATED one and git
+        # stores the compressed one, and a reader checking a provenance line
+        # needs whichever the record used. `bench-2026-08-22-kraken-b3-soak.md`
+        # and M4 stage D pin `6a9139f6…fa8` — the sha of the 33,481,892 B frozen
+        # log, not of the 3,373,814 B gzip beside it — and D-C's record pins
+        # `d4c4fd12…` the same way. Printing only the file's own sha would leave
+        # every one of those claims unverifiable from the committed artefact,
+        # which is the gap this whole change is closing.
+        raw = gzip.decompress(blob)
+        return raw, digest, len(blob), hashlib.sha256(raw).hexdigest()
+    return blob, digest, len(blob), None
+
+
+def main(path):
+    raw, digest, on_disk, inflated_digest = read_capture(path)
+    blob = raw
     text = blob.decode('utf-8', 'replace').replace('\r', '')
 
     # THE TIMESTAMP PREFIX, STRIPPED ONCE AND IN ONE PLACE.
@@ -389,8 +422,11 @@ def main(path):
 
     section('PROVENANCE')
     print(f'file    : {path}')
-    print(f'sha256  : {hashlib.sha256(blob).hexdigest()}')
-    print(f'bytes   : {fmt(len(blob))}')
+    print(f'sha256  : {digest}   (of the file on disk)')
+    if inflated_digest:
+        print(f'sha256  : {inflated_digest}   (INFLATED — the one bench records pin)')
+    print(f'bytes   : {fmt(on_disk)} on disk'
+          + (f', {fmt(len(blob))} inflated (gzip)' if inflated_digest else ''))
     print(f'lines   : {fmt(blob.count(NEWLINE))}')
     print(f'ts-prefix: {fmt(prefixed)} line(s) carried the monitor timestamp')
     marks = RE_MARKER.findall(text)
