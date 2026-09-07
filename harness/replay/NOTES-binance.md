@@ -634,13 +634,24 @@ the committed files independently, through the C++ reader:
 
 | slice | pings | median interval |
 | --- | ---: | ---: |
-| `binance_atomeur_d100ms` | 5 | 19,951.7 ms |
-| `binance_atomeur_deepseed` | 5 | 20,011.6 ms |
-| `binance_btcusdt_d1000ms` | 3 | 20,013.3 ms |
+| `binance_atomeur_d100ms` | 5 | 19,947.7 ms |
+| `binance_atomeur_deepseed` | 5 | 19,962.8 ms |
+| `binance_btcusdt_d1000ms` | 3 | 19,973.9 ms |
 | `binance_btcusdt_reconnect` | 2 | 20,054.2 ms |
 
 against the **19,970 ms** median over 23 intervals recorded above. The four are within
-0.1–0.4% of it.
+**0.02–0.42%** of it — 0.0195%, 0.0361%, 0.1117% and 0.4216% respectively.
+
+> *This line read "within 0.1–0.4%" until the M5 close-out and was left standing when the figures
+> below it moved, which put two of the four outside it in each direction. A range quoted for a
+> column is a second statement of that column and goes stale with it; the per-slice deviations are
+> spelled out instead.*
+
+> **The first three moved at the M5 close-out (2026-09-06)** — they read 19,951.7 / 20,011.6 /
+> 20,013.3 until `harness/src/trace.cpp` stopped carrying its own interpolated median. The
+> fourth did not move: one interval is an odd count, where the two conventions agree by
+> definition. Same files, same pings, one convention. See § *Found at review: the cadence
+> figures in this file came from the wrong median*.
 
 **These medians are only obtainable from `ctl.recv_ns`.** A ping's record is written when the
 main loop next flushes, so `binance_atomeur_deepseed`'s three pings share **one** `rx_ns` —
@@ -1316,32 +1327,40 @@ rule is add rows only.
 
 ### Found at review: the cadence figures in this file came from the wrong median
 
+> **CLOSED 2026-09-06 (M5 close-out). `harness/src/trace.cpp` now calls
+> `depthcharge::lower_median`, so there is one convention and the right-hand column below no
+> longer exists anywhere.** The five moved figures were written down before the run that
+> printed them and every one landed exactly; `taxonomy_pins.inc`'s Binance comment carries
+> them and the arithmetic. The section is kept as written, not rewritten past, because what
+> it records is how the divergence survived — and because **one sentence in it is wrong and
+> the closing measured it**: see *The Kraken bound was itself unmeasured* below.
+
 **`sample_window.hpp` says the median convention "matters enough to have one home" — a
 lower median by nearest rank, because an interpolated one invents an interval that never
 occurred on the wire. `harness/src/trace.cpp`'s statistics pass carries a second copy and
 interpolates.** `LivenessClock` and `AgeEstimator` use the shared rule; `dc_replay`'s
 report line does not, and it is `dc_replay`'s number that has been quoted.
 
-| trace | intervals | the clock (`lower_median`) | the report (interpolated) |
+| trace | intervals | the clock (`lower_median`) | the report (interpolated, until 2026-09-06) |
 | --- | ---: | ---: | ---: |
 | `anvil_101_baseline` | 180 | 500.1 ms | 500.1 ms |
-| `kraken_*` (all four) | 59–95 | — agree to 0.1 ms — | |
+| `kraken_*` (all four) | 58–94 | — agree to 0.1 ms — | |
 | `binance_atomeur_d100ms_20260824` | 4 | 19,947.7 | **19,951.7** |
 | `binance_atomeur_deepseed_20260824` | 4 | 19,962.8 | **20,011.6** |
 | `binance_btcusdt_d1000ms_20260824` | 2 | 19,973.9 | **20,013.3** |
 | `binance_btcusdt_DEFECT_silent_stream_20260826` | 2 | 19,950.6 | **20,004.8** |
 | `binance_atomeur_d100ms_liveness_20260826` | 10 | **19,964.0** | 19,969.4 |
 
-The right-hand column is what `taxonomy_pins.inc`'s Binance comment quotes
+The right-hand column is what `taxonomy_pins.inc`'s Binance comment quoted
 (*19,951.7 / 20,011.6 / 20,013.3*) and what B1's session log quotes for the silent-stream
-fixture (*20,004.8*). **So the cadence recorded for this venue is not the cadence the clock
-on the board computes.** At Anvil and Kraken the two agree, because those cadences are flat
-— the coincidence class again, and the reason this survived three milestones.
+fixture (*20,004.8*). **So the cadence recorded for this venue was not the cadence the clock
+on the board computes.** At Anvil and Kraken the two agree closely, because those cadences are
+flat — the coincidence class again, and the reason this survived three milestones.
 
-It is ~5 ms at worst and changes no decision. What it costs is the property
+It is ~5 ms at worst and changes no decision. What it cost is the property
 `sample_window.hpp` asserts outright: that a C++ figure and a Python figure over the same
 trace are comparable, *"which is how several of this project's numbers have been checked"*.
-On the report path that is false today.
+On the report path that was false for the whole of M5.
 
 **Recorded, not fixed — and the load-bearing reason is golden movement, not sweep size.**
 Adopting the shared convention rewrites the cadence figures quoted inside
@@ -1349,21 +1368,65 @@ Adopting the shared convention rewrites the cadence figures quoted inside
 split reviewable: bundled into this stage, nothing in the diff would distinguish a convention
 change from a defect. **A convention change that moves pins must be its own stage, so that the
 moved pins have nothing else in the diff to hide behind.** (The sweep across three NOTES files
-is real and is not the argument; it is the consequence.)
+is real and is not the argument; it is the consequence.) *Honoured at the close-out: the
+convention change and the pin movement are two commits and the second holds nothing else.*
 
 **Owner: M5 close-out** — not C, whose evening is already the threshold, the ceiling's changed
 role, the panel decisions and strain 26's four unbuilt remedies. **Expiry:** when `harness/`
-and `engine/` compute the median by one convention. **Tripwire:** if any stage before the
-close-out needs to quote or re-pin a Binance cadence figure, this closes first. *"Its own
+and `engine/` compute the median by one convention — **met 2026-09-06**. *"Its own
 scope" is unowned, and commit 2 of this very split exists to close an unowned clause in §9 —
 so this one is not left blank.*
+
+**The tripwire as written was against the wrong event, and the close-out rewrote it.** It read
+*"if any stage before the close-out needs to quote or re-pin a Binance cadence figure, this
+closes first"* — which fires on **quoting a cadence figure**, when the hazard is quoting one
+**from the wrong home**. The two are not the same set: M5 stage D-A4 quoted a Binance cadence
+(*a re-seed every 22.4 s in the D-C capture*) and correctly did not fire, because that figure
+is a count over a board capture and never went near `trace.cpp`'s statistics pass. A tripwire
+that fires on the wider event has to be waved through by hand every time, and a tripwire waved
+through by hand is the reassuring instrument this project keeps naming. The wording that fires
+on the hazard, and that leaves D-A4's answer standing:
+
+> **Tripwire (rewritten 2026-09-06): if any stage needs to quote or re-pin a liveness cadence
+> produced by `trace.cpp`'s statistics pass — `median_liveness_gap_ms` or `median_gap_ms`, i.e.
+> `dc_replay`'s report line — this closes first.**
 
 Carried in three places, the shape the silent-stream fixture already uses:
 `test_binance_adapter.cpp`'s two-conventions case, `taxonomy_pins.inc`'s Binance comment, and
 DESIGN strain 29 — each saying that **the correct response is to INVERT the test, not to
-delete or relax it**, and that if the close-out ships without inverting it the clause moves to
-whichever stage next touches a cadence figure rather than lapsing. ARCHITECTURE §9,
-2026-08-26.
+delete or relax it**. The close-out inverted it: the case now asserts the two paths produce
+the identical double, and it is a contract rather than an expiry. ARCHITECTURE §9,
+2026-08-26 (opened) and 2026-09-06 (closed).
+
+#### The Kraken bound was itself unmeasured, and closing the card measured it
+
+**`— agree to 0.1 ms —` in the table above is wrong, and it is wrong in the direction that
+made the divergence look harmless.** Computed over all six committed Kraken slices at the
+close-out, both conventions, same intervals:
+
+| slice | intervals | nearest rank | interpolated | divergence |
+| --- | ---: | ---: | ---: | ---: |
+| `kraken_minagbp_d25_20260817` | 94 | 998.6485 | 999.1431 | **0.4946 ms** |
+| `kraken_btcusd_d25_20260816` | 58 | 1000.1006 | 1000.2046 | **0.1040 ms** |
+| `kraken_minagbp_d25_resync_20260818` | 72 | 1000.1043 | 1000.1816 | 0.0774 ms |
+| `kraken_btcusd_d10_20260816` | 59 | 1000.3491 | 1000.3491 | 0 |
+| `kraken_btcusd_d100_20260816` | 59 | 1000.4175 | 1000.4175 | 0 |
+| `kraken_minagbp_d25_20260816` | 59 | 1000.6269 | 1000.6269 | 0 |
+
+Two exceed the stated bound and the worst exceeds it by **5×**. The three that agree exactly
+do so for a reason the bound never mentions — **an odd interval count, where the two
+conventions are the same value by definition** — so the sample that produced *"agree to
+0.1 ms"* was carrying three zeroes it could not have failed to find.
+
+And the population is named as *"all four"* when **six** Kraken slices had been committed
+eight days earlier (2026-08-17 and 2026-08-18, `git log --diff-filter=A`). Whichever four
+were read, the bound was quoted for a venue rather than for the files it was measured over.
+
+**Nothing downstream moves** — Kraken's threshold is `4.0 ×` a median that shifts by at most
+0.5 ms, and `liveness_firings` is 0 on every slice under either convention. What moves is the
+standing of the sentence: it is the third figure in this milestone found to be **a bound
+computed over a population that could not contain its own worst case**, beside D-C's check 2
+and check 4 margins. ARCHITECTURE §9, 2026-09-06.
 
 **How it was found, which is the part worth keeping.** `dc_age_probe` was written with its
 own interpolated median and quoted 19,969.4 ms as this venue's cadence into five documents
@@ -1607,6 +1670,17 @@ change this stage's decision — interpolated gives 2.0 × 19,969.35 = 39,938.7 
 a difference of **10.8 ms or 0.027%**, both strictly inside the same floor and ceiling. **So the
 clause is read as not firing, and its wording is handed back to the M5 close-out to correct or to
 overrule.**
+
+> **CORRECTED, NOT OVERRULED (M5 close-out, 2026-09-06).** C's diagnosis is accepted verbatim —
+> the hazard is quoting a cadence figure **from the wrong home**, not quoting one — and the
+> tripwire now says so: *if any stage needs to quote or re-pin a liveness cadence produced by
+> `trace.cpp`'s statistics pass (`median_liveness_gap_ms` or `median_gap_ms`, i.e. `dc_replay`'s
+> report line), this closes first.* **It was evaluated a second time before the rewrite and the
+> rewrite does not disturb that answer**: M5 stage D-A4 quoted *a re-seed every 22.4 s in the D-C
+> capture* and correctly did not fire, and under the new wording it still does not, because that
+> figure is a count over a board capture and never touched the report path. The card itself is
+> closed in the same stage — `trace.cpp` calls `lower_median` — so the rewritten tripwire guards
+> a convention that now has one home rather than a deferral that no longer exists.
 
 ### 8 · Two ground-truth traces were CRLF in the working tree for nineteen days
 

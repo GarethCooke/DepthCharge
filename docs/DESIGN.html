@@ -4000,24 +4000,58 @@ classDiagram
   <div class="strain">
     <h4>29 &middot; The median convention has two homes, and every Binance cadence figure
         came from the wrong one &mdash;
-        <em>opened 2026-08-26 at M5 stage B2, found at review, deferred with an owner</em></h4>
+        <em>opened 2026-08-26 at M5 stage B2, found at review; <b>CLOSED 2026-09-06 at the M5
+        close-out</b></em></h4>
+    <p class="verdict">
+      <b>CLOSED.</b> <code>harness/src/trace.cpp</code> calls
+      <code>depthcharge::lower_median</code>, so <code>harness/</code> and <code>engine/</code>
+      compute the median by one convention &mdash; which is this card's stated expiry. The five
+      moved figures were written down before the run that printed them and every one landed
+      exactly; the pin movement is its own commit holding nothing else, per the rule below. The
+      test that carried the divergence was <b>inverted</b>, not deleted: it now asserts the two
+      paths produce the identical double, and it is a contract rather than an expiry.
+      <b>Two things the closing found, kept because they are the reusable part:</b> the tripwire
+      was written against the wrong event (see the verdict at the foot of this card), and
+      <b>the bound that made the divergence look harmless at Kraken was itself unmeasured</b>
+      &mdash; the two conventions do not &ldquo;agree to 0.1 ms&rdquo; there, they diverge by up
+      to <b>0.4946 ms</b> on <code>kraken_minagbp_d25_20260817</code>, and the population was
+      named as four when six slices had been committed eight days earlier.
+    </p>
     <p>
       <code>sample_window.hpp</code> states the rule and says it &ldquo;matters enough to have one
       home&rdquo;: a <b>lower median by nearest rank</b>, because an interpolated median invents an
       interval that never occurred on the wire. <code>LivenessClock</code> and
       <code>AgeEstimator</code> use it. <b><code>harness/src/trace.cpp</code>'s statistics pass
-      carries a second copy and interpolates</b> &mdash; both
-      <code>median_liveness_gap_ms</code> and <code>median_gap_ms</code>.
+      carried a second copy and interpolated</b> &mdash; both
+      <code>median_liveness_gap_ms</code> and <code>median_gap_ms</code> &mdash; for three
+      milestones.
     </p>
     <p>
       Measured over every committed trace: the two agree to 0.1 ms at Anvil (500.1/500.1) and
       Kraken, and disagree on <b>every Binance capture with an even interval count</b> &mdash;
       19,947.7 vs 19,951.7, 19,962.8 vs 20,011.6, 19,973.9 vs 20,013.3, 19,950.6 vs 20,004.8,
       19,964.0 vs 19,969.4. The right-hand column is what <code>taxonomy_pins.inc</code>'s Binance
-      comment quotes and what B1's session log quotes for the silent-stream fixture, so <b>the
-      cadence recorded for this venue is not the cadence the clock on the board computes.</b> The
+      comment quoted and what B1's session log quotes for the silent-stream fixture, so <b>the
+      cadence recorded for this venue was not the cadence the clock on the board computes.</b> The
       flat cadences at the first two venues are why it survived three milestones &mdash; the
       <a href="#ar">coincidence class</a>, in a third place.
+    </p>
+    <p>
+      <b>&ldquo;AGREE TO 0.1 ms AT KRAKEN&rdquo; IS THE SENTENCE THAT MADE THIS LOOK HARMLESS, AND
+      IT IS WRONG.</b> Nobody re-measured it until the card was closed. Over all six committed
+      Kraken slices, both conventions, the same intervals:
+      <code>kraken_minagbp_d25_20260817</code> diverges by <b>0.4946 ms</b> (998.6485 nearest-rank
+      against 999.1431 interpolated, 94 intervals) and <code>kraken_btcusd_d25_20260816</code> by
+      0.1040 ms &mdash; two of six exceed the stated bound and the worst exceeds it fivefold. The
+      three that agree <em>exactly</em> do so for a reason the bound never mentions: <b>an odd
+      interval count, where the two conventions are the same value by definition</b>. And the
+      population is named as <em>&ldquo;all four&rdquo;</em> when six slices had been committed
+      eight days earlier. Nothing downstream moves &mdash; Kraken's threshold is 4&times; a median
+      shifting by at most half a millisecond, and <code>liveness_firings</code> is 0 on every slice
+      under either convention. What moves is the sentence's standing: it is the third figure in
+      this milestone found to be <b>a bound computed over a population that could not contain its
+      own worst case</b>, beside D-C's check 2 and check 4 margins, and it is the one that decided
+      how urgent the other two looked.
     </p>
     <p>
       <b>It surfaced because B2's own new code got it wrong first.</b> <code>dc_age_probe</code>
@@ -4028,23 +4062,43 @@ classDiagram
       candidate answers pins neither.
     </p>
     <p>
-      <b>DEFERRED, AND THE REASON IS GOLDEN MOVEMENT RATHER THAN SWEEP SIZE.</b> Adopting the
+      <b>DEFERRED, AND THE REASON WAS GOLDEN MOVEMENT RATHER THAN SWEEP SIZE.</b> Adopting the
       shared convention rewrites the cadence figures quoted inside
-      <code>taxonomy_pins.inc</code>, and <em>no existing golden moves</em> is precisely what makes
-      a seven-commit split reviewable: bundled into this stage, nothing in the diff would
-      distinguish a convention change from a defect. <b>A convention change that moves pins must be
-      its own stage, so the moved pins have nothing else in the diff to hide behind.</b>
+      <code>taxonomy_pins.inc</code>, and <em>no existing golden moves</em> is precisely what made
+      B2's seven-commit split reviewable: bundled there, nothing in the diff would have
+      distinguished a convention change from a defect. <b>A convention change that moves pins must
+      be its own stage, so the moved pins have nothing else in the diff to hide behind.</b>
+      <em>Honoured at the close-out</em> &mdash; the convention change and the pin movement are two
+      commits, and the second holds nothing but the moved figures. The rule cost the project ten
+      days of a wrong number in a pinned file and bought a two-line diff anyone can read; both
+      halves of that trade are worth recording.
     </p>
-    <p class="verdict">Resolves: <b>M5 close-out</b> &mdash; not C, whose evening is already the
-      threshold, the ceiling's changed role, the panel decisions and strain 26's four unbuilt
-      remedies. <b>Expiry:</b> when <code>harness/</code> and <code>engine/</code> compute the
-      median by one convention. <b>Tripwire:</b> if any stage before the close-out needs to quote or
-      re-pin a Binance cadence figure, this closes first. Carried in three places &mdash; this card,
+    <p class="verdict">Resolved by: <b>M5 close-out, 2026-09-06</b> &mdash; not C, whose evening was
+      already the threshold, the ceiling's changed role, the panel decisions and strain 26's four
+      unbuilt remedies. <b>Expiry met:</b> <code>harness/</code> and <code>engine/</code> compute
+      the median by one convention. Carried in three places &mdash; this card,
       <code>taxonomy_pins.inc</code>'s Binance comment, and
-      <code>test_binance_adapter.cpp</code>'s two-conventions case, <b>which must be INVERTED
-      rather than deleted or relaxed</b>. If the close-out ships without inverting it, the clause
-      moves to whichever stage next touches a cadence figure rather than lapsing.
-      ARCHITECTURE §9, 2026-08-26.</p>
+      <code>test_binance_adapter.cpp</code>'s two-conventions case, <b>which was INVERTED
+      rather than deleted or relaxed</b>.
+      <br><br>
+      <b>THE TRIPWIRE WAS WRITTEN AGAINST THE WRONG EVENT, and correcting it is worth more than
+      the card it guarded.</b> It read <em>&ldquo;if any stage before the close-out needs to quote
+      or re-pin a Binance cadence figure, this closes first&rdquo;</em> &mdash; it fires on
+      <em>quoting a cadence figure</em>, and the hazard is quoting one <b>from the wrong home</b>.
+      The two sets are not the same, and the gap is not academic: M5 stage C quoted the
+      <em>correct</em> figure repeatedly and had to argue the clause into not firing, and M5 stage
+      D-A4 quoted a Binance cadence (<em>a re-seed every 22.4 s</em>) that never went near the
+      report path. A tripwire that fires on the wider event must be waved through by hand every
+      time it is met &mdash; and a tripwire waved through by hand is the reassuring instrument
+      this project keeps naming, wearing a guard's clothes. The wording that fires on the hazard,
+      and which leaves D-A4's answer standing unchanged:
+      <br><br>
+      <b>Tripwire (rewritten 2026-09-06):</b> <em>if any stage needs to quote or re-pin a liveness
+      cadence produced by <code>trace.cpp</code>'s statistics pass &mdash;
+      <code>median_liveness_gap_ms</code> or <code>median_gap_ms</code>, i.e.
+      <code>dc_replay</code>'s report line &mdash; this closes first.</em> It now guards a
+      convention with one home rather than a deferral, so what it catches is the second copy
+      coming back. ARCHITECTURE §9, 2026-08-26 (opened) and 2026-09-06 (closed).</p>
   </div>
 
   <div class="strain">

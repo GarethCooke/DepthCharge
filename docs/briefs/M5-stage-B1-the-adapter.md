@@ -388,6 +388,14 @@ Four records: one `rest`, three `ping`, **zero frames**. The reader handles it, 
 clock is fed normally at a 20,004.8 ms median through total silence, and the ladder draws
 **● LIVE**.
 
+> **CORRECTED 2026-09-06 (M5 close-out): the clock's median for this fixture is 19,950.6 ms,
+> not 20,004.8.** 20,004.8 is `dc_replay`'s report line, which carried its own interpolated
+> median until the close-out gave `harness/src/trace.cpp` the shared `lower_median`. This is
+> the figure ARCHITECTURE §9's 2026-08-26 row names as *"what B1's session log quotes for the
+> silent-stream fixture"*; left standing above per that row's own rule, with the correction
+> here. Nothing else in this paragraph moves — the clock was fed normally and never fired
+> under either convention.
+
 **Named, excluded and pinned deliberately.** `DEFECT` is in the filename in capitals so
 nobody has to read a comment to learn it is not gradeable — `NOT_A_CHECKSUM_GOLDEN`'s
 convention. It sits in its own CMake variable rather than `DC_BINANCE_TRACES`, so it reaches
