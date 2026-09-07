@@ -46,8 +46,11 @@
 // clean because there is no race to annotate away.
 //
 // Cost: 2,352 bytes more than M1's single slot — sizeof is 3,528 against 1,176,
-// being three 1,168-byte frames plus 20 bytes of bookkeeping. That is 0.7% of
-// the S3's 512 KB of internal SRAM, for a hand-off with no race to argue about.
+// being three 1,168-byte frames plus 20 bytes of bookkeeping and 4 of alignment
+// padding. That is 0.7% of the S3's 512 KB of internal SRAM, for a hand-off with
+// no race to argue about. **Pinned by a `static_assert` at the foot of this file
+// since the M5 close-out** — this sentence was the whole of the verification for
+// four milestones, and a sentence is not one.
 //
 //
 // The word
@@ -194,5 +197,46 @@ private:
 // been all along: a channel is a rendezvous between two specific threads, and a
 // copy of one is two channels with one thread each.
 static_assert(!std::is_copy_constructible_v<SnapshotChannel>);
+
+// AND THE SIZE IS PINNED, FOR THE SAME REASON ITS SIBLING'S IS AND BECAUSE IT
+// WAS THE ONE THAT WASN'T (M5 close-out, 2026-09-06).
+//
+// `sizeof(DisplaySnapshot) == 1168` has been guarded by the build since M4
+// stage A2; 3,528 was verified by INSPECTION only — no `static_assert`, no test
+// CHECK — while documents across the tree quote it, `firmware/src/main.cpp`'s
+// static-footprint block, this file's own cost note above, ARCHITECTURE §9's
+// 2026-08-07 row, ROADMAP **D6** and DESIGN §07's footprint table among them.
+// **The number of quoting sites is deliberately not stated**: the first draft of
+// this comment said "five places", review found at least seven, and a count of
+// quotations is itself a quotation that goes stale — which is the failure this
+// assertion exists to stop, committed in the comment introducing it.
+// `git grep -n '3,528\|3528'` is the enumeration, and it cannot drift.
+//
+// It is NOT an independent fact and saying so is the point: it is three
+// `DisplaySnapshot`s plus five 4-byte words rounded up to the frames' own
+// 8-byte alignment — 3 x 1,168 + 24 = 3,528, where the cost note's "20 bytes of
+// bookkeeping" is the members' sum and the 21st to 24th bytes are the padding
+// that alignment adds.
+//
+// **WHAT THIS DOES AND DOES NOT CATCH, because the first draft claimed more than
+// it delivers.** It catches `DisplaySnapshot` growing (its own pin fires first),
+// `kSlots` changing, and any member added here that does not FIT IN THE EXISTING
+// PADDING. It does **not** catch a sixth 4-byte word, or a `bool`, or a
+// `uint8_t`: those land in the four bytes alignment already spends, and both
+// assertions below still pass. That is not a hole to be plugged — it is the same
+// property `display_snapshot.hpp` documents outright about M4 stage A2's two
+// fields, which cost nothing because they went into padding — but a message
+// reading "a member was added" would promise a check nothing performs. A member
+// that costs nothing is invisible to a size pin by definition, in both classes,
+// and the honest form of the guard is to say which case it is silent about.
+static_assert(sizeof(SnapshotChannel) == 3 * sizeof(DisplaySnapshot) + 24,
+              "SnapshotChannel is no longer three frames plus 24 bytes of aligned "
+              "bookkeeping — kSlots moved, or a member was added that did NOT fit "
+              "in the existing padding (one that fits is invisible here, by design)");
+static_assert(sizeof(SnapshotChannel) == 3528,
+              "SnapshotChannel changed size — see the note above, and correct every "
+              "site `git grep -n '3,528\\|3528'` finds in the same commit: main.cpp's "
+              "footprint block, the cost note in this file, ARCHITECTURE §9's "
+              "2026-08-07 row, ROADMAP D6 and DESIGN §07");
 
 }  // namespace depthcharge
