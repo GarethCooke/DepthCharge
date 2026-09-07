@@ -596,6 +596,30 @@ convention fix. Latent: it misleads a reader, it does not misinform the board.]*
 - Evidence: `harness/src/trace.cpp`'s note at the median call; `engine/include/depthcharge/sample_window.hpp`;
   ARCHITECTURE §9 2026-09-06 (the median convention row).
 
+**D13 · The boot banner names the wrong milestone, so no image can identify itself.**
+*[unowned — opened 2026-09-07 at D-C run 2's start, deliberately NOT fixed before that run.]*
+
+- **What is measured.** `firmware/src/main.cpp:114` prints `"DepthCharge M4 stage D — venue=%.*s
+  liveness=%.*s"` on every boot, and it has said *M4 stage D* through the whole of M5. It is the
+  only identity in the image: D-C's first run searched 71.9 MB for one and found `markers : 0` and
+  this banner, which is why that capture's flashed commit is recorded as **inference, not
+  evidence**. The comment directly above it argues that a capture which cannot say which build
+  produced it *"gets read against the wrong expectations"* — the defect is sitting under its own
+  rationale.
+- **Why it was not fixed before D-C run 2, and the trade is the point.** Rebuilding for a cosmetic
+  string would have put a 48 h soak on a binary with **no shake-out**, throwing away the 4.10 h of
+  continuous run — one boot, no watchdog reset — that is the only reason to trust the image that
+  was already on the board. Owner's call at the run's start, 2026-09-07. The marker corrects the
+  attribution for that capture at zero risk; the banner is worth fixing on its own time, not on a
+  soak's.
+- **The fix is not just the string.** §6 of D-C's brief leaves *whether the shipping image should
+  carry a build identifier* open, and §9's 2026-08-29 rule says a marker belongs only where
+  behaviour is deliberately not the shipping behaviour — so a build tag is a **new** decision, not
+  a bug fix, and the banner correction should not smuggle one in. Fix the milestone string; take
+  the identifier question separately.
+- Evidence: `firmware/src/main.cpp:108-114`; `hardware/bench-2026-08-30-D-C-soak.md` decision 4;
+  `docs/briefs/M5-stage-D-C-the-soak.md` §6 and deliverable 2.
+
 **D10 · The IDLE task on CPU 0 starves and the task watchdog aborts the board.** *[unowned — stage E
 declared it a separate stage; no brief, no branch, nobody on it as of 2026-09-06.]*
 
