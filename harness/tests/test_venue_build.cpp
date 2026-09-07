@@ -25,6 +25,7 @@
 // spellings agreeing with each other and with nothing on the wire.
 #include <doctest/doctest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <sstream>
@@ -35,6 +36,19 @@
 #include "kraken_endpoint.hpp"
 #include "reject_log.hpp"
 #include "venue_build.hpp"
+
+// THE VENUE BUDGET, COMPILED HERE AND THEREFORE ON ALL THREE ARMS (M5 close-out,
+// 2026-09-06). Until this line existed `venue_budget.hpp` was reachable only
+// through `main.cpp`, so its two `static_assert`s were checked by `pio run` and
+// only for the arm that build selected — a commit changing the venue budget was
+// green on every ctest binary whatever it said (ARCHITECTURE §9, 2026-08-30).
+//
+// THE INCLUDE *IS* THE TEST, and that is deliberate rather than lazy: what the
+// header asserts is a compile-time bound on `sizeof(venue::Adapter)`, so
+// compiling it under `-DDC_VENUE=1|2|3` is the whole check and a TEST_CASE
+// asserting the same constants would only restate them. What a case CAN add is
+// that the bound is not vacuous, and the one below does exactly that.
+#include "venue_budget.hpp"
 
 namespace venue = depthcharge::fw::venue;
 
@@ -379,4 +393,55 @@ TEST_CASE("the unsubscribe frame is the only one this project has ever sent") {
     const std::string want_sub = std::string("\"frame\": ") + depthcharge::fw::kKrakenSubscribeText;
     while ((at = text.find(want_sub, at)) != std::string::npos) { ++found; at += want_sub.size(); }
     CHECK(found == 2);
+}
+
+// ---------------------------------------------------------------------------
+// The venue budget, on whichever arm this binary is (M5 close-out)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the venue budget bound is not vacuous on this arm") {
+    // WHAT A `static_assert` CANNOT SAY. `venue_budget.hpp` asserts
+    // `internal_resident_bytes<venue::Adapter>() <= kVenueInternalBudgetBytes`,
+    // and that assertion passes just as quietly if the budget were raised to
+    // SIZE_MAX or the adapter shrank to nothing. Those are the two ways a bound
+    // stops being a bound while still compiling, and neither is a compile error.
+    //
+    // So this asserts the SHAPE of the relationship rather than restating the
+    // numbers: the adapter occupies a real, non-trivial share of a budget that
+    // is a real, non-trivial figure. It is deliberately loose — the exact
+    // figures are pinned in the header, per venue and per toolchain, and pinning
+    // them twice would be the "fact stated twice" this project keeps deleting.
+    const std::size_t budget = depthcharge::fw::kVenueInternalBudgetBytes;
+    const std::size_t used = depthcharge::fw::internal_resident_bytes<venue::Adapter>();
+    const std::size_t headroom = depthcharge::fw::kVenueInternalHeadroomBytes;
+
+    // WHAT IS DELIBERATELY *NOT* HERE, because review caught the first draft
+    // doing it: `CHECK(budget == 111624u)`, `CHECK(used > 0u)` and
+    // `CHECK(headroom == budget - used)`. The first restates a `static_assert`
+    // compiled in this same translation unit, so it cannot be reached with a
+    // false value; the second is guaranteed by the language (`sizeof` of a
+    // complete type is >= 1); the third is the definition of
+    // `kVenueInternalHeadroomBytes`, not a property of it. Three assertions that
+    // could not fail, in a case whose title is *not vacuous*.
+    CHECK(used < budget);   // the header asserts <=; equality would mean 0 spare
+    CHECK(headroom > 0u);   //   and this is the same statement from the other end
+
+    // AND THE ARM IS NAMED — with a two-sided bound per arm, which the first
+    // draft did not have. It guarded Kraken and Anvil with the identical
+    // `used < 60000u`, and both satisfy it, so a link configuration that lost
+    // `-DDC_VENUE=2` would have substituted the Anvil adapter and passed. That
+    // is exactly the defect `CMakeLists.txt` records for `reject_log.hpp` — a
+    // check that claims to identify the arm and does not — reproduced inside the
+    // case that cites it. Each arm now has a window no other arm's `sizeof`
+    // falls in: Anvil 8,400 B, Kraken ~16.7 KiB, Binance ~66 KiB.
+#if DC_VENUE == DC_VENUE_BINANCE
+    CHECK(used > 60000u);
+    CHECK(used < 70000u);
+#elif DC_VENUE == DC_VENUE_KRAKEN
+    CHECK(used > 12000u);
+    CHECK(used < 30000u);
+#else
+    CHECK(used > 4000u);    // Anvil, the measurement's own baseline at 8,400 B
+    CHECK(used < 12000u);
+#endif
 }

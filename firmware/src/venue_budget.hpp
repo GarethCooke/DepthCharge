@@ -151,7 +151,27 @@
 
 #include <cstddef>
 
-#include "panel.hpp"
+// `panel_budget.hpp` AND NOT `panel.hpp`, WHICH IS THE WHOLE OF THE M5
+// CLOSE-OUT'S CHANGE TO THIS FILE.
+//
+// This header used to include `panel.hpp` for three names — `kReserveInternalBytes`,
+// `kMinDoubleBufferedDepth` and `panel_cost_bytes` — and `panel.hpp` includes
+// the HUB75 driver, so **this file was not host-compilable at all**. Its two
+// `static_assert`s were therefore checked only by `pio run`, and only for the
+// arm that build selects: a commit changing the venue budget went green on all
+// 52 ctest tests whatever it said. Recorded at M5 stage D-A4 (ARCHITECTURE §9,
+// 2026-08-30) and closed here by moving the three names to `panel_budget.hpp`,
+// which was already ESP-IDF-free and already host-tested.
+//
+// **What that bought, exactly:** `test_venue_build.cpp` includes this header, so
+// `dc_tests`, `dc_tests_kraken` and `dc_tests_binance` now compile the budget
+// assertion for ALL THREE venues on every host build, where `pio` could only
+// ever check one. What it did NOT buy is the headroom pin at the foot of this
+// file — that is a target `sizeof` and the host's differs by 8 bytes, so it
+// stays behind a target guard and stays a `pio` obligation. Saying which half
+// moved is the point: a fix that quietly left the second half uncovered while
+// reading as "now host-compilable" would be the same defect one layer up.
+#include "panel_budget.hpp"
 #include "venue_build.hpp"
 
 namespace depthcharge::fw {
@@ -258,25 +278,71 @@ static_assert(internal_resident_bytes<venue::Adapter>() <= kVenueInternalBudgetB
 inline constexpr std::size_t kVenueInternalHeadroomBytes =
     kVenueInternalBudgetBytes - internal_resident_bytes<venue::Adapter>();
 
-// BINANCE ONLY, AND THE OMISSION OF THE OTHER TWO IS DELIBERATE.
+// ALL THREE ARMS, BOTH TOOLCHAINS — SIX PINS, AND THE OMISSION OF FIVE OF THEM
+// WAS A JUSTIFICATION THIS VERY CHANGE DISCHARGED.
 //
-// M5 stage D-A4 built and verified `-e depthcharge-binance`. It did not build
-// the Anvil or Kraken arms, and a pin on an arm this session never compiled
-// would be a number nobody has seen the compiler produce — which is precisely
-// the wave-through the per-commit verification rule exists to prevent, written
-// into the file that rule protects. Whoever next builds those arms can add
-// theirs, with the same evidence.
+// This block read *"BINANCE ONLY, AND THE OMISSION OF THE OTHER TWO IS
+// DELIBERATE … M5 stage D-A4 built and verified `-e depthcharge-binance`. It did
+// not build the Anvil or Kraken arms, and a pin on an arm this session never
+// compiled would be a number nobody has seen the compiler produce."* **That
+// reasoning was right and it expired at the M5 close-out**, which built all three
+// arms and read all three values out of the compiler by the same technique — an
+// incomplete template instantiated on the expression — so there is no longer an
+// arm whose figure nobody has seen. Recorded rather than quietly replaced,
+// because the rule the old paragraph states is the correct rule and the only
+// thing that changed is that the evidence now exists.
+//
+//     arm       target (xtensa GCC 8.4)      host (MinGW GCC)      difference
+//     Anvil            103,224                   103,224                0
+//     Kraken            94,896                    94,880              +16 host
+//     Binance           45,584                    45,568              +16 host
+//
+// Anvil's adapter holds no pointer-width member at all, so its two figures are
+// the same number and the pin is one constant checked twice. The other two
+// differ by 16 bytes each, measured rather than derived; Binance's account is
+// spelled out below, and **Kraken's matching 16 is recorded as measured and NOT
+// explained**, because attributing it without looking would be the same error
+// this file caught in its own prose one paragraph later.
+//
+// **AND SIX PINS RATHER THAN ONE CLOSES A SILENT SKIP.** With only the Binance
+// pair, `#if DC_VENUE == DC_VENUE_BINANCE` was itself a construct that vanishes
+// quietly: drop `-D DC_VENUE=3` and `venue_build.hpp` defaults to Anvil, both
+// blocks are skipped, and the build is green with no headroom check at all. Every
+// arm having a pin means there is no configuration in which the check is absent
+// — which is the same argument as `__XTENSA__` below, applied to the other
+// conjunct.
 //
 // **66,040 B on xtensa, measured 2026-09-06** by instantiating an incomplete
 // template on `internal_resident_bytes<venue::Adapter>()` under
 // `pio run -e depthcharge-binance` and reading the value out of the diagnostic.
-// It is NOT the host figure — `dc_tests` reports 66,048, because two
-// `std::unique_ptr` members are 8 bytes there and 4 here — and this header is
-// compiled only by `main.cpp`, so the xtensa value is the only one this
-// assertion can ever see. (No host test reaches this file at all: it includes
-// `panel.hpp`, which includes the HUB75 driver. That is why a commit touching
-// this file is unverified by a green ctest, and it is the same coverage gap
-// D-A3 found in `venue_build.hpp`.)
+// It is NOT the host figure, and **the host figure this file used to quote was
+// WRONG — which is the first thing the M5 close-out's host pin caught, on its
+// first compile.**
+//
+// This paragraph read *"`dc_tests` reports 66,048, because two `std::unique_ptr`
+// members are 8 bytes there and 4 here"*. The host actually reports **66,056**,
+// so the gap is **16 bytes and not 8**, and the two `unique_ptr`s account for
+// only half of it. The other half is `SymbolConfig::wire_symbol`, a
+// `std::string_view` — 16 bytes on a 64-bit host, 8 on xtensa — carried by value
+// in `cfg_`. **Three members holding four pointer-widths, named as two members
+// holding two.** The full account is beside the host pin at the foot of this file.
+//
+// Neither number was ever checked by anything, which is the whole point: a
+// figure written into a comment inside the header whose subject is a bound
+// nothing compiles is as unverified as the bound. The host pin below is what
+// turns the sentence into a check, and it fired the moment it existed.
+//
+// **AND THAT 16-BYTE DIFFERENCE IS WHY THE TARGET PIN, ALONE IN THIS FILE, IS
+// STILL TARGET-ONLY.** The parenthesis here used to continue *"no host test
+// reaches this file at all … a commit touching this file is unverified by a
+// green ctest"*, and the close-out fixed that half: the header includes
+// `panel_budget.hpp` rather than `panel.hpp` and `test_venue_build.cpp` compiles
+// it on all three venue arms. The BUDGET assertion above is now a ctest
+// obligation. The headroom pin cannot be, because it pins a number the host
+// cannot produce — so it is guarded on the target and remains a `pio run`
+// obligation, restated here rather than left for a reader to infer from a build
+// that silently skipped it, and it now has a host twin that is checked in the
+// normal loop.
 //
 // The stage moved it by **+32 B exactly** — four `std::uint64_t` counters added
 // to `BinanceAdapter::Stats`: three for the re-seed mechanism, and
@@ -291,12 +357,52 @@ inline constexpr std::size_t kVenueInternalHeadroomBytes =
 // in PSRAM since D-A2. That is the invariant #7 statement in full: **no
 // allocation at all, at any point, including construction — only the access
 // pattern of an existing block changed.**
-#if DC_VENUE == DC_VENUE_BINANCE
+// `__XTENSA__` is the target discriminator and it is the compiler's own, not a
+// build-system define this project could forget to pass: the host toolchain
+// cannot define it and the xtensa one always does. A pin that silently vanished
+// because a `-D` went missing would be the wave-through this whole file is about.
+#if DC_VENUE == DC_VENUE_BINANCE && defined(__XTENSA__)
 static_assert(kVenueInternalHeadroomBytes == 45'584,
               "the Binance adapter's internal footprint moved. That is allowed and it is a "
               "DECISION: re-measure under `pio run -e depthcharge-binance`, say what moved "
               "it and why, and update this pin in the same commit. Do not delete it — the "
               "margin it guards has been quoted wrongly in two documents already.");
+#endif
+
+// AND THE HOST FIGURE IS PINNED TOO, RATHER THAN LEFT UNCHECKED BECAUSE IT IS
+// "not the real one". It sits 16 bytes below the target's headroom (the adapter
+// being 16 bytes larger) for a reason that is known, stated and now measured —
+// and the arithmetic is spelled out because the first draft of this comment got
+// it wrong and review caught it:
+//
+//     buf_       std::unique_ptr    ONE pointer-width    8 host / 4 target  = +4
+//     buf_lvl_   std::unique_ptr    ONE pointer-width    8 host / 4 target  = +4
+//     cfg_.wire_symbol
+//                std::string_view   TWO pointer-widths   16 host / 8 target = +8
+//                                                                    total  = +16
+//
+// **Three members, FOUR pointer-widths.** The draft said *"each 8 bytes here and
+// 4 there"* of all three, which is 12 and not the 16 the two pins actually
+// differ by — a `string_view` is a pointer AND a size. A comment whose own
+// arithmetic does not reproduce the constants it sits beside is the thing this
+// file is about, arriving in the paragraph written to explain it.
+//
+// **This pin is not decoration — it is the check that found the wrong figure in
+// the paragraph above.** The first version of it was written as 45,576 from that
+// paragraph's own arithmetic and failed on the first compile at 45,568. A
+// derived quantity with a stated derivation and no check is exactly the shape
+// this file's whole subject is about; that it happened INSIDE this file is worth
+// the four lines it costs.
+//
+// If the two ever move apart by anything other than 16, either the adapter
+// changed or the account of the difference did, and both are decisions.
+#if DC_VENUE == DC_VENUE_BINANCE && !defined(__XTENSA__)
+static_assert(kVenueInternalHeadroomBytes == 45'568,
+              "the Binance adapter's HOST footprint moved. The target pin above is the "
+              "shipping one; this is its host twin, 16 bytes apart because three members "
+              "hold four pointer-widths between them (two unique_ptr and one string_view, "
+              "which is a pointer AND a size). Re-measure both before adjusting either — "
+              "a change to one alone means the 16 is no longer the whole story.");
 #endif
 
 }  // namespace depthcharge::fw
