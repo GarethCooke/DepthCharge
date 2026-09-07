@@ -156,6 +156,13 @@ ping equals the threshold, which is why this is worth a day.
 > **the falsifier has since fired on the stage E capture** (`>=2x med=4`, read 2026-09-07 once the
 > tool could open a `.gz`), so the open question is no longer whether the rule is right but who
 > applies the remedy it prescribes: ROADMAP **D12**.
+>
+> **AND THE OWNER RULED ON D12 (2026-09-07): `k` STAYS, and the remedy is THIS RUN'S READING.** The
+> second run answers one question — **do `>=2x med` crossings occur after calibration completes?**
+> All four of stage E's fell inside the uncalibrated window, and this run's own seven startups
+> produced none, so neither "startup transient" nor "it greyed nothing" is yet an explanation. Note
+> the two pairs are spaced 50,117 ms and 50,101 ms apart, within 16 ms of each other. Read it here;
+> do not move `k` here either.
 
 > **Falsifier: any interval reaching 2 × median on a healthy socket raises k.**
 

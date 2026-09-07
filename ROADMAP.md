@@ -544,6 +544,27 @@ is the owner's, not a documentation stage's.]*
   window is what actually saved this run. Or re-word the falsifier against a percentile. **The first
   is what stage C's own rule prescribes and the close-out did not take it**, for the reason D-C and
   stage E both gave of themselves: a stage that did not run the soak may not move a threshold on it.
+- **OWNER'S RULING, 2026-09-07: `k` STAYS AT 2.0, and the remedy moves to D-C's second run as a
+  reading rather than being applied here.** Stage C's rule takes *worst healthy* as its input, and
+  the four have not been shown to be worst-healthy in the regime the calibrated threshold governs.
+  Raising `k` buys grey latency permanently, from one connection, on four events whose cause is
+  unknown. **What the second run must read is narrower than "characterise the four": do `>=2x med`
+  crossings occur AFTER calibration completes?** If they appear only inside the uncalibrated window,
+  the calibrated threshold never governs them, `k` is not falsified in the sense that can be acted
+  on, and the record should say that instead of carrying a falsification it cannot discharge. If one
+  appears post-calibration on a socket that never dropped, `k` moves and the ceiling already admits
+  it.
+- **Two observations for whoever takes that reading, neither of them in the case above.**
+  **(a) The startup explanation is not supported by D-C.** All four fell in one connection's first
+  ~12 minutes — but D-C sampled **seven** connection startups, mean 4.9 h a boot, so every one lived
+  far past 12 minutes, and it produced **0 crossings in 6,183 intervals**. Seven startup windows,
+  none. Whatever the four are, "it happens while a connection settles" does not survive that.
+  **(b) The four are two pairs, and the spacing is too regular for jitter.**
+  418,534 − 368,417 = **50,117 ms**; 709,183 − 659,082 = **50,101 ms** — two intra-pair spacings
+  within **16 ms** of each other, at ~2.5× the ping cadence. A venue pausing at random does not
+  produce that; something with a period does. It is unremarked anywhere and it is the cheapest
+  thread to pull first.
+
 - Evidence: `hardware/bench-2026-09-04-E-soak.md` §7 (which recorded the count and handed it here);
   `hardware/bench-2026-08-30-D-C-soak.md` §4; `firmware/src/liveness_watchdog.hpp:283` and `:218`
   for the disjointness; ARCHITECTURE §9 2026-09-07.
