@@ -427,10 +427,31 @@ dc::harness::ReplayResult replay_with(std::string_view name, Policy p) {
 //   * `TopOfBook` renders the book's best levels in order, so the rows within
 //     the venue's checksum reach are exactly min(10, levels held) a side -- 20 a
 //     publish on any book at least ten deep.
-void check_row_arithmetic(const dc::harness::ReplayResult& r) {
+// THE FIRST IDENTITY, WHICH HAS NO PRECONDITION. Every publish offers exactly
+// `kDisplayLevels` rows a side whatever the book holds, so this is true of any
+// run at all — including one whose book is empty.
+void check_row_identity(const dc::harness::ReplayResult& r) {
     const auto& w = r.window;
     CHECK(w.rows_filled + w.rows_unknown ==
           2ull * depthcharge::kDisplayLevels * r.book.publishes);
+}
+
+// AND THE SECOND, WHICH HAS ONE AND DID NOT CHECK IT (M5 close-out, found while
+// closing ROADMAP D8). The comment above states the precondition in its own
+// words — *"20 a publish **on any book at least ten deep**"* — and the assertion
+// was made unconditionally, so a run that published a book shallower than
+// `validated_depth` failed it: `0 == 20` on a Kraken slice with no book event.
+//
+// That is the same shape as D8 itself, one line further down: **an identity
+// whose stated precondition nothing enforces, kept true by never being shown a
+// case that violates it.** Splitting the helper is the fix rather than weakening
+// the equality to an inequality — the equality is what catches a policy
+// rendering a row it was not given, and it stays exactly as strong for every
+// caller that can meet its precondition. What changes is that the precondition
+// is now a thing a call site states rather than a thing a comment mentions.
+void check_row_arithmetic(const dc::harness::ReplayResult& r) {
+    const auto& w = r.window;
+    check_row_identity(r);
     if (w.policy == Policy::TopOfBook && w.validated_depth > 0) {
         CHECK(w.rows_validated == 2ull * w.validated_depth * r.book.publishes);
     }
@@ -585,5 +606,69 @@ TEST_CASE("row counts pinned per policy on the committed traces") {
             CHECK(r.window.rows_validated == 0);
             check_row_arithmetic(r);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. THE IDENTITY ON A TRACE THAT PUBLISHES NOTHING (ROADMAP D8)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a trace that emits no event still satisfies the row identity") {
+    // WHAT THIS EXISTS FOR: the identity above held on every trace it was ever
+    // shown, and was FALSE on two committed slices that were never shown to it.
+    // `run_replay`'s terminal fallback publishes the stale-by-construction start
+    // when a trace produced no event at all — so `book.publishes` reached 1
+    // while the window totals stayed at zero, and `rows_filled + rows_unknown ==
+    // 2 * kDisplayLevels * book.publishes` read `0 == 54`. Found at M5 stage E,
+    // recorded as ROADMAP D8 rather than fixed there, closed at the M5 close-out
+    // by giving the fallback the `note_window()` its sibling has.
+    //
+    // **An identity that holds by not being asked is the reassuring-instrument
+    // shape**, and the fix is not to remember to ask: it is to ask here, on the
+    // only two committed traces that can answer differently from the rest.
+    //
+    // RED BEFORE GREEN: revert the `note_window()` call in `replay_driver.cpp`'s
+    // terminal block and both subcases fail on the first CHECK, at `0 == 54`.
+
+    SUBCASE("the silent-stream fixture — 4 records, 3 pings, one REST body") {
+        // The Binance defect fixture: the ONLY committed capture whose stream
+        // name was misspelled, so no depth frame ever arrived. Since M5 stage C's
+        // remedy the seed is not published without a bracketing diff, and no diff
+        // can arrive here — so the run ends having published nothing at all and
+        // the fallback is what fills `latest_`.
+        const auto r = replay_with("binance_btcusdt_DEFECT_silent_stream_20260826",
+                                   Policy::TopOfBook);
+        CHECK(r.book.publishes == 1);
+        CHECK(r.window.rows_filled + r.window.rows_unknown ==
+              2ull * depthcharge::kDisplayLevels);
+        // `check_row_identity` and not `check_row_arithmetic`: the second
+        // identity needs a book at least `validated_depth` deep and this one is
+        // empty. Binance declares no checksum reach, so it would be skipped here
+        // anyway — stated explicitly rather than relied on, because "it happens
+        // not to be asked" is what this whole case is about.
+        check_row_identity(r);
+
+        // And the frame it published is the empty one, which is the point of the
+        // fallback: 27 rows a side, every one unknown, nothing filled.
+        CHECK(r.window.rows_filled == 0);
+        CHECK(r.window.rows_unknown == 2ull * depthcharge::kDisplayLevels);
+    }
+
+    SUBCASE("the Kraken slice with heartbeats and no book event") {
+        // AND THIS ONE IS WHY THE HELPER HAD TO SPLIT. Kraken declares a
+        // checksum reach of 10, so the second identity applies by the old
+        // helper's test — and it cannot hold, because the book here is empty and
+        // an empty book validates nothing. `0 == 20`. The precondition was in
+        // the helper's comment and in nothing else.
+        const auto r = replay_with("kraken_minagbp_d25_20260817", Policy::TopOfBook);
+        CHECK(r.book.publishes == 1);
+        check_row_identity(r);
+
+        // The bound the second identity degrades to when its precondition fails,
+        // asserted rather than skipped: a publish can validate at most
+        // `validated_depth` rows a side, and this one validated none.
+        CHECK(r.window.rows_validated <=
+              2ull * r.window.validated_depth * r.book.publishes);
+        CHECK(r.window.rows_validated == 0);
     }
 }

@@ -378,9 +378,31 @@ instead of rediscovering one.*
 - Evidence: `harness/replay/NOTES.md` stage C addendum (the sparsity table that ruled the price
   axis out at one tick per row), ARCHITECTURE §9 2026-08-19, DESIGN §08 strain 24.
 
-**D8 · The driver's fallback publish is not counted by `note_window`, so one replay's
-window report cannot be checked against its publish count.** *[C] — latent, found at M5 stage E
-and deliberately left alone there.*
+**D8 · CLOSED — the driver's fallback publish was not counted by `note_window`, so one replay's
+window report could not be checked against its publish count.** *[C] — found at M5 stage E and
+deliberately left alone there; **triaged into the M5 close-out and fixed there, 2026-09-06**, on
+the grounds that it is a one-line `harness/` change with a red-before-green available and a
+close-out is exactly the stage for residues. Kept in the record because closing it exposed a
+second defect that is worth more than the first.]*
+
+- **The fix, and why this one of the two.** `note_window()` added to the terminal block. The
+  alternative — teaching `check_row_arithmetic` about the fallback — was rejected because the
+  asymmetry it would have encoded is not a design choice: that block is `publish_message` minus
+  the channel, the channel's omission is explained in the code and `note_window`'s was not, and
+  `book_.publish` there is a real publish that really fills the window. The totals were not
+  "right without it"; they were missing one frame's rows.
+- **What closing it exposed, and it is the reusable half.** With the identity finally asserted on
+  the two zero-event slices, the helper's **second** identity went red at `0 == 20`:
+  `rows_validated == 2 × validated_depth × publishes` was asserted unconditionally while the
+  comment above it states the precondition — *"20 a publish **on any book at least ten deep**"* —
+  and an empty book validates nothing. **The same species as D8 itself, four lines further up: an
+  identity whose stated precondition nothing enforces, kept true by never being shown a case that
+  violates it.** Split into `check_row_identity` (no precondition) and `check_row_arithmetic`
+  (both), so the precondition is now something a call site states rather than something a reader
+  notices. ARCHITECTURE §9, 2026-09-06.
+- Red-before-green: reverting the `note_window()` call fails both new subcases at `0 == 54`.
+
+**The card as it stood, kept because the triage turned on it:**
 
 - **What it is.** `harness/src/replay_driver.cpp`'s terminal
   `if (channel_.published_version() == 0)` block calls `book_.publish`, `stamp_age` and

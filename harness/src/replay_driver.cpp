@@ -154,8 +154,30 @@ public:
 
         // Latest published state is the run's answer; if the trace produced no
         // event at all the channel still holds the stale-by-construction start.
+        //
+        // **`note_window()` BELONGS HERE AND WAS MISSING** — ROADMAP D8, found at
+        // M5 stage E, closed at the M5 close-out. This block is `publish_message`
+        // minus the channel, and the channel's omission is deliberate and
+        // explained above; `note_window`'s was neither. The consequence was an
+        // identity that held only by not being asked: `test_window.cpp`'s
+        // `check_row_arithmetic` asserts
+        // `rows_filled + rows_unknown == 2 * kDisplayLevels * book.publishes`,
+        // and on a trace that emits no event this reported `book.publishes == 1`
+        // beside a window report of all zeroes — `0 == 54`. Two committed slices
+        // are in that state and neither was passed to the helper, so nothing was
+        // red.
+        //
+        // WHY THIS FIX AND NOT THE OTHER ONE. The alternative was to teach the
+        // helper about the fallback, which keeps the totals as they are at the
+        // cost of a special case in the checker. But `book_.publish` here is a
+        // REAL publish that really fills the window — it is the same call
+        // `publish_message` makes — so the totals were not "right without it";
+        // they were missing one frame's rows. Folding them in restores the
+        // symmetry the rest of this file already has, and teaching the checker
+        // would have written the asymmetry down as intended.
         if (channel_.published_version() == 0) {
             book_.publish(latest_);
+            note_window();
             stamp_age(latest_);
             stamp_reseed(latest_);
         }
