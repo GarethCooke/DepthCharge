@@ -195,34 +195,54 @@
 // `ping=N` in the kinds string is the 2026-08-25 ruling's signal, counted in a
 // committed file for the first time — 17 across the seven slices. The three
 // with the longest windows measure its cadence independently of stage 0's
-// figure: medians of 19,951.7 / 20,011.6 / 20,013.3 ms against the 19,970 ms
+// figure: medians of 19,947.7 / 19,962.8 / 19,973.9 ms against the 19,970 ms
 // NOTES-binance.md recorded.
 //
-// **THOSE THREE FIGURES ARE THE INTERPOLATED MEDIAN, NOT THE ONE THE SHIPPED
-// CLOCK COMPUTES, AND THEY ARE DELIBERATELY LEFT STANDING (M5 stage B2).**
+// **THOSE THREE FIGURES MOVED AT THE M5 CLOSE-OUT (2026-09-06), AND THIS COMMIT
+// EXISTS TO MOVE THEM AND NOTHING ELSE.** They used to read 19,951.7 / 20,011.6
+// / 20,013.3, which was the INTERPOLATED median from `harness/src/trace.cpp`'s
+// second copy of the convention, not the one the shipped clock computes.
 // `sample_window.hpp` owns the convention -- a LOWER median by nearest rank,
 // because an interpolated one invents an interval that never occurred on the
-// wire -- and `LivenessClock` and `AgeEstimator` use it. `harness/src/trace.cpp`
-// carries a second copy and interpolates, which is where these came from. The
-// clock's answers for the same three files are 19,947.7 / 19,962.8 / 19,973.9.
-// They agree to 0.1 ms at Anvil and Kraken, whose cadences are flat, which is
-// why the divergence survived three milestones -- the coincidence class again.
+// wire -- and `LivenessClock` and `AgeEstimator` always used it. The commit
+// before this one made `trace.cpp` call `depthcharge::lower_median` too, so the
+// figures above are now the board's arithmetic over the same files.
 //
-// CORRECTING THEM HERE IS EXACTLY WHAT IS BEING DEFERRED. A convention change
-// rewrites figures inside this file, and *no existing golden moves* is what
-// makes a split reviewable; bundled into another stage, nothing in the diff
-// would distinguish a convention change from a defect. So it must be its own
-// stage, where the moved figures have nothing else to hide behind.
+// THE SPLIT IS THE POINT, NOT CEREMONY. A convention change rewrites figures
+// inside this file, and *no existing golden moves* is what makes a split
+// reviewable; bundled with the convention change, nothing in the diff would
+// distinguish a moved figure from a defect. So the pin movement is its own
+// commit, where the moved figures have nothing else to hide behind, and every
+// one of them was written down BEFORE the run that printed it (the 2026-09-04
+// discipline). All five predicted moves landed exactly:
 //
-// OWNER: **M5 close-out**. EXPIRY: when `harness/` and `engine/` compute the
-// median by one convention. TRIPWIRE: if any stage before the close-out needs to
-// quote or re-pin a Binance cadence figure, this closes first. The pinned
-// COLUMNS below are unaffected either way -- no median is a pinned column, and
-// `liveness_firings` is computed from the clock's own threshold, not from these.
-// Carried in three places: here, `test_binance_adapter.cpp`'s two-conventions
-// case (**which must be INVERTED, not deleted or relaxed**), and DESIGN strain
-// 29. If the close-out ships without inverting it, the clause moves to whichever
-// stage next touches a cadence figure rather than lapsing. `liveness_firings` is 0 everywhere, and see
+//     atomeur_d100ms          19,951.7 -> 19,947.7      (4 intervals)
+//     atomeur_deepseed        20,011.6 -> 19,962.8      (4)
+//     btcusdt_d1000ms         20,013.3 -> 19,973.9      (2)
+//     btcusdt_DEFECT_silent   20,004.8 -> 19,950.6      (2)   [B1's log figure]
+//     atomeur_d100ms_liveness 19,969.4 -> 19,964.0      (10)  [the calibration]
+//
+// and the three slices with an ODD interval count did not move, because the two
+// conventions are the same value there. The pinned COLUMNS below did not move
+// either -- no median is a pinned column, and `liveness_firings` is computed
+// from the clock's own threshold rather than from these -- which is what let
+// `trace_taxonomy_selfcheck` stay green across a convention change.
+//
+// FOUND WHILE CLOSING IT, AND IT IS A CORRECTION TO THE ROW THAT DEFERRED IT:
+// **the two conventions do NOT "agree to 0.1 ms at Kraken".** Measured over all
+// six committed Kraken slices, `kraken_minagbp_d25_20260817` diverges by
+// **0.4946 ms** (998.6485 nearest-rank against 999.1431 interpolated, 94
+// intervals) and `kraken_btcusd_d25_20260816` by 0.1040 ms.
+// `kraken_minagbp_d25_resync_20260818` diverges by a further 0.0774 ms over 72
+// intervals, and only the remaining THREE agree exactly — for a reason the bound
+// never mentions, an odd interval count, where the two conventions are the same
+// value by definition. The 2026-08-26 row's Kraken evidence
+// says *"all four"* when six were committed eight days earlier. The bound that
+// made the divergence look harmless at the other two venues was measured over a
+// population that did not contain its own worst case -- the same species as the
+// two margin figures this close-out re-rules on. ARCHITECTURE §9, 2026-09-06.
+//
+// `liveness_firings` is 0 everywhere, and see
 // venue.hpp for why that is weaker evidence than it looks: no slice is long
 // enough to calibrate, so all seven ran on the uncalibrated 30,000 ms default.
     {"binance_atomeur_d100ms_20260824.ndjson", "binance",
@@ -289,7 +309,9 @@
 //   snapshots=1      the seed. It is the ONLY thing that ever re-baselined.
 //   liveness_events=3, liveness_firings=0
 //                    THE LIVENESS CLOCK WAS FED NORMALLY THROUGHOUT, at a
-//                    measured 20,004.8 ms median, and never fired. That is not
+//                    measured 19,950.6 ms median (20,004.8 until the M5
+//                    close-out moved this file's figures to the clock's own
+//                    convention), and never fired. That is not
 //                    a defect in the clock; it is the 2026-08-25 ruling working
 //                    exactly as written on a signal that proves the socket and
 //                    never the feed (ARCHITECTURE 9, 2026-08-25, both rows).
