@@ -148,8 +148,10 @@ struct Arrivals {
 // interpolated median, and on the 221 s calibration trace the two answered
 // **19,964.0 ms and 19,969.4 ms** for the same ten intervals — which is how
 // this file came to quote a cadence the clock it is measuring does not produce.
-// Caught before it shipped; the general form is in ARCHITECTURE §9, because
-// `harness/src/trace.cpp` still carries the other copy.
+// Caught before it shipped; the general form is in ARCHITECTURE §9. The other
+// copy lived in `harness/src/trace.cpp` for three milestones after this one was
+// fixed and was closed at the M5 close-out (2026-09-06), so this call is now
+// the ordinary case rather than the exception this comment was written to be.
 double median_of(std::vector<double> v) {
     return depthcharge::lower_median(v.data(), v.size());
 }

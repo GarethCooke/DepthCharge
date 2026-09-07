@@ -66,6 +66,14 @@ private:
 // The LOWER median by nearest rank, over a caller-owned scratch buffer which
 // this sorts in place. Returns 0 for an empty range.
 //
+// **THE SORT IS FULL AND ASCENDING, AND A CALLER DEPENDS ON THAT.**
+// `harness/src/trace.cpp` reads `gaps.back()` as the maximum immediately after
+// calling this, taking one ordering rather than two. Switching to
+// `std::nth_element` would be a legitimate-looking optimisation on this
+// function's own terms and would silently stop that `back()` being a maximum,
+// in another file. Named at both ends because a cross-file coupling that only
+// one end knows about is a coupling nobody knows about.
+//
 // NEAREST RANK RATHER THAN INTERPOLATION, and the convention matters enough to
 // have one home: an interpolated median invents an interval that never occurred
 // on the wire, and at these sample sizes the rank is the thing being measured.

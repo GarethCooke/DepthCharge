@@ -19,6 +19,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <depthcharge/sample_window.hpp>
+
 // The reader owns the ENVELOPE; the decoder owns the DIALECT. accumulate()
 // below is a statistics pass, and naming a record's kind is a dialect question
 // the moment there are two venues — so it asks, rather than assuming every
@@ -633,25 +635,58 @@ TraceStats accumulate(TraceReader& reader) {
 
     stats.liveness_threshold_ms = liveness.threshold_ms();
     stats.liveness_multiple = liveness.policy().multiple;
+
+    // ONE MEDIAN CONVENTION, AND IT LIVES IN `sample_window.hpp`.
+    //
+    // Both of these used to be a hand-rolled interpolated median — the mean of
+    // the two middle samples on an even count — while `LivenessClock` and
+    // `AgeEstimator` took the LOWER median by nearest rank from
+    // `depthcharge::lower_median`. They disagreed on every Binance capture with
+    // an even interval count, and — measured at the close-out rather than
+    // assumed — on two of the six committed Kraken slices as well, by up to
+    // 0.4946 ms. So the number this report printed for the venue's cadence was
+    // not the number the clock on the board computed, and it is the report's
+    // that reached `taxonomy_pins.inc`, `NOTES-binance.md` and five briefs.
+    // Found at review at M5 stage B2, deferred with an owner because adopting
+    // the convention rewrites figures inside a pinned file, and closed here —
+    // M5 close-out. ARCHITECTURE §9, 2026-08-26.
+    //
+    // The claim `sample_window.hpp` makes in its own words — *"`tools/gap_stats.py`
+    // uses the same rule, so a C++ figure and a Python figure over the same
+    // trace are comparable"* — was false on this path for the whole of M5 until
+    // this call. That is the cost, not the ~5 ms.
+    //
+    // **WHAT THIS DOES NOT MAKE EQUAL, AND THE DISTINCTION IS LOAD-BEARING.**
+    // The CONVENTION is now shared; the SAMPLE SET is not, and was never meant
+    // to be. `LivenessClock` keeps a rolling `SampleRing<double, 32>` because a
+    // threshold has to track a cadence that drifts; this is a whole-trace
+    // statistic because a report is about the file. On any trace with more than
+    // `kWindowSamples` liveness intervals the two are different quantities and
+    // the right answers differ — `kraken_btcusd_d10_20260816` reads 1000.6182
+    // from the clock's last 32 and 1000.3491 over all 59. So
+    // `stats.liveness_threshold_ms` a few lines above is NOT `multiple ×`
+    // `median_liveness_gap_ms`, and a reader who assumes it is will find the
+    // report's own two numbers refusing to divide. Recorded rather than
+    // reconciled: ROADMAP **D13**.
     if (!liveness_gaps.empty()) {
-        std::sort(liveness_gaps.begin(), liveness_gaps.end());
-        const std::size_t m = liveness_gaps.size() / 2;
         stats.median_liveness_gap_ms =
-            (liveness_gaps.size() % 2 == 0)
-                ? (liveness_gaps[m - 1] + liveness_gaps[m]) / 2.0
-                : liveness_gaps[m];
+            depthcharge::lower_median(liveness_gaps.data(), liveness_gaps.size());
     }
 
     if (!gaps.empty()) {
-        // Sorted in place: `gaps` is a local that dies on the next line, so the
-        // copy this used to take bought nothing. std::sort rather than
-        // nth_element because the max is read off the same ordering, and the
-        // block is ~0.01% of read_trace either way.
-        std::sort(gaps.begin(), gaps.end());
+        // THE MAX IS READ AFTER THE MEDIAN, AND THAT ORDER IS A DEPENDENCY.
+        // `lower_median` sorts the range in place — ascending, fully — so
+        // `back()` is the maximum afterwards and this block takes one ordering
+        // rather than two. `gaps` is a local that dies on the next line, so
+        // sorting it costs nothing and the block is ~0.01% of `read_trace`.
+        //
+        // The dependency is on `lower_median` doing a FULL sort rather than an
+        // `nth_element`, and it now lives in another file. If that ever changes,
+        // this `back()` silently stops being the maximum — so the coupling is
+        // named here, and `sample_window.hpp` says the same thing at the other
+        // end.
+        stats.median_gap_ms = depthcharge::lower_median(gaps.data(), gaps.size());
         stats.max_gap_ms = gaps.back();
-        const std::size_t mid = gaps.size() / 2;
-        stats.median_gap_ms =
-            (gaps.size() % 2 == 0) ? (gaps[mid - 1] + gaps[mid]) / 2.0 : gaps[mid];
     }
     return stats;
 }

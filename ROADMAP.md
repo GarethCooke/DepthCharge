@@ -486,6 +486,33 @@ real, and the reason D-B could not have seen it is worth more than the fix.]*
   session log §4, §5d.
 
 
+**D13 · The report prints a threshold and a median that are not derived from each other, and says
+nothing about it.** *[A — opened 2026-09-06 at the M5 close-out, found by review of the median
+convention fix. Latent: it misleads a reader, it does not misinform the board.]*
+
+- **What it is.** The M5 close-out gave `harness/src/trace.cpp` and `engine/` one median
+  CONVENTION. It did not give them one SAMPLE SET, and nothing says so. `LivenessClock` keeps a
+  rolling `SampleRing<double, kWindowSamples>` — 32 — because a threshold must track a cadence
+  that drifts; `TraceStats::median_liveness_gap_ms` is a whole-trace statistic because a report is
+  about the file.
+- **Why it matters.** `dc_replay`'s report line prints `liveness_threshold_ms` (from the clock's
+  last 32) beside `median_liveness_gap_ms` (all of them) and labels the second as the median the
+  first is a multiple of. On any trace with more than 32 liveness intervals they are different
+  quantities and **the printed numbers refuse to divide**: `kraken_btcusd_d10_20260816` reads
+  1000.6182 from the clock's window against 1000.3491 over all 59, so a reader checking
+  `threshold == 4.0 × median` finds 4002 against 4001.4 and has no way to know which is wrong.
+- **Three candidate fixes, not equivalent.** Print both medians and label them. Or have the report
+  derive its threshold from its own whole-trace median, which makes the report self-consistent and
+  makes it stop reporting what the board would compute. Or leave it and document the pair at the
+  point of use. **The middle one is the tempting one and is probably wrong**, since the report's
+  job on this line is to say what the shipped clock does.
+- **Not urgent, and the reason is worth stating:** the board is unaffected — it has only the
+  rolling window, which is the correct instrument for it — and every figure this milestone moved
+  was read off a trace with fewer than 32 liveness intervals, where the two coincide. It becomes
+  live the moment anyone quotes a cadence from a long capture.
+- Evidence: `harness/src/trace.cpp`'s note at the median call; `engine/include/depthcharge/sample_window.hpp`;
+  ARCHITECTURE §9 2026-09-06 (the median convention row).
+
 **D10 · The IDLE task on CPU 0 starves and the task watchdog aborts the board.** *[unowned — stage E
 declared it a separate stage; no brief, no branch, nobody on it as of 2026-09-06.]*
 

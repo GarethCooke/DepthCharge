@@ -1352,17 +1352,23 @@ TEST_CASE("...and what it calibrates to is 39,928 ms, which is a decision and no
         CHECK(q.ceiling_ms == doctest::Approx(depthcharge::kThresholdCeilingMs));
     }
 
-    // AND THE DEFERRED MEDIAN CONVENTION (strain 29) CANNOT REACH THIS
-    // DECISION, which is the argument that the M5 close-out's deferral costs
-    // this stage nothing. Nearest rank gives 19,963.97 and the interpolated copy
+    // AND THE MEDIAN CONVENTION (strain 29) NO LONGER REACHES THIS DECISION
+    // BECAUSE THERE IS ONLY ONE OF IT — closed at the M5 close-out, where this
+    // assertion inverted with the case at the foot of this file.
+    //
+    // It used to read *"nearest rank gives 19,963.97 and the interpolated copy
     // in `trace.cpp` gives 19,969.35; at a multiplier of 2.0 the two thresholds
-    // differ by 10.8 ms, 0.027% — and both land strictly inside the same bounds,
-    // so no branch anywhere reads them differently.
+    // differ by 10.8 ms, 0.027%"* and bound the difference at 11 ms. That bound
+    // is now vacuous — `trace.cpp` calls `depthcharge::lower_median`, so the
+    // report's threshold and the clock's are the same arithmetic over the same
+    // samples. **Equality is the stronger statement and it is what the deferral
+    // was always owed**, so the check asserts it rather than a slack window a
+    // second convention could creep back inside.
     const dc::harness::TraceStats t = dc::harness::read_trace(liveness_trace_path());
     const double other = p.multiple * t.median_liveness_gap_ms;
     CHECK(other > p.floor_ms);
     CHECK(other < p.ceiling_ms);
-    CHECK(other - r.threshold_ms < 11.0);
+    CHECK(other == doctest::Approx(r.threshold_ms).epsilon(1e-12));
 
     // And it never fires, over 221 s containing a 26.8 s book silence on a
     // socket whose pings never missed a beat. The Binance twin of Kraken's
@@ -1608,45 +1614,47 @@ TEST_CASE("a re-seed in flight is PUBLISHED as InFlight, and the book never grey
     CHECK(r.final_snapshot.reseed == depthcharge::ReseedState::None);
 }
 
-TEST_CASE("the report's median and the clock's median are two conventions, and they differ here") {
-    // **PINS A DIVERGENCE, NOT A CONTRACT, AND IS EXPECTED TO INVERT.** Same
-    // shape as the silent-stream fixture's expiry clause, and for the same
-    // reason: the thing recorded is wrong, and a test is how the correction
-    // announces itself instead of going unnoticed.
+TEST_CASE("the report's median and the clock's median are one convention, and they agree here") {
+    // **INVERTED AT THE M5 CLOSE-OUT (2026-09-06), WHICH IS WHAT THIS CASE WAS
+    // WRITTEN TO DO.** It was opened at M5 stage B2 pinning a DIVERGENCE, with
+    // an owner and an expiry, and its own text said the correct response was to
+    // invert it rather than delete or relax it. This is that inversion; the
+    // account below is kept rather than replaced, because the interesting part
+    // is not that the two now agree, it is what the disagreement cost.
     //
-    // `sample_window.hpp` says the median convention "matters enough to have one
-    // home" — a LOWER median by nearest rank, because an interpolated one
-    // invents an interval that never occurred on the wire — and
-    // `liveness_clock.hpp` and `age_estimator.hpp` both use it.
-    // **`harness/src/trace.cpp`'s statistics pass carries a second copy and
-    // interpolates.** The two agree to 0.1 ms at Anvil and Kraken, whose liveness
-    // cadences are flat, so the divergence was invisible for three milestones —
-    // the coincidence class again. At Binance they disagree on every committed
-    // capture with an even interval count, and **every Binance cadence figure
-    // this project has quoted came from the interpolated one**: 19,951.7,
-    // 20,011.6, 20,013.3 in `taxonomy_pins.inc`, and 20,004.8 in B1's log.
+    // WHAT WAS WRONG. `sample_window.hpp` says the median convention "matters
+    // enough to have one home" — a LOWER median by nearest rank, because an
+    // interpolated one invents an interval that never occurred on the wire — and
+    // `liveness_clock.hpp` and `age_estimator.hpp` both used it while
+    // **`harness/src/trace.cpp`'s statistics pass carried a second copy and
+    // interpolated.** The two were BELIEVED to agree to 0.1 ms at Anvil and
+    // Kraken, whose liveness cadences are flat, and that belief is what made the
+    // divergence look confined. **It is false at Kraken, measured while closing
+    // this card: `kraken_minagbp_d25_20260817` diverges by 0.4946 ms — five
+    // times the stated bound — and `kraken_btcusd_d25_20260816` by 0.1040.**
+    // Anvil holds, at 0.0081. So the divergence survived three milestones behind
+    // a bound nobody had re-taken: the coincidence class again, with an
+    // unmeasured reassurance in front of it. At Binance the two disagreed on
+    // every committed capture with an even interval count, and **every Binance
+    // cadence figure this project had quoted came from the interpolated one**:
+    // 19,951.7, 20,011.6, 20,013.3 in `taxonomy_pins.inc`, and 20,004.8 in B1's
+    // log. Those four figures moved to 19,947.7 / 19,962.8 / 19,973.9 / 19,950.6
+    // in the commit after this one, which is the pin movement and holds nothing
+    // else.
     //
-    // **NOT FIXED HERE, AND THE REASON IS GOLDEN MOVEMENT RATHER THAN SWEEP
-    // SIZE.** Adopting the shared convention rewrites the cadence figures quoted
-    // inside `taxonomy_pins.inc` — and *no existing golden moves* is precisely
-    // what makes a seven-commit split reviewable. Bundled into this stage,
-    // nothing in the diff would distinguish a convention change from a defect.
+    // WHY IT WAS DEFERRED, AND THE REASON WAS GOLDEN MOVEMENT RATHER THAN SWEEP
+    // SIZE. Adopting the shared convention rewrites cadence figures quoted
+    // inside `taxonomy_pins.inc`, and *no existing golden moves* is precisely
+    // what made B2's seven-commit split reviewable: bundled there, nothing in
+    // the diff would have distinguished a convention change from a defect.
     // **A convention change that moves pins must be its own stage, so that the
-    // moved pins have nothing else in the diff to hide behind.**
+    // moved pins have nothing else in the diff to hide behind** — honoured here.
     //
-    // OWNER: **M5 close-out** — not C, whose evening is already the threshold,
-    //   the ceiling's changed role, the panel decisions and strain 26's four
-    //   unbuilt remedies.
-    // EXPIRY: when `harness/` and `engine/` compute the median by one convention.
-    // TRIPWIRE: if any stage before the close-out needs to quote or re-pin a
-    //   Binance cadence figure, this closes first.
-    //
-    // **THE CORRECT RESPONSE IS TO INVERT THIS CASE, NOT TO DELETE OR RELAX IT.**
-    // If the close-out ships without inverting it, the clause moves to whichever
-    // stage next touches a cadence figure rather than lapsing. Carried in three
-    // places — here, `taxonomy_pins.inc`'s Binance comment, and DESIGN strain 29
-    // — which is the shape the silent-stream fixture already uses.
-    // ARCHITECTURE §9, 2026-08-26.
+    // WHAT THE CASE PINS NOW: that there is one convention, by asserting the
+    // two paths produce the identical double. That is a contract and no longer
+    // an expiry — it has no owner and no tripwire, and a second convention
+    // reappearing anywhere on the report path makes it red.
+    // ARCHITECTURE §9, 2026-08-26 (opened) and 2026-09-06 (closed).
     const dc::harness::ReplayResult r = liveness_replay();
     const dc::harness::TraceStats t = dc::harness::read_trace(liveness_trace_path());
 
@@ -1654,9 +1662,17 @@ TEST_CASE("the report's median and the clock's median are two conventions, and t
     CHECK(r.liveness_arrivals == 11);
     CHECK(t.liveness_events == 11);
 
+    // The clock's answer, unchanged by any of this — it always used the shared
+    // rule, and pinning it here is what says which of the two figures survived.
     CHECK(r.liveness_median_ms == doctest::Approx(19963.97).epsilon(1e-6));
-    CHECK(t.median_liveness_gap_ms == doctest::Approx(19969.35).epsilon(1e-6));
-    CHECK(r.liveness_median_ms != doctest::Approx(t.median_liveness_gap_ms));
+
+    // The report's answer, which used to be 19,969.35 and is now the clock's.
+    CHECK(t.median_liveness_gap_ms == doctest::Approx(19963.97).epsilon(1e-6));
+
+    // Not "approximately equal": the SAME arithmetic over the SAME samples, so
+    // the two doubles are bit-identical and the check says so. An epsilon here
+    // would re-admit a second convention that merely rounds the same way.
+    CHECK(r.liveness_median_ms == t.median_liveness_gap_ms);
 }
 
 // ---------------------------------------------------------------------------
