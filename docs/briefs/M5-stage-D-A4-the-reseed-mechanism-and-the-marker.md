@@ -243,12 +243,25 @@ difference from `None` is inside `draw_header`. Grey is not used.
 
 **The ping wire, the policy routing and the soak instrumentation — D-A3 ✅.** **The soak — D-C**,
 whose second run is gated on the firmware crash. Every rendering decision — **D-B**, closed;
-decision 2 is an input here and is not reopened by this stage. Reopening candidate (b) — the
+decision 2 is an input here and is not reopened by this stage.
+
+> **CORRECTED IN PLACE, M5 close-out 2026-09-06: D-C's second run is NOT gated on the firmware
+> crash.** That crash is unowned backlog **D10**, and **M5 stage E re-ran without it** — 27.81 h
+> continuous, one connection alive 27.59 h — which clears D-C §1's duration bar independently. The
+> gate was real when this brief's header carried it and this stage removed it from the header; it
+> survived here, in the out-of-scope paragraph, which is where a stale clause outlives the notice
+> of its own removal. Corrected rather than deleted, because *"this sentence was stale for a day
+> in the one paragraph nobody re-reads"* is the finding. Reopening candidate (b) — the
 owner's, and it means reopening decision 2 first. **The task-watchdog crash** — unowned, backlog **D10**.
 ROADMAP **D6**'s +8/+24 bytes and the price-axis window — not here; `sizeof` does not move.
 
 **To the M5 close-out:** the median convention (card 29) and strain 29's tripwire wording; the
 `CLAUDE.md` prose-versus-ordinal line; **propagating the 64,046 B correction into `M5-stage-C`'s two
+*[**ALREADY DONE when this was written, and the close-out found it so. `479bd91` — the commit that
+made the correction, 2026-08-27 — carried it into both of that brief's quotes on the same day. The
+item was then carried forward unchecked through D-A3's out-of-scope, this paragraph, D-C §9 and the
+close-out brief. A to-do that outlives its work is the same shape as everything else on that list,
+one layer up.*]*
 remaining quotes** (the source, `NOTES-binance.md`, already carries it); and the questions D-C's
 reading raised — check 4's 1.060× margin against §4.4's stated 2.29×, check 2's measured 1.024×
 clearance against stage C's claimed 1.99×, per-boot segmentation in `tools/soak_report.py`, that

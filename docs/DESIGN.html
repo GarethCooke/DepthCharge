@@ -378,8 +378,9 @@
     <span class="status"><b>stage D-A1 desk work done 2026-08-27</b> &mdash; <code>[env:depthcharge-binance]</code> builds, <code>DC_VENUE=3</code>, one TLS anchor for both hosts (a shared wildcard leaf, verified against each server). <b>The stage’s first lever was void:</b> the &ldquo;four WS buffers to PSRAM, +16,384&nbsp;B&rdquo; went with <code>esp_websocket_client</code> on 2026-08-16, so the 16&nbsp;KB was already inside the baseline and the projected +3,488&nbsp;B clearance of the double-buffer floor was really a <b>12,920&nbsp;B deficit</b>. Covered by <code>kReserveInternalBytes</code> 96&rarr;80&nbsp;KiB &mdash; the same obsolete sentence, and recoverable: worst-ever draw <b>62,140&nbsp;B through <code>connects=4</code></b>. <code>buf_lvl_</code> is the project’s <b>first deliberate PSRAM placement</b>, and <code>venue_budget.hpp</code> now asserts the venue adapter’s internal footprint at compile time so the panel cannot be lost at boot &mdash; mutation-verified. <b>Flashed 2026-08-27:</b> the Anvil control moved <code>budget=</code> by <b>exactly 16,384</b> with its rung unchanged, and the Binance board boots <b><code>depth=3 double-buffered</code></b> (<code>free=117,548 budget=35,628</code>, 156&nbsp;B off the projection) with an honestly grey ladder over 580 real depth frames. The cut buys that second buffer out of the network heap, so steady-state largest-block is <b>17,396&nbsp;B against mbedTLS’s 2&times;16,717&nbsp;B</b> &mdash; a 679&nbsp;B margin at <code>connects=1</code>, and <b>D-C records largest-block at every reconnect</b></span>
     <span class="status"><b>stage D-A2 done 2026-08-29 &mdash; a LIVE Binance book on the panel</b>, <code>live=1 rows=54/54</code> held 60&ndash;140&nbsp;s with <code>bracket ok=4 FAIL=0</code> and <code>oversize=0</code>. The seed is fetched by a <b>third task</b> &mdash; the first new cross-task hand-off since M3 &mdash; because <code>esp_tls_conn_new_async</code> does not converge on this build (1,780 polls, four runs, stuck at <code>conn_state=1</code>) and a blocking fetch on the feed task stalled it 1.93&nbsp;s and <b>broke the very bracket it existed to satisfy</b>. A fetch and a TLS reconnect <b>never overlap</b>: a fetch takes the largest free internal block to <b>~4&nbsp;KB against the 16,717&nbsp;B one session needs</b>. <code>kFrameCapacity</code> 16&rarr;64&nbsp;KiB (<b>2.29&times;</b> this venue’s largest message) stopped the board re-greying every ~23&nbsp;s &mdash; its old comment was <b>Anvil’s reasoning, false at a diff venue</b></span>
     <span class="status"><b>stage D-A4 done 2026-09-06 &mdash; the re-seed is ADOPTED, and strain 28 closes.</b> A body that lands on a live book is now rolled forward across the diffs held during the fetch, so the ladder is rebaselined with a <code>Snapshot</code> where a <code>Gap</code> used to go and <b>the panel never greys for a re-seed</b> (D-B decision 2). <b>Candidate (a), and it cost +32&nbsp;B of internal SRAM &mdash; four counters</b>: stage C priced it at ~128&nbsp;KiB, and D-A2 had already bought 8&nbsp;KiB + 512&nbsp;KiB in PSRAM for the pre-seed path, sized against the same 15&nbsp;s deadline and idle for the whole life of a seeded book. Headroom 45,616&rarr;<b>45,584&nbsp;B</b>, now a pinned constant rather than prose that had been wrong in two documents. <b>Two things it found:</b> <code>replay_buffer</code>&rsquo;s bracket and <code>apply_buffered</code>&rsquo;s continuity check <b>contradict each other</b> &mdash; a body whose <code>lastUpdateId</code> fell inside a coalesced message went live for one event and then grey &mdash; unfired only because the 100&nbsp;ms stream aligns <b>18 of 18</b> times while the 1,000&nbsp;ms one straddles <b>2 of 6</b>; and <b>D-B&rsquo;s header marker could not be drawn on the build it was decided for</b>, because a live BTCUSDT price was 15 characters and 74&nbsp;px on a 64&nbsp;px panel. <b>Both closed by the owner at the split, with the fifth and sixth rendering decisions</b> &mdash; the value trims trailing zeros, and during a fetch the marker (<code>GET</code>) outranks the age. It now draws on every header this project renders; <b>ROADMAP D11 closes</b></span>
+    <span class="status"><b>M5 close-out done 2026-09-06 &mdash; card 29 closes, and three margins are re-ruled.</b> The median convention has one home at last: <code>trace.cpp</code> calls <code>lower_median</code>, five Binance cadence figures moved to the clock's own arithmetic (19,951.7 &rarr; 19,947.7 and four more), the pin movement is its own commit and the two-conventions test is INVERTED rather than deleted. <b>Three bounds are superseded, not corrected</b> &mdash; the frame slot's headroom 2.29&times; &rarr; <b>1.060&times;</b>, the liveness multiplier's jitter clearance 1.99&times; &rarr; <b>1.024&times;</b>, and the median convention's own &ldquo;agree to 0.1 ms at Kraken&rdquo; (it is <b>0.4946 ms</b>) &mdash; each the same quantity over a population that could not contain its own worst case. <b>Four instruments that reported coverage they did not have are now structural:</b> <code>venue_budget.hpp</code> is host-compilable and its budget assertion runs on all three venue arms, <code>sizeof(SnapshotChannel) == 3528</code> is pinned, <code>soak_report.py</code> owns the <code>-- reseed</code> line and segments per boot, and ROADMAP D8's row identity is asked rather than assumed. <b>Neither sizing nor <code>k</code> moves</b>; what the readings changed is what may be claimed for them. ARCHITECTURE &sect;9, 2026-09-06 (four rows).</span>
     <span class="status">first-party C++ <b>~19,800 lines</b></span>
-    <span class="status">drawn from source at <b>b5578b6</b> + M5 stage D-A2 working tree; &sect;08 card 28 and the status strip refreshed at <b>M5 stage D-A4</b> (2026-09-06)</span>
+    <span class="status">drawn from source at <b>b5578b6</b> + M5 stage D-A2 working tree; &sect;08 card 28 and the status strip refreshed at <b>M5 stage D-A4</b> (2026-09-06), card 29 closed and &sect;04's host-coverage paragraph corrected at the <b>M5 close-out</b> (2026-09-06)</span>
   </div>
 </header>
 
@@ -1885,17 +1886,29 @@ classDiagram
     <code>cmake --workflow --preset host</code> configures, builds and tests in one step
     (<code>host-mingw</code> is the Windows MinGW-w64 equivalent; the two presets share a
     binary directory, so switching between them needs <code>build/host</code> cleared).
-    Eleven ctest entries run; the main doctest binary carries <b>211 cases across sixteen
-    files</b>, and a second doctest binary re-runs the parser-facing subset of them against the
-    other implementation of the parse seam. <b>Ten of those files test <em>firmware</em>
-    headers</b> — <code>frame_reassembler</code>, <code>gap_histogram</code>,
-    <code>stall_probe</code>, <code>reject_log</code>, <code>ws_supervisor</code>,
-    <code>ladder_render</code> (with <code>ladder_font</code>), <code>panel_budget</code> and,
-    from M4 stage D, <code>liveness_watchdog</code>, <code>resync</code> and
-    <code>venue_build</code> are all deliberately ESP-IDF-free so that the reassembly, the
-    bucketing, the stall verdict, the reject capture, the reconnect policy, the 64×64 geometry,
-    the framebuffer arithmetic, <b>the decision to grey the panel</b> and <b>the checksum heal's
-    pacing</b> are ctest's problem rather than the bench's. (<code>staleness</code> was on this
+    Five doctest binaries run alongside the replay and tool entries: the second re-runs the
+    parser-facing subset against the other implementation of the parse seam, <b>two</b> compile
+    the venue-conditional firmware headers once per venue arm
+    (<code>dc_tests_kraken</code>, <code>dc_tests_binance</code>), and the fifth
+    (<code>dc_tests_noping</code>) is a ping-policy arm rather than a venue one. <b>Several of those test files
+    test <em>firmware</em> headers</b> — <code>frame_reassembler</code>,
+    <code>gap_histogram</code>, <code>stall_probe</code>, <code>reject_log</code>,
+    <code>ws_supervisor</code>, <code>ladder_render</code> (with <code>ladder_font</code>),
+    <code>panel_budget</code>, <code>liveness_watchdog</code>, <code>resync</code>,
+    <code>venue_build</code> and, from the M5 close-out, <code>venue_budget</code> are all
+    deliberately ESP-IDF-free so that the reassembly, the bucketing, the stall verdict, the
+    reject capture, the reconnect policy, the 64×64 geometry, the framebuffer arithmetic,
+    <b>the decision to grey the panel</b>, <b>the checksum heal's pacing</b> and <b>the bound on
+    what an adapter may take out of internal SRAM</b> are ctest's problem rather than the
+    bench's.
+    <br><br>
+    <b>The counts are deliberately not restated here, and the exact enumeration of which
+    firmware headers the host suite reaches lives in ARCHITECTURE §9's 2026-08-30 row</b> — the
+    one place it is derived rather than remembered. This paragraph carried
+    <em>"eleven ctest entries … 211 cases across sixteen files … ten of those files"</em> for
+    long enough that all three had drifted, which is the same rule <code>CLAUDE.md</code> states
+    for the header count: a number copied into a second file is a number that will disagree with
+    the first. (<code>staleness</code> was on this
     list until stage D deleted it; the brief said of its replacement that "no host test can
     check" the rewire, and that is true of the BEHAVIOUR — a panel greying four seconds after a
     heartbeat stops — but not of the POLICY, which is arithmetic, and arithmetic is cheap to
