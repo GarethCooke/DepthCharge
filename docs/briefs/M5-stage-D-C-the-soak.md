@@ -1,10 +1,14 @@
 # M5 Stage D-C — the soak
 
-**Track:** Bench [owner-driven, wall-clock] · **Status:** **Started and not done — one run taken
-2026-08-30/09-01 and read; §1's > 24 h is NOT met (7 boots, longest 9.84 h), so a second run is
-owed. §2's four gaps are closed by D-A3 and confirmed from the capture; see the session log. AND
-THE SECOND RUN NOW CARRIES D-A4's BOARD BOX — that stage landed 2026-09-06 with its mechanism
-proven on the host and unflashed, and §4's check 7 is the reading it is owed** ·
+**Track:** Bench [owner-driven, wall-clock] · **Status:** ✅ **DONE 2026-09-10, on the second run.**
+**§1 is met — 40.25 h continuous**, in a 57.26 h two-boot capture
+(`hardware/bench-2026-09-07-D-C-run2-soak.md`). All seven checks read; **D-A4's inherited board box
+is closed with `adopted=5`**; check 1 met the mid-session reconnect it exists for and passed at
+**3.31×**; **D12 answered** — no `>=2x med` crossing on 10,260 calibrated samples. Checks 3 and 4
+are recorded **not clean**: `max_held=4 of 4` sustained, and the frame-slot margin is now
+**1.0048×**. *The first run (2026-08-30/09-01, 7 boots, longest 9.84 h) did not meet §1 and its
+reading stands as `bench-2026-08-30-D-C-soak.md`.* **Blocks nothing further; the M5 close-out is
+unblocked.** ·
 **Size:** a desk sitting, then a run longer than a day, then a reading
 **Written:** 2026-08-30 by the desk seat at D-B's close.
 
@@ -442,19 +446,43 @@ over 25.39 h. The event is a mid-run dip.
       beside it, inflated sha256 `61f0a0f2…`. All four gaps closed off the board's own output, and
       **`RE_RESEED` met a real board line for the first time: 1,473 of 1,473, including the
       `cover=-/-` sentinel.** One boot, so the parse is proven and the per-boot placement is not.
-- ☐ A single run **exceeding 24 hours**, captured and gzipped into `hardware/`.
-- ☐ All **seven** checks read and recorded with their numbers.
-- ☐ **D-A4's board box, inherited 2026-09-06**: `DisplaySnapshot::reseed` reaching `InFlight` on the
-      board, and check 7's reading recorded **whatever it says** — including a `triggers=0`, which is a
-      result about the run's length and must be written down as one rather than left out.
-      **Once per BOOT**: the counters are per-boot and nothing resets them, so an end-of-run reading
-      discards every boot but the last.
-- ☐ `kReserveInternalBytes` confirmed or moved on the evidence, with the **current** steady-state
-      largest block re-established first and the stale remedy sentence corrected.
-- ☐ `k` confirmed at 2.0 or raised alone, with the interval that raised it quoted.
-- ☐ Any decision with architectural weight to `ARCHITECTURE.md` §9; `docs/DESIGN.html` where a card
-      moves — cards 27 and 29 both have a plausible D-C half.
-- ☐ ctest green; session log · ROADMAP; split proposed; nothing committed until approved.
+- ☑ A single run **exceeding 24 hours**, captured and gzipped into `hardware/`. **Met 2026-09-10 —
+      40.25 h continuous** on the second boot of a 57.26 h capture,
+      `hardware/bench-2026-09-07-D-C-run2-soak-derived.log.gz`. **Committed as a derived event log,
+      not the raw**: the raw gzip is 17.1 MB, over `SEND-TO-…-soak.md:20`'s ~10 MB bar, so the rule
+      there was followed — derived log 3.47 MiB, **both raw digests pinned** and the raw archived
+      outside the repo. The drop is **proven** lossless: `soak_report` over raw and over derived
+      gives byte-identical measurement sections. See that record's §1.1–§1.3.
+- ☑ All **seven** checks read and recorded with their numbers, in
+      `hardware/bench-2026-09-07-D-C-run2-soak.md` §3–§4. Checks 3 and 4 are recorded as **not
+      clean** rather than passed: `max_held=4 of 4` sustained over 2,038,036 published frames, and
+      the largest accepted message is **65,220 B of 65,536 — a 1.0048× margin**.
+- ☑ **D-A4's board box, inherited 2026-09-06 — CLOSED.** `DisplaySnapshot::reseed` reached
+      `InFlight` on the board and adopted **five** times (`adopted=5 unbracketed=0
+      hold-overflow=0 declined(no-hold)=0`), each onto a still-`Seeded` book by construction of the
+      counter at `binance_adapter.hpp:1184`. Read **per boot**, and B1's `triggers=3, adopted=0` is
+      written in by hand because `(b3)`'s ladder short-circuits on run-wide `adopted>0` and printed
+      no verdict naming it — the residue check 7 predicted, on its first real capture.
+- ☑ `kReserveInternalBytes` **confirmed at 104 KiB on evidence**, steady state re-established at
+      **51,188 B** first, and the stale remedy sentence corrected at §4.1. The reading is the
+      **mid-session** reconnect at 16:03:14 — `before=55284`, **3.31×** the 16,717 B threshold —
+      which is the case §5 says the check exists for and which two previous runs passed without
+      meeting.
+- ☑ `k` **confirmed at 2.0**, not raised, and no interval raised it: `>=2x med = 0` over **10,260
+      calibrated samples** across two boots. The worst interval in 57.26 h is **35,052 ms =
+      1.753 × median**, and it fell on a **healthy** socket 5.5 h after the reconnect — so the
+      verdict does not depend on excluding the venue's wind-down. **D12 answered**: no crossings
+      occur after calibration completes.
+- ☑ Architectural weight to `ARCHITECTURE.md` §9 — **one row, 2026-09-10**: two counters that look
+      like a pair are not a pair, and their difference is not a failure rate. `docs/DESIGN.html`
+      updated where D-C's reading reached it: the **D-A1 heap strip**, whose `17,396 B / 679 B`
+      margin the brief commissioned this stage to re-establish, plus the provenance strip. Cards 27
+      and 29 are **not** moved — 29 was closed at the close-out, and 27's D-C half is the frame-pipe
+      constraint, which §7 and §9 keep closed to a bench record.
+- ☑ ctest green (52/52); session log appended; **split proposed, nothing pushed.** ROADMAP:
+      **M5 is not ticked** — D-C blocks the close-out rather than being it, and the close-out's list
+      is its own brief. Backlog **D13** opened; **D9** gains its first positive evidence and no
+      interval; **D10** gains a third measurement and stands.
 
 ## 9 · Out of scope
 
@@ -685,3 +713,80 @@ into the capture, gzip it beside the others in `hardware/`, and read the seven c
 by hand off `socket up:`, check 7 off `(b3)`'s per-boot table**, recording `hold-overflow`,
 `unbracketed` and `declined(no-hold)` yourself, since the `adopted>0` branch short-circuits past
 all three.
+
+### 2026-09-10 · Opus 5 · the run, read — §1 met and D-A4's box closed
+
+**Done. This stage is complete.** 57.26 h of board uptime in two boots; **B2 ran 40.25 h
+continuous**, which meets §1. Capture, marker and reading are committed:
+`hardware/bench-2026-09-07-D-C-run2-soak.md` and `…-derived.log.gz`, **markers 2**. The raw gzip is
+17.1 MB — over `SEND-TO-…-soak.md:20`'s ~10 MB bar and nearly double the largest blob this repo has
+ever taken — so what is committed is a **derived event log** (3.47 MiB) with both raw digests pinned
+and the raw archived outside the repository. **The drop is proven, not asserted**: `soak_report`
+over the raw and over the derived produces byte-identical measurement sections; the one figure that
+differs, `out-of-order lines` 63 → 58, is an adjacency artefact whose 63 lines are all *present* in
+the derived log. See that record's §1.1–§1.3.
+
+**The four headline results.**
+
+1. **D-A4's board box is CLOSED.** `adopted=5 unbracketed=0 hold-overflow=0 declined(no-hold)=0`.
+   Five re-seeds reached `InFlight` and reconciled on a still-`Seeded` book — by construction of
+   the counter at `binance_adapter.hpp:1184`, not by inference. Not a single-event fluke.
+2. **Check 1 was stressed for the first time and passed at 3.31×.** The venue closed a 32.21 h
+   connection cleanly, the board reconnected in 2.4 s, and the mid-session reading is
+   `before=55284 after=51188`. Run 1 recorded that it passed *"without having been stressed"*; this
+   run met the case. `kReserveInternalBytes` **confirmed at 104 KiB on evidence**.
+3. **D12 answered, and on the strong form.** `>=2x med = 0` over **10,260 calibrated samples**. The
+   worst interval in 57.26 h is **35,052 ms = 1.753 × median** and it fell on a **healthy** socket
+   5.5 h after the reconnect — so `k = 2.0` does not depend on excluding the venue's wind-down.
+   No crossings occur after calibration completes.
+4. **D9 gains its first positive evidence and no interval.** One clean close at 32.21 h, 1.17 GB.
+
+**Decisions, with why.**
+
+1. **32.21 h is recorded as an observation, not an interval, and the record says so in terms.**
+   §1's premise — *"the disconnect the venue guarantees"* at 24 h — has now been refuted twice, and
+   replacing it with *"Binance closes at ~32 h"* from **n = 1** would be the same error with a
+   better number. A second close makes n = 2, which is still not a period; if the interval is worth
+   a number it wants a campaign, not a longer soak.
+2. **`wd=8` is attributed, not counted.** All eight firings are inside **461 seconds** spanning the
+   close, with `wd=0` across the preceding 32 h of B2 and the whole of B1. Two fired **~90 s before
+   the peer closed** — check 6(a) on its strongest case, the clock beating the transport to a
+   socket that was ending — and six in the re-seed window after the reconnect. Eight spread over
+   40 h would have been a finding about the clock; eight in one event is the clock working.
+3. **The `triggers=11` vs `adopted=5` gap is design, not loss — and it is the stage's §9 row.**
+   A trigger whose fetch is in flight when a `seq-gap` resync takes the book `Unseeded` has its
+   body adopted as an ordinary **seed**; `:1184`'s guard means no adoption is counted and **no
+   failure counter is bumped either**. Verified on an instance (B2 trigger 3 at 09:02:43, STALE at
+   09:02:50, `resync_req` 1,623 → 1,681). At one resync per ~70 s absorption is the *common* case.
+   The rule generalises past this ledger, so it is in §9: **the gap between two instruments is not
+   a third instrument.**
+4. **B1's `triggers=3, adopted=0` is written in by hand, exactly as check 7's note instructs.**
+   `(b3)`'s ladder short-circuits on run-wide `adopted>0` and printed only the adoption verdict.
+   **The residue that note predicted arrived on its first real capture** — the table carried B1, the
+   verdict did not.
+5. **Checks 3 and 4 are recorded as NOT clean, and 4's margin is the one to watch.** `max_held=4 of
+   4` sustained over 2,038,036 published frames, third run running. And the largest accepted message
+   is **65,220 B of 65,536 — 1.0048×**. Three populations, one quantity, one direction: 2.29× →
+   1.060× → 1.0048×. §9 keeps the sizing closed and this record does **not** re-open it, but a
+   constant whose observed margin halves with every population increase is the close-out's to look
+   at. The overflow *rate* keeps vindicating the decision: 0.417% → 0.000049%.
+6. **Stopped on the reading, not the clock**, per the owner's instruction. `below=0` throughout, so
+   nothing said more hours were pointless — but §1, check 7, check 1's stressed case, D9 and D12
+   were all answered, and the only thing left to buy was a second venue close at ~32 h for one more
+   sample. That is a future run's, not this one's.
+7. **D10 stands and is not this stage's.** B1 died of it at 17.01 h — `task_wdt: IDLE (CPU 0)`,
+   `dc_feed` on core 0. Third measurement: 6 aborts in 34.56 h, 1 in 32.25 h, **1 in 57.26 h**. The
+   rate is falling; the defect is not gone.
+8. **The marker mechanism worked and is worth keeping.** `markers : 2` in PROVENANCE — the first
+   D-C capture that can name its own image. The sidecar-then-concatenate route exists because
+   appending to a live `log2file` capture is silently overwritten; both marker lines are also in
+   this log's 2026-09-07 entry, so losing the sidecar costs nothing.
+
+**Exact next step. The M5 close-out**, which this stage was the last blocker for. It inherits, from
+here rather than from a re-reading: check 4's **1.0048×** margin trend; whether the liveness clock
+should re-derive its median **per connection** rather than per boot (check 5 — B2's reconnect did
+not re-enter UNCALIBRATED, so a threshold derived from a dead socket was carried across the venue's
+own close, and this is the first run where that actually mattered); teaching `soak_report` the
+`socket up:` heap pair so **check 1 stops being a hand reading**; and `(b3)`'s short-circuit, which
+hid a boot on its first real capture. **M5 is not ticked in `ROADMAP.md`** — the close-out is its
+own brief and its own list.
