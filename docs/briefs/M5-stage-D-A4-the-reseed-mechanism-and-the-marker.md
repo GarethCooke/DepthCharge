@@ -251,7 +251,14 @@ decision 2 is an input here and is not reopened by this stage.
 > gate was real when this brief's header carried it and this stage removed it from the header; it
 > survived here, in the out-of-scope paragraph, which is where a stale clause outlives the notice
 > of its own removal. Corrected rather than deleted, because *"this sentence was stale for a day
-> in the one paragraph nobody re-reads"* is the finding. Reopening candidate (b) — the
+> in the one paragraph nobody re-reads"* is the finding.
+>
+> **AND IT IS DONE. D-C's second run was read 2026-09-10 and met §1 directly** — 40.25 h continuous,
+> so the bar no longer rests on stage E clearing it by proxy. **That run also closed THIS stage's
+> last open box:** `DisplaySnapshot::reseed` reached `InFlight` on the board and adopted **five**
+> times, `unbracketed=0`, each onto a still-`Seeded` book. **D-A4 is complete.** The crash is still
+> unowned **D10** and took the run's first boot at 17.01 h, which is why it never was the gate.
+> Reading: `hardware/bench-2026-09-07-D-C-run2-soak.md`. Reopening candidate (b) — the
 owner's, and it means reopening decision 2 first. **The task-watchdog crash** — unowned, backlog **D10**.
 ROADMAP **D6**'s +8/+24 bytes and the price-axis window — not here; `sizeof` does not move.
 
