@@ -34,7 +34,7 @@ one to check a restored copy against — the gz's own digest depends on the comp
 
 The marker sidecar is **concatenated at the head**, per the corrected deliverable 2. `markers : 2`
 is that mechanism working: this is the first D-C capture that can name its own image. The image
-still cannot name itself — `main.cpp:114` reads *"DepthCharge M4 stage D"*, **backlog D13**.
+still cannot name itself — `main.cpp:114` reads *"DepthCharge M4 stage D"*, **backlog D14**.
 
 ### 1.2 · What was kept and what was dropped
 

@@ -481,7 +481,7 @@ over 25.39 h. The event is a mid-run dip.
       constraint, which §7 and §9 keep closed to a bench record.
 - ☑ ctest green (52/52); session log appended; **split proposed, nothing pushed.** ROADMAP:
       **M5 is not ticked** — D-C blocks the close-out rather than being it, and the close-out's list
-      is its own brief. Backlog **D13** opened; **D9** gains its first positive evidence and no
+      is its own brief. Backlog **D14** opened; **D9** gains its first positive evidence and no
       interval; **D10** gains a third measurement and stands.
 
 ## 9 · Out of scope
@@ -680,7 +680,7 @@ operator instructions were found while confirming it, and are corrected in the s
 5. **The banner was NOT fixed first, and that is the owner's trade.** `main.cpp:114` still reads
    *"DepthCharge M4 stage D"*. Rebuilding for a cosmetic string would have started a 48 h soak on a
    binary with **no shake-out**, discarding the 4.10 h of continuous single-boot running that is
-   the only reason to trust the image already on the board. Opened as **ROADMAP D13**, with the
+   the only reason to trust the image already on the board. Opened as **ROADMAP D14**, with the
    note that the fix is not only the string: §6 leaves the build-identifier question open and
    §9's 2026-08-29 rule makes it a new decision rather than part of the bug.
 6. **The pre-flight capture is committed, because a deliverable met from evidence nobody keeps is

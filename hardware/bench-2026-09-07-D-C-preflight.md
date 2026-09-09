@@ -26,7 +26,7 @@ the source before the source was left behind.
 
 **`markers : 0`, and that is a defect of this capture that the run it precedes does not repeat.**
 The image cannot name itself — `main.cpp:114` still prints *"DepthCharge M4 stage D"*, now
-**backlog D13** — so the commit above is attributed from the desk's own flash record, taken
+**backlog D14** — so the commit above is attributed from the desk's own flash record, taken
 minutes earlier in the same session. That is stronger than the first D-C run's inference from
 behaviour and timing, and it is still not something the file says about itself.
 

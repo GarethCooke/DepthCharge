@@ -302,6 +302,34 @@ threshold against Kraken's ~4 s, which is the venue's cadence and not a defect i
 Each clause belongs to exactly one stage. That was the test of whether M4's split was drawn in the
 right places, and it is the test of this one.
 
+> **AMENDED 2026-09-10, AT M5's CLOSE — and the amendment is applied here rather than assumed,
+> because the milestone was about to be ticked against a paragraph claiming more than the board
+> does.** D-C's brief §6 carried this as *"a precondition that is not D-C's work"* which *"should
+> land before D-C so the soak knows what it is accepting"*. **It never landed**, and D-C ran and was
+> read against the unamended text. Landing it at the close is late; ticking without it would have
+> been worse.
+>
+> **The greying clause is narrowed to the SOCKET.** *"greys when the feed dies"* is read as **greys
+> within the calibrated liveness threshold of the socket falling silent** — which D-C run 2
+> confirmed on the strongest case available, the clock firing ~90 s before the venue's own clean
+> close of a 32.21 h connection.
+>
+> **A subscription that stops server-side while the socket stays up moves into the HONESTY clause,
+> as a fourth thing this object inherits and does not choose.** The board does **not** detect it —
+> that is stage B2's reduced parity claim, stated in D-C §4.6 — and D-C check 6(c) is recorded
+> **untested**, because no such event occurred in 57.26 h. **It is not a defect and it is not
+> silently absent from the DoD any more.**
+>
+> **And the *"~80 s"* in the clause below is superseded by measurement.** The board's calibrated
+> Binance threshold is **39,985 ms** (`2.0 × median 19,992 ms`), one of the three values D-C §6
+> lists as disagreeing. The *comparison* the clause draws — a Binance ladder greys far slower than
+> Kraken's ~4 s — survives, at roughly **10×** rather than twenty. The clause's point was the order
+> of magnitude and the honesty about it, and both stand.
+>
+> **What this amendment does NOT do is lower the bar to fit the result.** Every narrowing here was
+> specified in D-C's brief before the run, and each replaces a claim the board never made with the
+> one it does. The un-narrowed sentence would have had M5 close on detection it does not have.
+
 ## Out of scope
 
 The carrier PCB (M6). The enclosure and the encoder (M7). The runtime venue toggle (M7). The client

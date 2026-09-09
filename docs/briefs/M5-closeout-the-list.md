@@ -4,8 +4,8 @@
 split approved and committed, and the tree has moved past it (`dab312b` and earlier).
 **And the second gate has now fallen too: D-C's second run was read 2026-09-10 and met §1** at
 40.25 h continuous, so the *"this does NOT close M5"* clause below is discharged on both halves.
-**What remains is what D-C handed up**, listed at the end of its session log and repeated in §
-*Inherited from D-C* below · **Size:** one desk evening, possibly two
+**M5 CLOSED 2026-09-10.** What D-C handed up is indexed in § *Inherited from D-C* below and filed
+elsewhere — one stage, three backlog cards · **Size:** one desk evening, possibly two
 **Written:** 2026-09-06 by the desk seat, from the items D-A4 and D-C accumulated.
 **Executor:** Claude Code. **No new rendering decisions, no new mechanism.** Everything here is
 already known and already written down somewhere; this stage is where the somewheres agree.
@@ -18,8 +18,9 @@ because that run now carries D-A4's board box as well as its own eight. ROADMAP'
 > landed 2026-09-06 and is on master; **D-C's second run met §1 at 40.25 h continuous** and closed
 > D-A4's board box at `adopted=5`. That row now reads *"Owed: nothing"*. Left standing rather than
 > rewritten because it records what the gate was — and because the sentence quoting ROADMAP is
-> exactly the kind of restatement §5 of this brief warns about. **What M5 still waits on is the
-> items D-C handed up, below.**
+> exactly the kind of restatement §5 of this brief warns about. **M5 closed on 2026-09-10**, with
+> its DoD paragraph amended at the close rather than merely ticked, and with the frame-slot margin
+> named as open in its ROADMAP row rather than closed quietly over.
 
 **Read first**
 
@@ -30,7 +31,8 @@ because that run now carries D-A4's board box as well as its own eight. ROADMAP'
 | `docs/briefs/M5-stage-D-C-the-soak.md` §2 | The four numbers that disagree with themselves; parts 2 and 3 are its unfinished half. |
 | `CLAUDE.md`, the commit-discipline section | Part 5 edits it. Read what is there before adding to it. |
 
-**Depends on:** nothing. **Blocks:** M5's close, jointly with D-C's second run.
+**Depends on:** nothing. **Blocked** M5's close, jointly with D-C's second run; **both fell and M5
+closed 2026-09-10.**
 
 ---
 
@@ -55,7 +57,7 @@ Three, all already measured; none needs new work, only propagation and a ruling.
 - **D-C check 4's 1.060× margin against §4.4's stated 2.29×.** *[Ruled 2026-09-06 — superseded, not
   wrong, both being capacity over the largest observed message. **And D-C's second run has since
   added a third: 1.0048×.** The pair is now a trend, which is a different question from the one this
-  bullet asked; see § *Inherited from D-C* item 1.]*
+  bullet asked, and it is now a stage of its own: `docs/briefs/M5-stage-F-the-frame-slot-margin.md`.]*
 - **D-C check 2's measured 1.024× clearance against stage C's claimed 1.99×.** *[Ruled 2026-09-06 —
   one quantity over two populations. **Settled at D-C's second run**, which put `>=2x med` at 0 over
   10,260 calibrated samples and found the worst interval on a healthy socket at 1.753× median, so
@@ -79,8 +81,8 @@ The §9 family, four instances added by D-A4 alone. Each of these is a live one.
 > is also the record of what the milestone was carrying. **Two of them were then exercised on real
 > hardware for the first time by D-C's second run** — the `-- reseed` grammar matched 1,473 of 1,473
 > board lines, and the per-boot segmentation put B1 and B2 in separate rows, which is what made
-> check 7 readable. **And the same shape is back, one grammar over: see § *Inherited from D-C*
-> item 3.**
+> check 7 readable. **And the same shape is back, one grammar over — `RE_SOCK_UP` does not read the
+> `socket up:` heap pair, so check 1 is still a hand reading: backlog D16.**
 
 - **`tools/soak_report.py` does not own the `-- reseed :` line**, so it passes its own pre-flight —
   *non-zero counts on every regex it owns* — while covering nothing of D-A4's reading. Teach it the
@@ -413,51 +415,26 @@ the conclusion can be re-derived; one that names only the conclusion can only be
 
 ---
 
-## Inherited from D-C, 2026-09-10
+## Inherited from D-C, 2026-09-10 — and all four now live elsewhere
 
-**Four items, and none of them is on the original list**, because all four were produced by the
-second run rather than by the desk evening that wrote this brief. They are stated with their
-evidence rather than their conclusion, per the rule the section above arrives at.
+**This section is an INDEX, not a list.** It was written on 2026-09-10 with the four items stated in
+full, and they were filed the same day — so the detail moved and this stayed as the pointer.
+**Restating them here would be the fact-stated-twice failure this brief's own §5 is about**, and it
+would be the third time in four days that a list in this repository disagreed with its subject.
 
-1. **`kFrameCapacity`'s observed margin is now 1.0048×, and the trend is the item — not the
-   constant.** Largest accepted message **65,220 B of 65,536**, against run 1's 61,823 B (1.060×)
-   and §4.4's 28,639 B (2.29×). **Three populations, one quantity, one direction.** The overflow
-   *rate* keeps vindicating the sizing decision — 0.417% at the old 16,384 B slot, **0.000049%**
-   here, one event in 2,038,036 published frames — so this is not an argument to resize. **It is a
-   question about what may be CLAIMED for the constant**: §9 keeps the sizing closed, and a margin
-   that halves with every population increase is a bound computed over a population that may not
-   contain its own worst case. That is the phrase card 29 already uses for two other figures in
-   this milestone. Evidence: `hardware/bench-2026-09-07-D-C-run2-soak.md` §4 check 4.
+| what | where it lives now | why there |
+| --- | --- | --- |
+| **The frame-slot margin — 65,220 B of 65,536, i.e. 316 B, trending 2.29× → 1.060× → 1.0048× across three populations, one oversize already fired** | **A STAGE:** `docs/briefs/M5-stage-F-the-frame-slot-margin.md` | It has a falsifiable question, a measurable answer and a **sizing decision with budget consequences** at the end of it — D-A1 priced raising `kFrameCapacity` and found a 12,920 B deficit where it expected clearance. That is not a line beside two tool fixes. |
+| Should the liveness clock re-derive its median **per connection** rather than per boot | backlog **D15** | A design question with evidence but no decision pending; it needs a harness experiment, not a soak. |
+| Teach `soak_report` the `socket up:` heap pair, so **check 1 stops being a hand reading** | backlog **D16** | A tool fix. Cheapest item on the list, and the same shape as the `-- reseed` gap M5 already closed. |
+| `(b3)`'s verdict short-circuits on `adopted > 0` and **hid a boot on its first real capture** | backlog **D17** | A tool fix, predicted in writing three days before it happened. |
 
-2. **Should the liveness clock re-derive its median per CONNECTION rather than per boot?** D-C run 1
-   raised this as *"the close-out's candidate fourth number"* and could not test it — it had no
-   mid-session reconnect. **Run 2 does, and it is the first time the question has had teeth:** the
-   reconnect at 16:03:14 did **not** re-enter UNCALIBRATED, so a threshold derived from a socket
-   that no longer existed was carried straight across the venue's own close. It did no harm here
-   (34 of 20,584 `-- age` lines uncalibrated, 0.17%; the clock fired correctly 90 s *before* the
-   close). The question is whether that is correct or merely lucky. Evidence: same record, check 5.
+**And one thing that is NOT an item, recorded so it is not adopted as one.** The `triggers=11` vs
+`adopted=5` gap is **design, not loss** — a trigger whose fetch is in flight when a `seq-gap` resync
+takes the book `Unseeded` has its body adopted as an ordinary seed, counted by nothing, because
+nothing failed. It has an `ARCHITECTURE.md` §9 row of its own (2026-09-10). Whether the adapter
+*should* distinguish that case is a change to **what is counted**, not to what may be inferred, and
+it wants a brief rather than a line on any list.
 
-3. **Teach `tools/soak_report.py` the `socket up:` heap pair, so check 1 stops being a hand
-   reading.** `RE_SOCK_UP` stops at `rssi` and never captures `largest internal before=/after=`,
-   which `ws_transport.cpp:667` has printed since D-A3. So the report's reconnect table has columns
-   for `dns_ms`, `conn+upg_ms` and `rssi` and **none for the two numbers the most load-bearing check
-   reads** — while the census prints `socket up: N`, which reads as coverage. Worse, the section
-   headed *LARGEST FREE BLOCK — full series* is the SOAK line's **periodic** sampler, which §5 of
-   D-C's brief says in terms is not check 1, so a reader who takes it for check 1 has read the
-   fetch-scoped dips. **Same shape as the `-- reseed` gap this milestone already closed, one
-   grammar over.** Evidence: D-C's brief §4 check 1.
-
-4. **`(b3)`'s verdict short-circuits, and it hid a boot on its first real capture.** The ladder
-   tests `adopted > 0` first, so run 2's run-wide `adopted=5` printed *"5 RE-SEED(S) ADOPTED"* and
-   stopped — **B1's `triggers=3, adopted=0` appears in the table and in no verdict.** The table
-   saved it and the verdict did not, which is exactly what check 7's blockquote predicted when it
-   was corrected on 2026-09-07. `hold-overflow` is read by no branch at all; `unbracketed` and
-   `declined(no-hold)` only by branches the short-circuit skips. Evidence:
-   `tools/soak_report.py`'s re-seed section; D-C's brief §4 check 7.
-
-**And one thing that is NOT a close-out item, recorded so it is not adopted as one.** The
-`triggers=11` vs `adopted=5` gap is **design, not loss** — a trigger whose fetch is in flight when a
-`seq-gap` resync takes the book `Unseeded` has its body adopted as an ordinary seed, counted by
-nothing, because nothing failed. It has an `ARCHITECTURE.md` §9 row of its own (2026-09-10). Whether
-the adapter *should* distinguish that case is a change to **what is counted**, not to what may be
-inferred, and it wants a brief rather than a line on this list.
+**M5 closed 2026-09-10** with the frame-slot margin named as open in its ROADMAP row and pointing at
+that stage, rather than closing quietly over it.
