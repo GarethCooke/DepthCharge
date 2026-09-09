@@ -167,6 +167,14 @@ first draft would have edited the wrong line.**
 The clause is *"greys when the feed dies despite the venue publishing no heartbeat"*, and C narrowed
 it to the **socket**. It is now two cases:
 
+> **AND THE NARROWING C PROPOSED DID NOT REACH THE DoD UNTIL M5's CLOSE.** This brief states it as
+> settled; the definition of done went on reading the unqualified sentence for six weeks, and D-C
+> was designed, run and read against that sentence. **The amended clause and its dated note live in
+> `M5-the-shape-and-the-two-decisions.md`, under *M5's definition of done* — cite it from there.**
+> Not restated here, because a narrowing stated in the brief that proposed it and *not* in the
+> document it amends is exactly how this one came to be six weeks late. `ARCHITECTURE.md` §9
+> (2026-09-10) carries the rule the act earned.
+
 | case | stageable? | detected? |
 | --- | --- | --- |
 | the feed **never speaks** — connect-time | **Yes.** A misspelled stream returns 101, answers pings, delivers nothing — live-probed at B1, committed as `binance_btcusdt_DEFECT_silent_stream_20260826.ndjson`. | **Yes, since C** — remedy (a) withholds the Snapshot until a diff brackets it. |

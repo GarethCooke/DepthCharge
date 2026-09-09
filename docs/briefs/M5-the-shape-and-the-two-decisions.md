@@ -291,7 +291,9 @@ No adapter this evening.
 ## M5's definition of done
 
 M5 is complete when the panel renders a Binance book off the wire; **greys when the feed dies
-despite the venue publishing no heartbeat**; holds colour through a ten-second silence that is the
+despite the venue publishing no heartbeat** — ***AMENDED 2026-09-10; read the dated note below this
+paragraph before citing this clause, which is not what M5 closed on***; holds colour through a
+ten-second silence that is the
 venue behaving normally; recovers from a sequence gap by re-snapshot rather than by reconnect; holds
 a book that does not silently drift out of its seeded window over hours; and **is honest, in the
 DoD's own words rather than by implication, about three things it inherits from this venue and does
@@ -329,6 +331,12 @@ right places, and it is the test of this one.
 > **What this amendment does NOT do is lower the bar to fit the result.** Every narrowing here was
 > specified in D-C's brief before the run, and each replaces a claim the board never made with the
 > one it does. The un-narrowed sentence would have had M5 close on detection it does not have.
+>
+> **THE ACT HAS ITS OWN §9 ROW — `ARCHITECTURE.md`, 2026-09-10 — and that row, not this note, is
+> the precedent.** A definition of done amended at the moment of its own tick is the thing worth
+> being findable: narrow the claim to what the records support, date the narrowing and leave the
+> original standing, and say that the reading was taken against the earlier text. The row also
+> states what it is *not* a licence for, which matters more than the amendment it came from.
 
 ## Out of scope
 
