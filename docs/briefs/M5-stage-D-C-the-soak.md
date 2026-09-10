@@ -370,6 +370,10 @@ about the re-seed.
 writes are negligible beside everything else on that path, and the falsifier is those two
 converging. D-C's capture had them at **59,280 µs during a fetch against 1,499,017 µs quiet** — the
 fetch window was the *fast* one by 25×. If that inverts, D-A4's §9 row is wrong and says so.
+*[Read 2026-09-10 from run 2's raw: the two converged without inverting, and the pair cannot isolate
+the hold — `worst_parse_fetch_us` counts every seed fetch, the hold opened in only a handful, and
+those set the figure in both boots — so the claim is unrefuted, not shown.
+`hardware/bench-2026-09-07-D-C-run2-soak.md` §6.]*
 
 ## 5 · Two readings that will look like the check and are not
 

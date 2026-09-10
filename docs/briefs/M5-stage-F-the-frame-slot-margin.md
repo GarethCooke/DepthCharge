@@ -1,12 +1,13 @@
 # M5 Stage F — the frame-slot margin, and what may be claimed for a closed constant
 
-**Track:** Host [engine + harness; no bench sitting required] · **Status:** ☐ **Open — brief is a
-stub, written 2026-09-10 at D-C run 2's close. THE BRIEF ITSELF IS THE FIRST DELIVERABLE.** ·
-**Size:** unknown until §2 is answered; the measurement half is an evening
+**Track:** Host [engine + harness; no bench sitting required] · **Status:** ☐ **Parked 2026-09-10 on
+the next milestone with an A track** — still a stub, nothing measured, and §4's plan corrected ·
+**Size:** unknown until §2 is answered; the measurement needs new capture tooling and a long
+recording (§4, corrected 2026-09-10)
 **Written:** 2026-09-10 by the D-C run 2 seat, from check 4's third reading.
-**Milestone assignment:** **OWED — see §6.** This is a stage rather than a backlog card because it
-has a falsifiable question, a measurable answer and a decision at the end of it; it has no milestone
-because M5 closed on its own definition of done and this is not part of that definition.
+**Milestone assignment:** **the next milestone with an A track, today M7** — ruled by the owner
+2026-09-10, §6. This is a stage rather than a backlog card because it has a falsifiable question, a
+measurable answer and a decision at the end of it; it is not M5's because M5 closed on its own definition of done and this is not part of that definition.
 
 **Depends on:** nothing. **Blocks:** nothing, and that is deliberate — see §5.
 
@@ -99,6 +100,20 @@ points into a shape.
 > `C:\local\depthcharge-archive\bench-2026-09-07-D-C-run2-soak-RAW.log.gz`, inflated sha256
 > `edc9c930…`. Check it against that digest before deriving anything from it.
 
+> **CORRECTED 2026-09-10, after opening the raw: it cannot give a size distribution either, and the
+> digest above is not what inflating the archived file gives.** No periodic line records an individual
+> message's size: `-- size` prints the boot's running maximum (`largest_message` is a high-water
+> mark, `frame_pipe.cpp:68`) and `-- rate`'s `mean N B` is a 10 s average. **Beside `-- size`'s running
+> extremes, the only per-message sizes in run 2's raw are five `-- reject : … too-many-levels len=…` event lines** — 63,750 and
+> 63,552 B in B1; 65,220, 54,403 and 64,993 B in B2 — **and each boot's `-- size` maximum is one of
+> them.** So §1's *largest accepted* 65,220 B fitted the pipe and was then declined by the adapter's
+> level limit, and §5's *"one message in two million is declined"* counts only the pipe's declines.
+> Five points are not a distribution, and the paragraph above that says the soaks can rebuild one is
+> wrong. **A distribution needs a capture that records every message's length** — new tooling and a
+> long unattended recording rather than an evening on the archive, which is why §6 was ruled as it
+> was. On the digest: it covers the capture without its two marker lines;
+> `hardware/bench-2026-09-07-D-C-run2-soak.md` §1.1 has the correction.
+
 ## 5 · Why this blocks nothing
 
 **The board is not at risk while this is open.** One message in two million is declined, the
@@ -119,6 +134,17 @@ the owner's call, not an executor's.** Three options, stated so the decision is 
    outside the milestone table.
 3. **Fold it into whatever brief next touches `frame_pipe.hpp`**, on the grounds that a constant's
    claim is best revisited by the person already in that file.
+
+> **RULED 2026-09-10 by the owner: option 1, a stage of the next milestone with an A track** — today
+> M7, which is A+B and depends on M4 and M6. **That corrects the premise above:** *"M6 and M7 are
+> B-track hardware"* holds for M6 only. The other two options stay as the record of what was chosen
+> between. **It was ruled option 2 first, the same day, and reversed before option 2 was recorded
+> here:** §4's measurement turned out to need a new capture rather than an evening on the archive, and
+> at that price a question whose failure mode is a grey and a re-seed per declined message (§5) does
+> not outrank the owner's standing order — Anvil and FrontierView prep — or M6. **What parking costs:**
+> the claim for the constant stays unexamined until M7 is drawn, and M7 is where the memory budget most
+> likely reopens, since its encoder selects the venue that today is fixed per build. So this stage
+> runs first in M7: its definition of done is written when M7 is drawn, ahead of M7's memory budget.
 
 **Until that is ruled, this brief is a stub and should not be executed** — a stage with no milestone
 has no definition of done to be measured against, which is the failure this project has spent M5
@@ -144,3 +170,22 @@ decision at the end of it, which is more than a card carries.
 **Exact next step.** **Rule §6 first** — which milestone, or standalone. Then the measurement in §4:
 rebuild the message-size distribution from the two committed soak captures and the archived raw,
 and find out whether the tail has a ceiling. Do not touch the constant.
+
+### 2026-09-10 · Opus 5 · §6 ruled, §4's plan found impossible, nothing measured
+
+**Done.** §6 ruled by the owner and recorded there: option 1. §4 corrected after opening run 2's raw
+from the archive — no periodic line holds a message's size, the only per-message sizes beside `-- size`'s running
+extremes are five adapter rejects,
+and neither soak can give a distribution — and the raw's pinned inflated digest found to exclude the
+file's marker lines, corrected at `hardware/bench-2026-09-07-D-C-run2-soak.md` §1.1. §6's premise
+that M7 is B-track corrected: it is A+B. The previous entry's exact next step is superseded.
+
+**Decisions, with why.** Parked rather than standalone because the measurement is new tooling and a
+long recording, not an evening, for a failure mode §5 already shows to be honest. No definition of
+done yet: it is written when M7 is drawn, ahead of M7's memory budget.
+
+**Exact next step.** When M7 is drawn: first establish whether the adapter's level limit already
+declines every message approaching `kFrameCapacity` — each boot's largest published message in run 2 went
+that way, though B1's one oversize message was declined by the pipe before the adapter saw it — because if it does, the slot is not the binding limit and §2 is asking the wrong question. Then
+check the venue's documentation for a stated cap on a diff-depth message, then write this stage's
+definition of done before building any capture.

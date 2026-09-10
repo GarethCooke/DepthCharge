@@ -337,7 +337,10 @@ corpus (~13 KB/s); **duty-cycled at ~18%** (fetch median 3,973 ms against a re-s
 `worst_parse_quiet_us` exist for exactly this comparison, and D-C's final boot reads **59,280 µs
 during a fetch against 1,499,017 µs quiet**, i.e. the fetch window is currently the *fast* one by 25×.
 **`worst_parse_fetch_us` approaching `worst_parse_quiet_us` is the falsifier**, and D-C's second run is
-where it should be read.
+where it should be read. *[Read 2026-09-10 from run 2's raw: the two converged without
+inverting, and the pair cannot isolate the hold — `worst_parse_fetch_us` counts every seed fetch, the
+hold opened in only a handful, and those set the figure in both boots — so the claim is unrefuted,
+not shown. `hardware/bench-2026-09-07-D-C-run2-soak.md` §6.]*
 
 **Why not (c).** Its case was that it needs no memory, and (a) now needs none either. It is also
 unprovable here: the resulting book is a mixture of two instants that no bracketing statement covers,

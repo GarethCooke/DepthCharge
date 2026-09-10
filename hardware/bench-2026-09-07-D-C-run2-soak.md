@@ -32,6 +32,16 @@ exception. §1.2 says exactly what was dropped and §1.3 proves the drop is loss
 Both raw digests are pinned so the archive is identifiable, and the raw's **inflated** sha256 is the
 one to check a restored copy against — the gz's own digest depends on the compressor.
 
+> **CORRECTED 2026-09-10: the inflated digest and byte count above cover the capture WITHOUT its two
+> marker lines, and the line count covers it WITH them — so the check this paragraph prescribes fails
+> on the right file.** Inflating the archived gz gives
+> `8cc1ab3f551629fbaa3f065d64599010a34293c5f40076de9d4814d4923abd68` over 123,645,778 B and 825,408
+> lines. The two `###` marker lines at the head are the difference: 288 + 565 B plus two newlines is
+> 855 B, and dropping them reproduces `edc9c930…` and 123,644,923 B exactly (§1.2's 825,406 is the
+> line count without them). The gz digest matches as pinned, so **the archive is the right file** —
+> and the table's *copy verified byte-identical* can only have been checked against that digest or
+> byte for byte. Found while reading §6 from the raw.
+
 The marker sidecar is **concatenated at the head**, per the corrected deliverable 2. `markers : 2`
 is that mechanism working: this is the first D-C capture that can name its own image. The image
 still cannot name itself — `main.cpp:114` reads *"DepthCharge M4 stage D"*, **backlog D14**.
@@ -57,6 +67,16 @@ still cannot name itself — `main.cpp:114` reads *"DepthCharge M4 stage D"*, **
 | `panel: v<N>` per-frame ladder lines | 185,701 | 26.2 MB | the 1 Hz ladder echo — no grammar reads it and no figure in any D-C record derives from one |
 | unread periodic stats (`-- a`, `-- panel`, `-- event`, `-- arrive`, `-- errors`, `-- rate`, `-- frame`, `-- cpu`, `-- rx`, `-- frames`, `-- slots`, `-- channel`, `-- feed`, `-- reject`, `-- adapter`, `-- slot`, `-- book`, `-- rssi`, `-- hole`) | ~392,000 | 59.5 MB | a 10 s time series nothing in this reading or in `soak_report` consumes |
 | blank lines | 825,415 | 0.8 MB | the monitor's line spacing |
+
+> **CORRECTED 2026-09-10: the unread-stats row dropped two things its reason does not cover.**
+> `-- frame` carried a figure owed to this reading: D-C's brief asked for `worst_parse_fetch_us`
+> against `worst_parse_quiet_us` from it (*"Also worth recording while the line is in front of
+> you"*), and D-A4's §9 row names the pair as its falsifier and this run as where it is read. And
+> `-- reject` is not only a 10 s series: five of its lines are per-message `too-many-levels len=…`
+> events — beside `-- size`'s running extremes, the only stream-message sizes in the capture. The row's reason is true of what this
+> reading consumed, and §1.3's proof is scoped to this reading, so it could see neither. Both were
+> read from the raw on 2026-09-10 — the first in §6, the second in
+> `docs/briefs/M5-stage-F-the-frame-slot-margin.md` §4.
 
 **This is a real loss and it is stated as one.** The dropped stats lines are genuine board output
 and a future question — frame-time attribution, RSSI over 57 h, the arrival histograms — would need
@@ -358,3 +378,50 @@ throughout and the mechanism was genuinely exercised rather than configured out.
   printed throughout, and still true.
 - **That check 7's mechanism is exercised under load.** Five adoptions in 57 h is the tail
   phenomenon behaving as predicted, not a stress test of it.
+- **That the re-seed hold costs the frame path nothing.** Its falsifier cannot isolate the hold,
+  and the few fetches that opened it set the fetch figure in both boots. See §6.
+
+---
+
+## 6 · Addendum 2026-09-10 — D-A4's frame-path falsifier, read from the raw
+
+**Why this is here.** D-A4's §9 row (ARCHITECTURE §9, 2026-09-06) rests candidate (a) on the hold's
+PSRAM writes being negligible on the frame path, names `worst_parse_fetch_us` approaching
+`worst_parse_quiet_us` as the falsifier, and says this run is where it is read. This record did not
+read it, and §1.2 dropped the `-- frame` line that carries it. It was read from the raw on
+2026-09-10, after checking the raw against §1.1's digests as corrected there.
+
+Both fields are boot-lifetime high-water marks (`feed_task.cpp:545-547`), so each boot's last
+`-- frame` line is its answer. Quiet frames are that line's total less its `over N frames`.
+
+| | image carries the hold | worst frame, quiet | worst frame, during a fetch | quiet ÷ fetch |
+| --- | --- | --- | --- | --- |
+| **B1**, 17.01 h | yes (`dab312b`) | 246,484 µs over 558,909 frames | 75,288 µs over 48,162 frames | 3.27× |
+| **B2**, 40.25 h | yes | 195,350 µs over 1,306,708 frames | 92,736 µs over 124,255 frames | 2.11× |
+| run 1, final boot | **no** — predates D-A4 | 1,499,017 µs over 130,655 frames | 59,280 µs over 24,619 frames | 25.3× |
+
+**The two converged and did not invert.** Under D-C's brief's *"if that inverts"* the falsifier did
+not fire. Under the §9 row's *"approaching"* they closed from 25.3× to 3.27× and 2.11×, from both
+ends: the quiet worst fell from run 1's 0.80–1.80 s across all seven of its boots to 0.20–0.25 s, and
+both fetch figures sit above every one of run 1's seven (53,086–74,725 µs). Stage E changed the frame
+path between the two runs, so neither movement is attributable to the hold on these lines alone.
+
+**But `worst_parse_fetch_us` is not the hold's window, so neither form of the test can isolate the
+hold.** `fetch_in_flight` is `seed_.busy()` (`feed_task.cpp:345`), true during every seed fetch, while
+the hold opens only when a re-seed is issued on a live book (`feed_task.cpp:291-298`) — at most once
+per cover trigger in this run, where no fetch failed: 3 in B1 and 8 in B2. Every other re-seed ran on
+a book that had already dropped, with no hold: each boot's last `-- seed` line counts every request,
+trigger ones included (`reseeds=1081` and `reseeds=2942`), and `*** STALE (seq-gap)` fired 1,056 and
+2,881 times. The fetch population is overwhelmingly frames the hold never touched.
+
+**And the few fetches that did open the hold set the fetch figure in both boots.** B1's 75,288 µs
+landed in the `-- frame` window that also carries its second trigger (04:22:19). B2's rose to
+70,144 µs in its first trigger's window (10:43:54) and to 92,736 µs in the window after its fifth
+(09:36:15, then 09:36:25). That is not a measured cost — a cover trigger fires when the market walks,
+and those frames update a live book while every other fetch frame only buffers for a seed, so they are
+not a fair sample of fetch frames — and it is not reassurance either.
+
+**So the §9 row's claim is unrefuted, not shown**, and nothing here reopens candidate (a). A reading
+that could show a cost would split frames by whether a hold is open, against live-book fetches
+without one. The board prints no such split, and no D-A4 image issues a live-book fetch without the
+hold.
