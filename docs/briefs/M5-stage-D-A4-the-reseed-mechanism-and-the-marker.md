@@ -1,7 +1,8 @@
 # M5 Stage D-A4 — the re-seed mechanism, `InFlight`, and the marker
 
-**Track:** Agentic [desk] · **Status:** **Desk work done 2026-09-06 — split proposed, nothing
-committed; the board half (flash + bench) is not done** · **Size:** one desk evening
+**Track:** Agentic [desk] · **Status:** ✅ **DONE** — desk work 2026-09-06, split approved, executed
+and on master; **the board box D-C inherited closed 2026-09-10 on its second run** — see the
+Definition of done's *on the board* box · **Size:** one desk evening
 **Written:** 2026-08-30 by the desk seat, splitting D-A3 on wall-clock grounds.
 **REWRITTEN 2026-09-05 against master** — D-A3's close, D-C's first run and stage E moved this
 stage's premise and five of its figures. What changed is listed in § *What moved since 2026-08-30*
@@ -213,12 +214,18 @@ difference from `None` is inside `draw_header`. Grey is not used.
 - ☒ *n/a — (c) was not chosen. Coverage is supplied anyway: a synthesised trace drives the whole
       `None → Wanted → InFlight → None` transition, because **no committed capture fires the coverage
       trigger** (`cover_triggers == 0` on all six BTCUSDT captures with the fetch modelled).*
-- ☐ `DisplaySnapshot::reseed` reaches `InFlight` on the board, stamped in `publish_current()`;
+- ☒ `DisplaySnapshot::reseed` reaches `InFlight` on the board, stamped in `publish_current()`;
       `sizeof` still **1,168 / 3,528**.
       *Stamped in `publish_current()` and reached end-to-end on the host. `sizeof` unmoved, verified on
       host **and** on xtensa (`pio run -e depthcharge-binance` green). **The board half is NOT done: no
       flash, no bench sitting this session**, so "on the board" is unverified and is the first line of
       the next step.*
+      *[**TICKED 2026-09-10 by D-C's second run**, on image `dab312b`: `DisplaySnapshot::reseed`
+      reached `InFlight` on the board, and `adopted=5` — all five in boot 2, none in boot 1 — with
+      `unbracketed`, `hold-overflow` and `declined(no-hold)` at 0 in both boots
+      (`hardware/bench-2026-09-07-D-C-run2-soak.md`, check 7 and §3.4). The note above was true for
+      the session that wrote it and is left standing. How the run's reading differs from the
+      settlement named in §7 of the log, step 3, is recorded at the end of that step.]*
 - ☒ The header marker renders per D-B's four constraints, with the width assertion in
       `test_ladder_render.cpp`.
       *Built to all four. **And it can never be drawn on this build** — the arithmetic is pinned in the
@@ -743,8 +750,9 @@ last of which is a verdict on the mechanism. Without it the owner's objection st
 2. ~~Create the commits, verify each in a detached worktree, push.~~ **Done** — eight commits,
    `origin/m5/stage-d-a4` = `ec80ec4`. **`master` is NOT fast-forwarded** and stays at `25510ec`
    until the owner publishes it, which is a separate deliberate act.
-3. **The one thing this session could not do: flash it — and it must be a SOAK rather than a
-   sitting.** §6b derives why: the coverage trigger is the only route to a re-seed on a live book,
+3. ~~**The one thing this session could not do: flash it — and it must be a SOAK rather than a
+   sitting.**~~ **Done 2026-09-10** — though not by the reading this step names; see its end.
+   §6b derives why: the coverage trigger is the only route to a re-seed on a live book,
    it needs ~552 levels of coverage consumed with no `drop_book` in between, and only 3.5% of stage
    E's live stretches are long enough. Read `cover=B/A of 448` and `below=` on the `-- reseed :`
    line before reading `adopted`; `adopted=0` with `cover` far above 448 is a run that was too
@@ -756,6 +764,13 @@ last of which is a verdict on the mechanism. Without it the owner's objection st
    no-op and `adopted` will read 0. **That is not a defect in the mechanism and must not be read as
    one**; it means the cover trigger, which is the only path to a re-seed on a *live* book, was never
    reached. D-C's second run is where both are read.
+   **CLOSED 2026-09-10 by that run, on a narrower reading than the settlement named above.** The
+   `-- reseed :` line printed on the board, `below=0` in both boots so the trigger was armed
+   throughout, and `adopted` reached 5 — the Definition of done's *on the board* box has the
+   per-boot figures. **But greys did not stay flat**: 2,884 episodes in boot 2. The run's reading
+   says so, and closes the box on what `reseeds_adopted` counts by construction instead — only a
+   body adopted onto a still-`Seeded` book — rather than on the flat-greys test
+   (`hardware/bench-2026-09-07-D-C-run2-soak.md`, check 7).
 4. **D11 is closed** — the owner took the fifth and sixth rendering decisions at the split and the
    marker now draws. What remains of that thread is a note rather than a card: **`age_ms` is still
    undrawable as a NUMBER** on this build (a real reading needs 24 px against 20), which has been
