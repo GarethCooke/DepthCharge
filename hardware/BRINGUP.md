@@ -98,7 +98,8 @@ Panel GND → DevKit GND. Panel 5V from bench supply, **not** the DevKit.
 ## Signal integrity (scoped at full white, 1× probe)
 Four lines surveyed, each against its own failure mode — all pass:
 - **R1** (data): fast clean edges, valid at the clock.
-- **CLK** (~2MHz): single threshold crossing per edge — no double-clocking.
+- **CLK** (~~2MHz~~ **6.67 MHz** — corrected 2026-09-13, see below): single threshold
+  crossing per edge — no double-clocking.
 - **LAT**: single clean strobe per line — no double-latch.
 - **OE**: clean enable window per line — no blanking-timing corruption.
 
@@ -201,10 +202,27 @@ list rather than trying them.
     the HUB75 run and short leads, and the roadmap's existing `2× 74HCT245` buffers and
     bulk caps are load-bearing rather than nice-to-have. Re-test `clkphase = false` on the
     carrier: if the noise argument evaporates, the ghosting fix is free.
-  - **Still owed: CLK on a 10× probe.** The 2026-08-11 finding is behavioural, not
+  - **~~Still owed: CLK on a 10× probe.~~ PAID 2026-09-13 —
+    `hardware/bench-2026-09-13-clk-10x.md`.** The 2026-08-11 finding was behavioural, not
     measured — the signal-integrity survey above used a **1× probe** and recorded "edge
     softening partly attributable to the probe", so the edge rate both symptoms turn on
-    has never actually been characterised.
+    had never actually been characterised. It now is, and it moved three numbers:
+    - **CLK is 6.6667 MHz, not ~2 MHz** — exactly `panel_actual_clock_hz()`
+      (160 MHz ÷ `S3_LCD_DIV_NUM=24`), so `panel_budget.hpp`'s divider analysis and the
+      corrected ~131 Hz refresh figure are now instrument-confirmed rather than read off
+      the library source.
+    - **Edges transition in ≈2.2 ns** and are instrument-limited on a 100 MHz scope
+      (measured rise 4.11 ns against a 3.50 ns floor, with samples *below* the floor).
+      A clock divider changes repetition rate, not transition time — `platformio.ini:176`'s
+      "a THIRD off the edge rate" is wrong in its mechanism, though its setup/hold and
+      radio-noise reasons stand. Falsifier: rebuild at `S3_LCD_DIV_NUM=16` and re-measure.
+    - **Undershoot hits −760 mV worst, −217 mV typical**, past the ~−0.3 V input floor —
+      the panel's input clamp diodes conduct on bad falling edges in normal operation.
+      Overshoot peaks at 3.72 V worst against a 3.18 V rail. Ringing ≈57 MHz, too slow to
+      be probe-lead artefact, consistent with the unterminated jumper run.
+    - **New M6 requirement: series termination (~33 Ω) at each 74HCT245 output.** The
+      buffers alone make the overshoot *worse* — an HCT output is faster and stronger than
+      the S3 pad it replaces, into the same unterminated line.
 - **First-light sketch** kept in the M2 experiment area, out of `engine/`.
 
 ## Status
