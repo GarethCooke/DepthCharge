@@ -339,6 +339,19 @@ requirement of the carrier board. **Already refuted, do not re-propose:**
 `hardware/BRINGUP.md:28,36` records the rails as **not tied** (panel on the LRS-50-5, DevKit on
 USB, common GND only), so "give the panel its own rail" is already the case.
 
+**2026-09-13 — THE TRACE EXISTS, AND IT IS A NEGATIVE:** [`hardware/bench-2026-09-13-D7-switch-on.md`](hardware/bench-2026-09-13-D7-switch-on.md).
+One switch-on, single-shot on the panel rail's rising edge through 2.50 V, Peak Detect, 20 MHz BW
+limit. **3V3 minimum 2.76 V over the whole 1.4 s record, RISING to 2.80 V in the ±7 ms around the
+event** — the deepest excursions are in the panel-off baseline band, not at the trigger, so there
+is no dip to time and no duration to record. Zero resets in 22.7 min of monitor (`rst:0x` and `BROWNOUT` both match 0 times in 5,314
+lines), `connects=1`. **One switch-on does not settle the rate** — it is consistent with every
+value in the interval above — but it does say the mechanism is not a sag visible at the DevKit's
+3V3 header pin. **The capture's own finding inverts the premise:** the rail is at its worst with
+the panel OFF, because the board phantom-powers the unpowered panel through its input clamp
+diodes, and the switch-on *improves* it. A panel-side load switch enabled by firmware after boot
+removes that state — the same part this item was asking whether the carrier needs. **The number
+does not transfer to the carrier**, which ties the two rails this bench keeps separate.
+
 *Moved here 2026-08-27: this had been pasted into the **Milestones** table between the
 M4 and M5 rows, with four cells against that table's six, so it rendered as a milestone with
 an empty Depends-on and Status rather than as the backlog item it is. Prose unchanged — the
